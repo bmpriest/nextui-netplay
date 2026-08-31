@@ -1,0 +1,6 @@
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "hello", "device": "client", "elapsed_ms": 81, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T22:49:17.013826+00:00", "transport": "adb"}
+{"event": "command", "line": "client:BTN HOLD DOWN 300", "time": "2026-08-29T22:49:17.014048+00:00"}
+{"address": "2c000c81b5c4078245d", "arguments": ["press", "down"], "command": "input", "device": "client", "elapsed_ms": 98, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-29T22:49:17.129679+00:00", "transport": "adb"}
+{"address": "2c000c81b5c4078245d", "arguments": ["release", "down"], "command": "input", "device": "client", "elapsed_ms": 109, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-29T22:49:17.538783+00:00", "transport": "adb"}
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "hello", "device": "client", "elapsed_ms": 85, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T22:49:17.765945+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 4500", "time": "2026-08-29T22:49:17.766214+00:00"}

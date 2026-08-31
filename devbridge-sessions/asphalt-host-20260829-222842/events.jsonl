@@ -1,0 +1,19 @@
+{"event": "command", "line": "SESSION asphalt-host-{date}-{time} devbridge-sessions", "time": "2026-08-30T04:28:42.637846+00:00"}
+{"event": "command", "line": "CONNECT_ADB 1c000c66050607724dd host", "time": "2026-08-30T04:28:42.637987+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "hello", "device": "host", "elapsed_ms": 105, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-30T04:28:42.743216+00:00", "transport": "adb"}
+{"event": "command", "line": "CONNECT_ADB 2c000c81b5c4078245d client", "time": "2026-08-30T04:28:42.743435+00:00"}
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "hello", "device": "client", "elapsed_ms": 110, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-30T04:28:42.853294+00:00", "transport": "adb"}
+{"event": "command", "line": "host:BTN A", "time": "2026-08-30T04:28:42.853521+00:00"}
+{"address": "1c000c66050607724dd", "arguments": ["press", "a"], "command": "input", "device": "host", "elapsed_ms": 134, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:28:42.987453+00:00", "transport": "adb"}
+{"address": "1c000c66050607724dd", "arguments": ["release", "a"], "command": "input", "device": "host", "elapsed_ms": 134, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:28:43.201428+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 5000", "time": "2026-08-30T04:28:43.201624+00:00"}
+{"event": "command", "line": "host:SCREEN hosting", "time": "2026-08-30T04:28:48.201950+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "screen", "device": "host", "elapsed_ms": 226, "event": "remote", "returncode": 0, "stderr": "", "stdout": "path=/tmp/DevBridge-screen-26696.bgra\nwidth=1024\nheight=768\nstride=4096\nformat=bgra\n", "time": "2026-08-30T04:28:48.428933+00:00", "transport": "adb"}
+{"device": "host", "event": "screenshot", "metadata": {"format": "bgra", "height": "768", "path": "/tmp/DevBridge-screen-26696.bgra", "stride": "4096", "width": "1024"}, "path": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-drastic/devbridge-sessions/asphalt-host-20260829-222842/hosting-host.png", "time": "2026-08-30T04:28:50.120148+00:00"}
+{"event": "command", "line": "client:BTN UP", "time": "2026-08-30T04:28:50.120311+00:00"}
+{"address": "2c000c81b5c4078245d", "arguments": ["press", "up"], "command": "input", "device": "client", "elapsed_ms": 115, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:28:50.235749+00:00", "transport": "adb"}
+{"address": "2c000c81b5c4078245d", "arguments": ["release", "up"], "command": "input", "device": "client", "elapsed_ms": 122, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:28:50.437912+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 2000", "time": "2026-08-30T04:28:50.438119+00:00"}
+{"event": "command", "line": "client:SCREEN client-choice", "time": "2026-08-30T04:28:52.438445+00:00"}
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "screen", "device": "client", "elapsed_ms": 174, "event": "remote", "returncode": 0, "stderr": "", "stdout": "path=/tmp/DevBridge-screen-4767.bgra\nwidth=1024\nheight=768\nstride=4096\nformat=bgra\n", "time": "2026-08-30T04:28:52.612717+00:00", "transport": "adb"}
+{"device": "client", "event": "screenshot", "metadata": {"format": "bgra", "height": "768", "path": "/tmp/DevBridge-screen-4767.bgra", "stride": "4096", "width": "1024"}, "path": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-drastic/devbridge-sessions/asphalt-host-20260829-222842/client-choice-client.png", "time": "2026-08-30T04:28:54.221203+00:00"}

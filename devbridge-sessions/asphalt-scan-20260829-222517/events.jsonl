@@ -1,0 +1,31 @@
+{"event": "command", "line": "SESSION asphalt-scan-{date}-{time} devbridge-sessions", "time": "2026-08-30T04:25:17.453326+00:00"}
+{"event": "command", "line": "CONNECT_ADB 1c000c66050607724dd host", "time": "2026-08-30T04:25:17.453470+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "hello", "device": "host", "elapsed_ms": 100, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-30T04:25:17.553733+00:00", "transport": "adb"}
+{"event": "command", "line": "host:BTN DOWN", "time": "2026-08-30T04:25:17.553924+00:00"}
+{"address": "1c000c66050607724dd", "arguments": ["press", "down"], "command": "input", "device": "host", "elapsed_ms": 135, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:17.688816+00:00", "transport": "adb"}
+{"address": "1c000c66050607724dd", "arguments": ["release", "down"], "command": "input", "device": "host", "elapsed_ms": 137, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:17.906704+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 1200", "time": "2026-08-30T04:25:17.907013+00:00"}
+{"event": "command", "line": "host:SCREEN d1", "time": "2026-08-30T04:25:19.107388+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "screen", "device": "host", "elapsed_ms": 179, "event": "remote", "returncode": 0, "stderr": "", "stdout": "path=/tmp/DevBridge-screen-25584.bgra\nwidth=1024\nheight=768\nstride=4096\nformat=bgra\n", "time": "2026-08-30T04:25:19.286886+00:00", "transport": "adb"}
+{"device": "host", "event": "screenshot", "metadata": {"format": "bgra", "height": "768", "path": "/tmp/DevBridge-screen-25584.bgra", "stride": "4096", "width": "1024"}, "path": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-drastic/devbridge-sessions/asphalt-scan-20260829-222517/d1-host.png", "time": "2026-08-30T04:25:20.883417+00:00"}
+{"event": "command", "line": "host:BTN DOWN", "time": "2026-08-30T04:25:20.883619+00:00"}
+{"address": "1c000c66050607724dd", "arguments": ["press", "down"], "command": "input", "device": "host", "elapsed_ms": 115, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:20.998359+00:00", "transport": "adb"}
+{"address": "1c000c66050607724dd", "arguments": ["release", "down"], "command": "input", "device": "host", "elapsed_ms": 118, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:21.196745+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 1200", "time": "2026-08-30T04:25:21.196983+00:00"}
+{"event": "command", "line": "host:SCREEN d2", "time": "2026-08-30T04:25:22.397294+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "screen", "device": "host", "elapsed_ms": 192, "event": "remote", "returncode": 0, "stderr": "", "stdout": "path=/tmp/DevBridge-screen-25653.bgra\nwidth=1024\nheight=768\nstride=4096\nformat=bgra\n", "time": "2026-08-30T04:25:22.589274+00:00", "transport": "adb"}
+{"device": "host", "event": "screenshot", "metadata": {"format": "bgra", "height": "768", "path": "/tmp/DevBridge-screen-25653.bgra", "stride": "4096", "width": "1024"}, "path": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-drastic/devbridge-sessions/asphalt-scan-20260829-222517/d2-host.png", "time": "2026-08-30T04:25:24.269951+00:00"}
+{"event": "command", "line": "host:BTN DOWN", "time": "2026-08-30T04:25:24.270116+00:00"}
+{"address": "1c000c66050607724dd", "arguments": ["press", "down"], "command": "input", "device": "host", "elapsed_ms": 134, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:24.404225+00:00", "transport": "adb"}
+{"address": "1c000c66050607724dd", "arguments": ["release", "down"], "command": "input", "device": "host", "elapsed_ms": 120, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:24.604310+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 1200", "time": "2026-08-30T04:25:24.604512+00:00"}
+{"event": "command", "line": "host:SCREEN d3", "time": "2026-08-30T04:25:25.810580+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "screen", "device": "host", "elapsed_ms": 200, "event": "remote", "returncode": 0, "stderr": "", "stdout": "path=/tmp/DevBridge-screen-25718.bgra\nwidth=1024\nheight=768\nstride=4096\nformat=bgra\n", "time": "2026-08-30T04:25:26.011176+00:00", "transport": "adb"}
+{"device": "host", "event": "screenshot", "metadata": {"format": "bgra", "height": "768", "path": "/tmp/DevBridge-screen-25718.bgra", "stride": "4096", "width": "1024"}, "path": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-drastic/devbridge-sessions/asphalt-scan-20260829-222517/d3-host.png", "time": "2026-08-30T04:25:27.671317+00:00"}
+{"event": "command", "line": "host:BTN DOWN", "time": "2026-08-30T04:25:27.671545+00:00"}
+{"address": "1c000c66050607724dd", "arguments": ["press", "down"], "command": "input", "device": "host", "elapsed_ms": 136, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:27.807350+00:00", "transport": "adb"}
+{"address": "1c000c66050607724dd", "arguments": ["release", "down"], "command": "input", "device": "host", "elapsed_ms": 133, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-30T04:25:28.020714+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 1200", "time": "2026-08-30T04:25:28.020891+00:00"}
+{"event": "command", "line": "host:SCREEN d4", "time": "2026-08-30T04:25:29.221266+00:00"}
+{"address": "1c000c66050607724dd", "arguments": [], "command": "screen", "device": "host", "elapsed_ms": 189, "event": "remote", "returncode": 0, "stderr": "", "stdout": "path=/tmp/DevBridge-screen-25787.bgra\nwidth=1024\nheight=768\nstride=4096\nformat=bgra\n", "time": "2026-08-30T04:25:29.410546+00:00", "transport": "adb"}
+{"device": "host", "event": "screenshot", "metadata": {"format": "bgra", "height": "768", "path": "/tmp/DevBridge-screen-25787.bgra", "stride": "4096", "width": "1024"}, "path": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-drastic/devbridge-sessions/asphalt-scan-20260829-222517/d4-host.png", "time": "2026-08-30T04:25:31.032718+00:00"}

@@ -1,0 +1,3 @@
+{"event": "command", "line": "SESSION asphalt-cold-join-{date}-{time} devbridge-sessions", "time": "2026-08-30T18:51:55.705398+00:00"}
+{"event": "command", "line": "CONNECT_ADB 1c000c66050607724dd host", "time": "2026-08-30T18:51:55.705536+00:00"}
+{"event": "error", "file": "drastic-wifi/devbridge/asphalt-cold-join.test", "line": 3, "message": "alias already connected: host", "time": "2026-08-30T18:51:55.705577+00:00"}

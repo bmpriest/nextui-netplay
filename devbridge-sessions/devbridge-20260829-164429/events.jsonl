@@ -1,0 +1,3 @@
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "hello", "device": "client", "elapsed_ms": 100, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T22:44:29.360780+00:00", "transport": "adb"}
+{"event": "command", "line": "client:TRM pkill -TERM drastic", "time": "2026-08-29T22:44:29.361109+00:00"}
+{"address": "2c000c81b5c4078245d", "arguments": ["pkill -TERM drastic"], "command": "terminal", "device": "client", "elapsed_ms": 91, "event": "remote", "returncode": 0, "stderr": "", "stdout": "/bin/sh: pkill: not found\n", "time": "2026-08-29T22:44:29.451741+00:00", "transport": "adb"}

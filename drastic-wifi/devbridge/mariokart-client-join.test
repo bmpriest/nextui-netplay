@@ -1,0 +1,9 @@
+# Start with the host waiting and its room visible in the client's first row.
+SESSION drastic-client-join-{date}-{time} devbridge-sessions
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+client:BTN A
+WAIT 4000
+STATUS
+host:SCREEN post-join
+client:SCREEN post-join

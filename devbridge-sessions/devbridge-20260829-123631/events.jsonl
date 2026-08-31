@@ -1,0 +1,4 @@
+{"address": "1c000c66050607724dd", "arguments": [], "command": "hello", "device": "host", "elapsed_ms": 100, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T18:36:31.478661+00:00", "transport": "adb"}
+{"event": "command", "line": "host:BTN DOWN", "time": "2026-08-29T18:36:31.478842+00:00"}
+{"address": "1c000c66050607724dd", "arguments": ["press", "down"], "command": "input", "device": "host", "elapsed_ms": 131, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-29T18:36:31.609504+00:00", "transport": "adb"}
+{"address": "1c000c66050607724dd", "arguments": ["release", "down"], "command": "input", "device": "host", "elapsed_ms": 129, "event": "remote", "returncode": 0, "stderr": "", "stdout": "ok\n", "time": "2026-08-29T18:36:31.818723+00:00", "transport": "adb"}

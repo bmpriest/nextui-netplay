@@ -1,4 +1,4 @@
-.PHONY: dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp gblc-pak app test test-gambatte-dual clean help
+.PHONY: dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp gblc-pak nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak nds-wifi-brick-pak app test test-gambatte-dual clean help
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -19,6 +19,8 @@ help:
 	@echo "make cores   build the patched gambatte + gpsp cores (needs docker)"
 	@echo "make cores-gambatte-dual  build the experimental in-process dual Gambatte core"
 	@echo "make gblc-pak  build a standalone my282 GBLC emulator test pak"
+	@echo "make nds-pak   build a standalone DraStic NDS pak for my282 (Miyoo A30)"
+	@echo "make nds-wifi-paks  build trace-hook NDS paks for A30 and TrimUI Brick"
 	@echo "make compatibility  build seven pinned cores for ARMv7 + AArch64"
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
@@ -206,6 +208,109 @@ gblc-pak: $(GAMBATTE_DUAL_STAMP)
 	@rm -f "$(GBLC_ARCHIVE)"
 	@cd "$(GBLC_STAGE)" && zip -qr "$(abspath $(GBLC_ARCHIVE))" Emus Roms
 	@echo "built $(GBLC_ARCHIVE)"
+
+# Standalone A30 DraStic package. The open compatibility layer comes from the
+# current MyMinUI A30 release; DraStic itself comes from the user's local
+# steward-fu/nds checkout because it is proprietary and is not committed here.
+NDS_STAGE := dist/nds-my282
+NDS_ARCHIVE := dist/NDS-my282.pak.zip
+NDS_RUNTIME_NAME := MyMinUI-20260805b-0-my282.zip
+NDS_RUNTIME_ZIP ?= .cache/nds/$(NDS_RUNTIME_NAME)
+NDS_RUNTIME_URL := https://github.com/Turro75/MyMinUI/releases/download/MyMinUI-20260805/$(NDS_RUNTIME_NAME)
+NDS_RUNTIME_SHA256 := 98976677bd425596e9a441e8ccc3f135eb476de5f165c3a2ee43cb468d2cff23
+NDS_SOURCE ?= $(abspath $(shell git rev-parse --path-format=absolute --git-common-dir)/../../../cores/nds)
+
+$(NDS_RUNTIME_ZIP):
+	@mkdir -p "$(dir $@)"
+	@curl -fL "$(NDS_RUNTIME_URL)" -o "$@.tmp"
+	@printf '%s  %s\n' "$(NDS_RUNTIME_SHA256)" "$@.tmp" | sha256sum -c -
+	@mv "$@.tmp" "$@"
+
+nds-pak: $(NDS_RUNTIME_ZIP)
+	@test -f "$(NDS_SOURCE)/drastic/drastic32" || { \
+		echo "missing $(NDS_SOURCE)/drastic/drastic32" >&2; \
+		echo "set NDS_SOURCE=/path/to/steward-fu/nds" >&2; exit 1; }
+	@printf '%s  %s\n' "$(NDS_RUNTIME_SHA256)" "$(NDS_RUNTIME_ZIP)" | sha256sum -c -
+	@rm -rf "$(NDS_STAGE)" "$(NDS_ARCHIVE)"
+	@mkdir -p "$(NDS_STAGE)/Emus/my282/NDS.pak" \
+		"$(NDS_STAGE)/Roms/Nintendo DS (NDS)"
+	@unzip -q "$(NDS_RUNTIME_ZIP)" 'Emus/my282/NDS.pak/drastic/*' -d "$(NDS_STAGE)/runtime"
+	@cp -a "$(NDS_STAGE)/runtime/Emus/my282/NDS.pak/drastic" \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/"
+	@rm -rf "$(NDS_STAGE)/runtime"
+	@cp "$(NDS_SOURCE)/drastic/drastic32" \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/drastic/drastic"
+	@base64 -d testing/NDS.pak/nds.cfg.b64 \
+		> "$(NDS_STAGE)/Emus/my282/NDS.pak/drastic/res/nds.cfg"
+	@cp testing/NDS.pak/launch.sh testing/NDS.pak/hard-quit.sh \
+		testing/NDS.pak/README.txt \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/"
+	@cp testing/roms/NDS-README.txt "$(NDS_STAGE)/Roms/Nintendo DS (NDS)/README.txt"
+	@chmod 755 "$(NDS_STAGE)/Emus/my282/NDS.pak/launch.sh" \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/hard-quit.sh" \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/drastic/drastic"
+	@cd "$(NDS_STAGE)" && zip -qr "$(abspath $(NDS_ARCHIVE))" Emus Roms
+	@echo "built $(NDS_ARCHIVE)"
+
+# First multiplayer milestones: architecture-specific Wi-Fi MMIO hooks plus an
+# opt-in, independently owned state model. Passthrough remains the default until
+# IRQ, emulated-time and radio behavior are implemented and device-tested.
+NDS_WIFI_A30_ARCHIVE := dist/NDS-WiFi-a30.pak.zip
+NDS_WIFI_BRICK_STAGE := dist/nds-wifi-brick
+NDS_WIFI_BRICK_ARCHIVE := dist/NDS-WiFi-brick.pak.zip
+NDS_BRICK_SOURCE ?= $(abspath $(shell git rev-parse --path-format=absolute --git-common-dir)/../../../cores/minui-nintendo-ds-pak)
+
+nds-wifi-hooks:
+	@docker run --rm -v "$(CURDIR):/src" -w /src/drastic-wifi \
+		nextui-my282-toolchain:local make BUILD=build-a30 \
+		CC=arm-a30-linux-gnueabihf-gcc \
+		CFLAGS='-O2 -g -march=armv7-a -mfpu=neon -mfloat-abi=hard' all
+	@docker run --rm -v "$(CURDIR):/src" -w /src/drastic-wifi \
+		ghcr.io/loveretro/tg5040-toolchain:latest make BUILD=build-brick \
+		CC=/opt/aarch64-nextui-linux-gnu/bin/aarch64-nextui-linux-gnu-gcc \
+		CFLAGS='-O2 -g -march=armv8-a' all
+
+nds-wifi-a30-pak: nds-pak nds-wifi-hooks
+	@cp drastic-wifi/build-a30/libdrastic_wifi.so \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/drastic/"
+	@cp testing/NDS.pak/WIFI-README.txt \
+		"$(NDS_STAGE)/Emus/my282/NDS.pak/"
+	@rm -f "$(NDS_WIFI_A30_ARCHIVE)"
+	@cd "$(NDS_STAGE)" && zip -qr "$(abspath $(NDS_WIFI_A30_ARCHIVE))" Emus Roms
+	@echo "built $(NDS_WIFI_A30_ARCHIVE)"
+
+nds-wifi-brick-pak: nds-wifi-hooks
+	@test -f "$(NDS_BRICK_SOURCE)/drastic/drastic" || { \
+		echo "missing Brick DraStic runtime in $(NDS_BRICK_SOURCE)" >&2; exit 1; }
+	@$(MAKE) -C "$(NDS_BRICK_SOURCE)" build
+	@rm -rf "$(NDS_WIFI_BRICK_STAGE)"
+	@mkdir -p "$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak" \
+		"$(NDS_WIFI_BRICK_STAGE)/Roms/Nintendo DS (NDS)"
+	@cp -a "$(NDS_BRICK_SOURCE)/drastic" \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/"
+	@cp -a "$(NDS_BRICK_SOURCE)/bin" \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/"
+	@cp "$(NDS_BRICK_SOURCE)/launch.sh" "$(NDS_BRICK_SOURCE)/pak.json" \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/"
+	@cp testing/NDS.pak/brick-settings.json \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/drastic/resources/settings.json"
+	@cp drastic-wifi/build-brick/libdrastic_wifi.so \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/drastic/libs/"
+	@cp testing/NDS.pak/WIFI-README.txt \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/"
+	@chmod 755 "$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/launch.sh" \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/drastic/drastic" \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/drastic/show_hotkeys" \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/bin/"*
+	@sed -i 's|LD_PRELOAD=$$EMU_DIR/libs/libadvdrastic.so|DRASTIC_WIFI_MODE="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo model \|\| echo passthrough)" DRASTIC_WIFI_CYCLE="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo 1 \|\| echo 0)" DRASTIC_WIFI_IRQ="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo 1 \|\| echo 0)" DRASTIC_WIFI_SESSION="/mnt/SDCARD/Tools/tg5040/Netplay.pak/state/session" DRASTIC_WIFI_TRACE="$$LOGS_PATH/NDS-wifi-$$(date +%Y%m%d-%H%M%S).txt" LD_PRELOAD="$$EMU_DIR/libs/libdrastic_wifi.so:$$EMU_DIR/libs/libadvdrastic.so"|' \
+		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/launch.sh"
+	@cp testing/roms/NDS-README.txt \
+		"$(NDS_WIFI_BRICK_STAGE)/Roms/Nintendo DS (NDS)/README.txt"
+	@rm -f "$(NDS_WIFI_BRICK_ARCHIVE)"
+	@cd "$(NDS_WIFI_BRICK_STAGE)" && zip -qr "$(abspath $(NDS_WIFI_BRICK_ARCHIVE))" Emus Roms
+	@echo "built $(NDS_WIFI_BRICK_ARCHIVE)"
+
+nds-wifi-paks: nds-wifi-a30-pak nds-wifi-brick-pak
 
 cores-gpsp:
 	@test -d "$(GPSP_SRC)" || { echo "missing $(GPSP_SRC)"; exit 1; }

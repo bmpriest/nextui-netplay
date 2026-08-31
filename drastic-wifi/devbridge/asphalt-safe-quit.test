@@ -1,0 +1,12 @@
+# Exit Advanced DraStic through its own menu and wait for the wrapper to restore
+# DevBridge ownership. Its menu starts on Load State; Up wraps through About to
+# Exit DraStic. Never replace this with kill -9 during normal testing.
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+all:BTN MENU
+WAIT 500
+all:BTN UP
+all:BTN UP
+all:BTN A
+all:WAIT_FOR devbridge 45000
+all:STATUS

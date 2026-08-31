@@ -1,0 +1,4 @@
+{"address": "1c000c66050607724dd", "arguments": [], "command": "hello", "device": "host", "elapsed_ms": 62, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T23:16:26.890234+00:00", "transport": "adb"}
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "hello", "device": "client", "elapsed_ms": 88, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T23:16:26.978152+00:00", "transport": "adb"}
+{"event": "command", "line": "client:TRM killall -9 drastic", "time": "2026-08-29T23:16:26.978393+00:00"}
+{"address": "2c000c81b5c4078245d", "arguments": ["killall -9 drastic"], "command": "terminal", "device": "client", "elapsed_ms": 135, "event": "remote", "returncode": 0, "stderr": "", "stdout": "", "time": "2026-08-29T23:16:27.125806+00:00", "transport": "adb"}

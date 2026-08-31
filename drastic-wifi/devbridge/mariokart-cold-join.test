@@ -1,0 +1,28 @@
+# Cold-launch both copies. At 20 seconds Mario Kart is in its deterministic
+# idle demo; A returns from that loop to the primary menu on both consoles.
+SESSION drastic-cold-join-{date}-{time} devbridge-sessions
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+STATUS
+all:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+WAIT 20000
+all:BTN A
+WAIT 2500
+all:SCREEN primary-menu
+all:BTN DOWN
+WAIT 300
+all:BTN A
+WAIT 2500
+host:BTN UP
+WAIT 300
+host:BTN A
+WAIT 1000
+host:BTN A
+WAIT 2500
+host:SCREEN host-waiting
+client:SCREEN client-room-visible
+client:BTN A
+WAIT 4000
+STATUS
+host:SCREEN post-join
+client:SCREEN post-join

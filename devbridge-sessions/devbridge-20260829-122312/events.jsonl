@@ -1,0 +1,2 @@
+{"address": "2c000c81b5c4078245d", "arguments": [], "command": "hello", "device": "client", "elapsed_ms": 72, "event": "remote", "returncode": 0, "stderr": "", "stdout": "DEVBRIDGE/1\nprotocol=1\nplatform=tg5040\ninput=yes\n", "time": "2026-08-29T18:23:12.221063+00:00", "transport": "adb"}
+{"event": "command", "line": "WAIT 1000", "time": "2026-08-29T18:23:12.221288+00:00"}

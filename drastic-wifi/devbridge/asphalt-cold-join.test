@@ -1,0 +1,50 @@
+# Cold two-Brick Asphalt: Urban GT 2 local multiplayer regression.
+SESSION asphalt-cold-join-{date}-{time} devbridge-sessions
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+STATUS
+all:OPEN_GAME NDS "Nintendo DS (NDS)/Asphalt GT2.nds"
+WAIT 26000
+all:BTN A
+WAIT 3000
+all:BTN A
+WAIT 3000
+all:BTN START
+WAIT 3000
+all:BTN UP
+WAIT 2000
+all:BTN UP
+WAIT 2000
+all:BTN A
+WAIT 3000
+all:SCREEN multiplayer-menu
+# HOST GAME is selected by default. Choose it, then accept mode, category,
+# car, and track; Asphalt's animated menus need long gaps between presses.
+host:BTN A
+WAIT 2500
+host:BTN A
+WAIT 2500
+host:BTN A
+WAIT 2500
+host:BTN A
+WAIT 2500
+host:BTN A
+WAIT 5000
+host:SCREEN host-advertising
+# JOIN GAME is one item above HOST GAME. Enter the scan, then select the host.
+client:BTN UP
+WAIT 2000
+client:BTN A
+WAIT 10000
+client:SCREEN client-room-visible
+client:BTN A
+# Asphalt sometimes leaves the highlighted room in its scan state after the
+# first synthetic press. A second press is harmless on WAITING FOR CONNECTION
+# and makes cold automated joins reliable.
+WAIT 3000
+client:BTN A
+WAIT 8000
+all:SCREEN post-join
+WAIT 20000
+STATUS
+all:SCREEN twenty-seconds-later

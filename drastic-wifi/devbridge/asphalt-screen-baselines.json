@@ -1,0 +1,36 @@
+{
+  "host": [
+    {
+      "state": "player-2-present",
+      "image": "../../devbridge-sessions/asphalt-cold-join-20260830-213430/post-join-host.png",
+      "crop": [0, 70, 800, 310]
+    },
+    {
+      "state": "player-2-dropped",
+      "image": "../../devbridge-sessions/asphalt-cold-join-20260830-213430/twenty-seconds-later-host.png",
+      "crop": [0, 70, 800, 310]
+    }
+  ],
+  "client": [
+	{
+	  "state": "searching-no-room",
+	  "image": "../../devbridge-sessions/asphalt-cold-join-20260831-070621/client-room-visible-client.png",
+	  "crop": [0, 70, 800, 510]
+	},
+	{
+	  "state": "waiting-connected",
+	  "image": "../../devbridge-sessions/asphalt-cold-join-20260831-082812/twenty-seconds-later-client.png",
+	  "crop": [0, 70, 800, 510]
+	},
+    {
+      "state": "room-visible",
+      "image": "../../devbridge-sessions/asphalt-cold-join-20260830-213430/client-room-visible-client.png",
+      "crop": [0, 70, 800, 510]
+    },
+    {
+      "state": "communication-error",
+      "image": "../../devbridge-sessions/asphalt-cold-join-20260830-213430/twenty-seconds-later-client.png",
+      "crop": [170, 265, 850, 500]
+    }
+  ]
+}

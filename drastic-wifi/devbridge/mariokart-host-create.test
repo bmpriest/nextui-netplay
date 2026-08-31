@@ -1,0 +1,18 @@
+# Start from Mario Kart's primary menu on both Bricks. Enter the local
+# multiplayer browser and create a Normal group on the host.
+SESSION drastic-host-room-{date}-{time} devbridge-sessions
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+all:BTN DOWN
+WAIT 300
+all:BTN A
+WAIT 2500
+all:SCREEN room-browser
+host:BTN UP
+WAIT 300
+host:BTN A
+WAIT 1000
+host:BTN A
+WAIT 2500
+host:SCREEN host-waiting
+client:SCREEN client-room-visible
