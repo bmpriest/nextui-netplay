@@ -1,0 +1,96 @@
+# Advance Wars 2 - networked GBA link cable (gpSP), Multi-Pak battle.
+#
+# Each device runs its own game; only link-cable traffic crosses the network.
+# LINK -> MULTI-PAK (host 1P, guest 2P) -> Bean Island -> guest switches CO ->
+# day 1: host ends turn, guest builds a tank and ends turn -> day 2 back on
+# the host. Both logs must show link traffic with nothing dropped.
+#
+# Each device shows its own side, so references differ by platform and by
+# role. Run with run.sh, which fills in {host_refs}, {guest_refs} and {helpers}.
+#
+# Short holds (0.12s) on purpose: the mode wheel auto-repeats on longer ones.
+#
+# The menus scroll a newspaper background and a text marquee under everything,
+# so a correct screen scores 6-12 over the whole picture. Menu checks crop to
+# the opaque foreground (the highlighted label, the link icons), where noise is
+# under 8 and other screens are 40+ away; thresholds keep 2.5x margin over the
+# noise measured on both devices. Regions are fractions of the screen.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME GBA "Game Boy Advance (GBA)/Advance Wars 2 - Black Hole Rising (USA).zip"
+WAIT 3000
+guest:OPEN_GAME GBA "Game Boy Advance (GBA)/Advance Wars 2 - Black Hole Rising (USA).zip"
+all:WAIT_FOR game 30000
+WAIT 12000
+
+# Intro -> title -> mode wheel, which opens on CAMPAIGN.
+host:TRM sh {helpers}/keys.sh --bg start:0.25:3 start:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg start:0.25:3 start:0.25:0
+WAIT 7000
+host:VERIFY_WAIT {host_refs}/aw2-mode.png 6000 region=0.05,0.44,0.55,0.2 threshold=20
+guest:VERIFY_WAIT {guest_refs}/aw2-mode.png 6000 region=0.05,0.44,0.55,0.2 threshold=20
+
+# Down three: VERSUS, DESIGN ROOM, LINK.
+host:TRM sh {helpers}/keys.sh --bg down:0.12:1.2 down:0.12:1.2 down:0.12:0
+guest:TRM sh {helpers}/keys.sh --bg down:0.12:1.2 down:0.12:1.2 down:0.12:0
+WAIT 4500
+host:VERIFY_WAIT {host_refs}/aw2-link.png 6000 region=0.05,0.44,0.55,0.2 threshold=20
+guest:VERIFY_WAIT {guest_refs}/aw2-link.png 6000 region=0.05,0.44,0.55,0.2 threshold=20
+
+host:TRM sh {helpers}/keys.sh --bg a:0.12:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.12:0
+WAIT 3000
+host:VERIFY_WAIT {host_refs}/aw2-multipak.png 6000 region=0.41,0.44,0.52,0.18 threshold=20
+guest:VERIFY_WAIT {guest_refs}/aw2-multipak.png 6000 region=0.41,0.44,0.52,0.18 threshold=20
+
+# MULTI-PAK: the games find each other; 1P is asked to start.
+host:TRM sh {helpers}/keys.sh --bg a:0.12:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.12:0
+WAIT 5000
+host:VERIFY_WAIT {host_refs}/aw2-ready-host.png 8000 region=0.33,0.36,0.32,0.27 threshold=30
+guest:VERIFY_WAIT {guest_refs}/aw2-ready-guest.png 8000 region=0.33,0.36,0.32,0.27 threshold=30
+
+host:TRM sh {helpers}/keys.sh start:0.12:6
+host:VERIFY_WAIT {host_refs}/aw2-map.png 10000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/aw2-map.png 10000 threshold=15
+
+# Bean Island; then the guest moves its own CO cursor, which the host sees.
+host:TRM sh {helpers}/keys.sh a:0.12:4
+guest:TRM sh {helpers}/keys.sh down:0.12:1.5
+# Only the 2P portrait changes (Grit -> Sasha): 8 apart over the whole screen,
+# 36 over the portrait alone.
+host:VERIFY_WAIT {host_refs}/aw2-teams-host.png 6000 region=0.58,0.33,0.22,0.29
+guest:VERIFY_WAIT {guest_refs}/aw2-teams-guest.png 6000 region=0.58,0.33,0.22,0.29
+
+host:TRM sh {helpers}/keys.sh --bg a:0.12:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.12:0
+WAIT 3000
+# The rules text box: still while the map behind it scrolls (noise under 3,
+# 11+ from the Teams prompt).
+host:VERIFY_WAIT {host_refs}/aw2-rules.png 6000 region=0.0,0.75,1.0,0.2 threshold=6
+guest:VERIFY_WAIT {guest_refs}/aw2-rules.png 6000 region=0.0,0.75,1.0,0.2 threshold=6
+
+host:TRM sh {helpers}/keys.sh a:0.12:8
+host:VERIFY_WAIT {host_refs}/aw2-day1-host.png 8000
+guest:VERIFY_WAIT {guest_refs}/aw2-day1-guest.png 8000
+
+# Host: open the map menu at the HQ, wrap up to End.
+host:TRM sh {helpers}/keys.sh a:0.12:2 up:0.12:0.8 a:0.12:4
+host:VERIFY_WAIT {host_refs}/aw2-guest-turn-host.png 8000
+guest:VERIFY_WAIT {guest_refs}/aw2-guest-turn-guest.png 8000
+
+# Guest: step onto the base left of the HQ, build a Tank, then End.
+guest:TRM sh {helpers}/keys.sh a:0.15:2 b:0.15:1.2 left:0.15:1.2 a:0.15:1.5 down:0.15:0.8 down:0.15:0.8 down:0.15:0.8 a:0.15:2
+guest:TRM sh {helpers}/keys.sh right:0.15:1 a:0.15:1.2 up:0.15:0.8 a:0.15:4
+# Day 2 looks like day 1 everywhere except the host's funds (11000 -> 22000)
+# and the guest's new tank: 0.4 apart over the whole screen, 23 and 54 over
+# those squares. Regions are fractions of the screen, so they hold on any
+# resolution; they are tied to the roles, not to the devices.
+host:VERIFY_WAIT {host_refs}/aw2-day2-host.png 8000 region=0.8,0.05,0.1,0.1
+guest:VERIFY_WAIT {guest_refs}/aw2-day2-guest.png 8000 region=0.8,0.7,0.1,0.1
+
+host:TRM sh {helpers}/check.sh link Advance_Wars_2 55
+guest:TRM sh {helpers}/check.sh link Advance_Wars_2 55
+
+all:QUIT_GAME
+all:WAIT_FOR devbridge 30000

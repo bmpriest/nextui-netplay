@@ -1,0 +1,75 @@
+# Mario Kart: Super Circuit - instanced GBA link (paired mGBA), VS race.
+#
+# MULTI-PLAYER -> Multi-Pak link (host P1, guest P2) -> VS -> 100cc -> host
+# Mario, guest Yoshi -> Peach Circuit -> two minutes of random driving -> both
+# logs must show the instanced link agreed and no divergence.
+#
+# Each device shows its own console, so references differ by platform and by
+# role. Run with run.sh, which fills in {host_refs}, {guest_refs} and {helpers}.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip"
+WAIT 3000
+guest:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip"
+all:WAIT_FOR game 30000
+WAIT 12000
+
+host:VERIFY_WAIT {host_refs}/mk-title.png 6000
+guest:VERIFY_WAIT {guest_refs}/mk-title.png 6000
+
+# MULTI-PLAYER, on both.
+host:TRM sh {helpers}/keys.sh --bg down:0.25:0.8 a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg down:0.25:0.8 a:0.25:0
+WAIT 4000
+
+# MULTI-PAK LINK. No check on the highlighted entry above: it differs from the
+# plain title by less than the animated background does. A lost press shows
+# up here instead, as single-player starting. Linked, the game finds its
+# partner and numbers the players.
+host:TRM sh {helpers}/keys.sh --bg a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 6000
+host:VERIFY_WAIT {host_refs}/mk-link-host.png 6000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/mk-link-guest.png 6000 threshold=15
+
+host:TRM sh {helpers}/keys.sh --bg a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/mk-choose-host.png 6000
+guest:VERIFY_WAIT {guest_refs}/mk-choose-guest.png 6000
+
+# Thresholds: these menus scroll an animated background, so a matching screen
+# scores up to ~9. CHOOSE A GAME and the cc screen sit only 11-14 apart and
+# keep the default 10; the link, character and track screens are 37+ from
+# anything else and get 15.
+# Player 1 picks VS, then 100cc; the guest's console follows over the link.
+host:TRM sh {helpers}/keys.sh down:0.25:1 a:0.25:4
+host:VERIFY_WAIT {host_refs}/mk-cc-host.png 6000
+guest:VERIFY_WAIT {guest_refs}/mk-cc-guest.png 6000
+host:TRM sh {helpers}/keys.sh down:0.25:0.8 a:0.25:4
+host:VERIFY_WAIT {host_refs}/mk-character-host.png 6000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/mk-character-guest.png 6000 threshold=15
+
+# Host Mario (up-left of the start square), guest Yoshi (right of it).
+host:TRM sh {helpers}/keys.sh --bg up:0.25:0.6 left:0.25:0.6 a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg right:0.25:0.6 a:0.25:0
+WAIT 3000
+host:TRM sh {helpers}/keys.sh --bg a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/mk-track-host.png 6000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/mk-track-guest.png 6000 threshold=15
+
+# Mushroom Cup -> Peach Circuit -> confirm. Never B here: it backs out.
+host:TRM sh {helpers}/keys.sh a:0.25:2 a:0.25:3 a:0.25:8
+
+host:TRM sh {helpers}/gameplay.sh --bg 120 a a a a+left a+right a+left a+right a+r a+l a+up
+guest:TRM sh {helpers}/gameplay.sh --bg 120 a a a a+left a+right a+left a+right a+r a+l a+up
+WAIT 123000
+all:SCREEN mk-after-race
+
+host:TRM sh {helpers}/check.sh instanced Mario_Kart 50
+guest:TRM sh {helpers}/check.sh instanced Mario_Kart 50
+
+all:QUIT_GAME
+all:WAIT_FOR devbridge 30000

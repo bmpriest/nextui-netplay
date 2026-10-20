@@ -20,9 +20,10 @@ cores/*
 wrapped/
 dist/
 logs/
-testing/results/*
 docs/evals
-.cache/
+devbridge-sessions/
+testing/results/*
 
+.cache/
 bin/*/*.elf
 bin/*/statecheck

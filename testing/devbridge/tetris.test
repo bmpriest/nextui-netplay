@@ -1,0 +1,52 @@
+# Tetris - instanced Game Boy link (paired Gambatte), Mario vs Luigi.
+#
+# Reset -> 2PLAYER on both -> host is master and picks the music -> each player
+# picks a different handicap height (host 1, guest 2) -> 60 seconds of random
+# play -> both logs must show the paired consoles agreeing.
+#
+# Each device shows its own console, so references differ by platform and by
+# role. Run with run.sh, which fills in {host_refs}, {guest_refs} and {helpers}.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME GB "Game Boy (GB)/Tetris (World) (Rev 1).zip"
+WAIT 3000
+guest:OPEN_GAME GB "Game Boy (GB)/Tetris (World) (Rev 1).zip"
+all:WAIT_FOR game 30000
+WAIT 10000
+
+# The title falls into its demo after a few idle seconds, faster than remote
+# commands can follow it. So both devices soft-reset and select 2PLAYER on
+# their own clocks, then both press START together.
+host:TRM sh {helpers}/keys.sh --bg a+b+start+select:0.4:4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 start:0.3:0
+guest:TRM sh {helpers}/keys.sh --bg a+b+start+select:0.4:4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 sleep:0.6 start:0.3:0
+WAIT 9000
+
+# These screens are static and match exactly (difference 0.00), so a tight
+# threshold of 5 keeps them well apart (music vs VS is 13 on the Brick).
+# Linked, this is the master's music screen with both game types greyed out.
+# A failed handshake falls back to the 1-player screen instead, which differs
+# by one lit box: less than the cursor blink, so this check cannot tell them
+# apart. MARIO VS. LUIGI below is what proves the link.
+host:VERIFY_WAIT {host_refs}/tetris-music.png 6000 threshold=5
+guest:VERIFY_WAIT {guest_refs}/tetris-music.png 6000 threshold=5
+
+host:TRM sh {helpers}/keys.sh start:0.3:3
+host:VERIFY_WAIT {host_refs}/tetris-vs-host.png 6000 threshold=5
+guest:VERIFY_WAIT {guest_refs}/tetris-vs-guest.png 6000 threshold=5
+
+# Different heights, chosen by each player on their own console.
+host:TRM sh {helpers}/keys.sh --bg right:0.2:1.2 a:0.2:0
+guest:TRM sh {helpers}/keys.sh --bg right:0.2:0.4 right:0.2:0.4 a:0.2:0
+WAIT 3000
+host:TRM sh {helpers}/keys.sh start:0.2:3
+
+host:TRM sh {helpers}/gameplay.sh --bg 60 left right left right a b a down
+guest:TRM sh {helpers}/gameplay.sh --bg 60 left right left right a b a down
+WAIT 63000
+all:SCREEN tetris-after-play
+
+host:TRM sh {helpers}/check.sh instanced Tetris 45
+guest:TRM sh {helpers}/check.sh instanced Tetris 45
+
+all:QUIT_GAME
+all:WAIT_FOR devbridge 30000
