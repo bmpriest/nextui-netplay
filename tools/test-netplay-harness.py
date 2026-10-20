@@ -119,6 +119,18 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(HARNESS.resolve_client(FakeRemote(), args),
                          ("192.168.0.144", None))
 
+    def test_mixed_platform_pair(self):
+        args = HARNESS.build_parser().parse_args([
+            "doctor", "--host", "192.168.0.41", "--client", "192.168.0.143",
+            "--host-platform", "h700",
+        ])
+        self.assertEqual(HARNESS.platform_for(args, "host"), "h700")
+        self.assertEqual(HARNESS.platform_for(args, "client"), "tg5040")
+        destination, _ = HARNESS.artifact_destination(
+            "netplay-app", HARNESS.platform_for(args, "host"))
+        self.assertEqual(destination,
+                         "/mnt/SDCARD/Tools/h700/Netplay.pak/bin/h700/netplay.elf")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,10 @@ if [ -f "$NETPLAY_STATE/session" ]; then
 	# jitter on traffic as sparse as a few input bytes per frame. Re-applied
 	# here rather than only at arm time because it comes back whenever the
 	# interface reassociates. The app puts the prior value back on Turn off.
-	np_powersave off
+	# Only with "Disable Wi-Fi Power Saving" on, which is off by default.
+	if grep -q '^disable_powersave=1$' "$NETPLAY_STATE/settings" 2>/dev/null; then
+		np_powersave off || :
+	fi
 
 	# The app joins the ad hoc network when you pick a peer, but the platform
 	# re-establishes its own WiFi once the app exits, so by the time a game

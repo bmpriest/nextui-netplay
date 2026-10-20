@@ -13,6 +13,7 @@
 SUPPORTED_PLATFORMS = tg5040 tg5050 my282 my355 h700
 TARGET  = netplay.elf
 BROKER_TARGET = netplay-broker.elf
+WIFIPS_TARGET = netplay-wifips.elf
 NEXTUI ?= ../../../NextUI
 
 ifeq (,$(PLATFORM))
@@ -60,6 +61,7 @@ BROKER_LDFLAGS = $(filter -L%,$(LDFLAGS)) -ldl
 
 PRODUCT = ../bin/$(PLATFORM)/$(TARGET)
 BROKER_PRODUCT = ../bin/$(PLATFORM)/$(BROKER_TARGET)
+WIFIPS_PRODUCT = ../bin/$(PLATFORM)/$(WIFIPS_TARGET)
 
 all:
 	@mkdir -p ../bin/$(PLATFORM)
@@ -67,8 +69,10 @@ all:
 	@echo "built $(PRODUCT)"
 	$(CROSS_COMPILE)gcc broker.c netsetup.c -o $(BROKER_PRODUCT) $(CFLAGS) $(BROKER_LDFLAGS)
 	@echo "built $(BROKER_PRODUCT)"
+	$(CROSS_COMPILE)gcc wifi-ps.c -o $(WIFIPS_PRODUCT) -O2 -s -Wall -std=gnu99
+	@echo "built $(WIFIPS_PRODUCT)"
 
 clean:
-	rm -f ../bin/*/$(TARGET) ../bin/*/$(BROKER_TARGET)
+	rm -f ../bin/*/$(TARGET) ../bin/*/$(BROKER_TARGET) ../bin/*/$(WIFIPS_TARGET)
 
 .PHONY: all clean

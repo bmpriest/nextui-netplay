@@ -170,6 +170,7 @@ static struct {
 	uint32_t rtt_token;
 	struct timeval rtt_sent_at;
 	bool     rtt_outstanding;
+	bool     rtt_skip_first;  /* first echo of a connection - see the echo handler */
 	struct timeval rtt_last_probe;
 
 	struct timeval last_run;      /* last retro_run, per NetLink_markFrame */
@@ -567,6 +568,7 @@ static void* worker(void* arg) {
 			nl.peer_session_identity_ready = false;
 			nl.checkpoint_ack_ready = false;
 			nl.connected = true;
+			nl.rtt_skip_first = true;
 			nl.connect_event = true;
 			nl.connection_generation++;
 			if (!nl.connection_generation) nl.connection_generation++;
@@ -776,12 +778,30 @@ static void* worker(void* arg) {
 				long sec = now.tv_sec - nl.rtt_sent_at.tv_sec;
 				long usec = now.tv_usec - nl.rtt_sent_at.tv_usec;
 				long long total = (long long)sec * 1000000LL + usec;
+				/* Test hook: the first round trip of each process arrives this
+				 * much late, as from a peer still loading its game. */
+				static bool slow_first_applied;
+				if (!slow_first_applied) {
+					const char* v = getenv("NETLINK_TEST_SLOW_FIRST_RTT_MS");
+					if (v) total += atoll(v) * 1000LL;
+					slow_first_applied = true;
+				}
 				if (total < 0) total = 0;
 				if (total > UINT32_MAX) total = UINT32_MAX;
-				nl.rtt_us[nl.rtt_next] = (uint32_t)total;
-				nl.rtt_next = (nl.rtt_next + 1) % RTT_SAMPLES;
-				if (nl.rtt_count < RTT_SAMPLES) nl.rtt_count++;
 				nl.rtt_outstanding = false;
+				/* The first probe of a connection goes out while the peer may
+				 * still be loading its game, and its echo then measures that
+				 * rather than the link: 280-800 ms on H700/Brick pairs whose link
+				 * answered in 10-30 ms. Sized from the maximum, that one sample
+				 * alone set a 20-frame delay. Drop it; later probes describe the
+				 * link. */
+				if (nl.rtt_skip_first) {
+					nl.rtt_skip_first = false;
+				} else {
+					nl.rtt_us[nl.rtt_next] = (uint32_t)total;
+					nl.rtt_next = (nl.rtt_next + 1) % RTT_SAMPLES;
+					if (nl.rtt_count < RTT_SAMPLES) nl.rtt_count++;
+				}
 			}
 			pthread_mutex_unlock(&nl.lock);
 		}

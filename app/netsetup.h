@@ -80,7 +80,13 @@ void NS_disarm(void);
 /* Wi-Fi power save costs tens of milliseconds on the sparse per-frame traffic
  * netplay generates. Held off for as long as a session is armed; the prior
  * value is recorded and put back by NS_disarm. */
-void NS_wifiPowerSaveDisable(void);
+void NS_wifiPowerSaveDisable(void);   /* no-op when the setting is off */
+/* H700: the radio's power save only changes when its driver is reloaded. True
+ * when turning it off would need that reload (platform and current state). */
+bool NS_wifiPowerSaveNeedsReload(void);
+/* Reload the driver with power save off - several seconds without WiFi. Lasts
+ * until the device reboots. */
+bool NS_wifiPowerSaveReload(char* err, int errlen);
 void NS_wifiPowerSaveRestore(void);
 
 /* Put the platform's own WiFi back. Safe to call at any time. The stranded
@@ -163,6 +169,7 @@ typedef struct {
 	bool        verbose_logs; /* retain a complete immutable log for each game launch */
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
+	bool        disable_powersave; /* radio power save off while a session is armed */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;

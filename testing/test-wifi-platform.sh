@@ -104,12 +104,83 @@ check "dhcp client" "$(run dhcp-kind)" "dhclient"
 run dhcp-start; sleep 0.2
 called dhclient && ok "dhclient used" || bad "dhclient not used"
 check "wifi_init found under SYSTEM_PATH" "$(run wifi-init-path)" "$SYSTEM_PATH/etc/wifi/wifi_init.sh"
-check "power save is a no-op" "$(run powersave off; echo $?)" "1"
+# 8821cs: nl80211 power save is accepted and ignored, so state is the driver's
+# own ps_info and "off" is only reachable by reloading the module.
+RTW="$ROOT/rtw"; mkdir -p "$RTW/net"
+export NP_RTW_PS_INFO="$RTW/ps_info" NP_RTW_KO="$RTW/8821cs.ko" NP_SYS_NET="$RTW/net" \
+	NP_RTW_RF="$RTW/no-rf" NP_RTW_SLOW_FLAG="$RTW/slow"
+printf ' LPS mode: MAX\n' > "$RTW/ps_info"
+check "power save read from the driver" "$(run powersave-get)" "on"
+run powersave-needs-reload && ok "power save on needs a reload" || bad "reload not requested"
+run powersave off && bad "runtime off claimed success on 8821cs" || ok "runtime off refused while in LPS"
+mkstub iw 'echo "Power save: off"'
+check "iw's answer is not trusted on 8821cs" "$(run powersave-get)" "on"
+rm -f "$BIN/iw"
+: > "$RTW/8821cs.ko"
+mkstub sleep 'exit 0'
+mkstub rfkill 'exit 0'
+mkstub rmmod 'rm -rf "'"$RTW"'/net/wlan0"; printf " LPS mode: MAX\n" > "'"$RTW"'/ps_info"'
+mkstub insmod 'mkdir -p "'"$RTW"'/net/wlan0"; case "$*" in *rtw_power_mgnt=0*) printf " LPS mode: NO LPS\n" > "'"$RTW"'/ps_info";; esac'
+cat > "$SYSTEM_PATH/etc/wifi/wifi_init.sh" <<EOF
+#!/bin/sh
+echo "wifi_init \$1" >> "$ROOT/calls"
+case "\$1" in start) touch "$ROOT/ip-up" ;; stop) rm -f "$ROOT/ip-up" ;; esac
+EOF
+: > "$ROOT/calls"
+run powersave-reload off 2>/dev/null && ok "reload succeeded" || bad "reload failed"
+check "stop, unload, load with rtw_power_mgnt=0, start - in that order" \
+	"$(sed -n -e 's/^wifi_init \(.*\)/\1/p' -e 's/^rmmod .*/unload/p' \
+		-e 's/^insmod .*rtw_power_mgnt=0$/load0/p' "$ROOT/calls" | tr '\n' ' ')" \
+	"stop unload load0 start "
+check "driver now reports power save off" "$(run powersave-get)" "off"
+run powersave-needs-reload && bad "reload requested again" || ok "no second reload needed"
+run powersave off && ok "runtime off is a no-op success once reloaded" || bad "off refused after reload"
+# A radio that does not enumerate on the first load gets one longer power-off.
+mkstub insmod 'n=$(cat "'"$RTW"'/tries" 2>/dev/null || echo 0); echo $((n+1)) > "'"$RTW"'/tries"
+[ "$n" -ge 1 ] && mkdir -p "'"$RTW"'/net/wlan0"; exit 0'
+: > "$ROOT/calls"
+run powersave-reload off 2>/dev/null && ok "slow radio recovered on the retry" || bad "retry did not recover"
+check "driver loaded twice for a slow radio" "$(cat "$RTW/tries")" "2"
+mkstub insmod 'exit 1'
+run powersave-reload off 2>/dev/null; check "radio that never returns is a failure" "$?" "1"
+rm -f "$BIN/sleep" "$BIN/rmmod" "$BIN/insmod" "$BIN/rfkill"
+printf '#!/bin/sh\n' > "$SYSTEM_PATH/etc/wifi/wifi_init.sh"
+unset NP_RTW_PS_INFO NP_RTW_KO NP_SYS_NET NP_RTW_RF NP_RTW_SLOW_FLAG
 # The regression this whole change exists for: a supplicant that reports
 # ASSOCIATED but has not finished the handshake must not count as associated,
 # or DHCP goes out into a gap where it is dropped.
 mkstub wpa_cli 'case "$*" in *status*) echo "ssid=home"; echo "wpa_state=ASSOCIATED";; esac'
 run assoc && bad "ASSOCIATED counted as ready" || ok "ASSOCIATED is not treated as ready"
+
+echo
+echo "== no iw: the bundled nl80211 helper stands in"
+newenv my355
+# Pointed at nothing: this checkout's own bin/ may hold a real build.
+check "power save without iw or helper is a no-op" "$(NP_WIFIPS="$ROOT/none" run powersave off; echo $?)" "1"
+check "power save state unknown without iw or helper" "$(NP_WIFIPS="$ROOT/none" run powersave-get; echo $?)" "1"
+# Found next to the launcher when run as a program, which is how the app calls this file.
+PAK="$ROOT/my355-pak"
+mkdir -p "$PAK/launcher" "$PAK/bin/my355"
+cp "$WP" "$PAK/launcher/"
+cat > "$PAK/bin/my355/netplay-wifips.elf" <<EOF
+#!/bin/sh
+echo "wifips \$*" >> "$ROOT/calls"
+[ -n "\${2:-}" ] && echo "\$2" > "$ROOT/ps-state"
+cat "$ROOT/ps-state" 2>/dev/null || echo on
+EOF
+chmod 755 "$PAK/bin/my355/netplay-wifips.elf"
+check "power save read through the helper" "$(sh "$PAK/launcher/wifi-platform.sh" powersave-get)" "on"
+sh "$PAK/launcher/wifi-platform.sh" powersave off &&
+	ok "power save set through the helper" || bad "helper power save failed"
+called "wifips wlan0 off" && ok "helper given iface and state" || bad "helper not called with wlan0 off"
+check "helper reports the new state" "$(sh "$PAK/launcher/wifi-platform.sh" powersave-get)" "off"
+check "sourced callers find it through NETPLAY_PAK" \
+	"$(NETPLAY_PAK="$PAK" sh -c '. "$1"; np_powersave_get' sh "$WP")" "off"
+run powersave-needs-reload && bad "nl80211 platform asked for a reload" || ok "nl80211 platform never reloads"
+mkstub iw 'case "$*" in *"get power_save"*) echo "Power save: on";; esac'
+: > "$ROOT/calls"
+check "iw still preferred where present" "$(sh "$PAK/launcher/wifi-platform.sh" powersave-get)" "on"
+called wifips && bad "helper ran although iw exists" || ok "helper unused when iw exists"
 
 echo
 echo "== h700: ctrl_interface is read from -C, not guessed"

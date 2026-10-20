@@ -78,6 +78,42 @@ NETPLAY_BOOT_ID_PATH="$ROOT/boot-id" "$NP/launcher/session-cleanup.sh" || rc=$?
 [ -f "$STATE/session" ] \
 	&& ok "legacy session without boot identity is preserved" \
 	|| bad "legacy session was removed without proof it was stale"
+
+echo
+echo "== Wi-Fi power save setting"
+cat > "$ROOT/fake-bin/iw" <<EOF
+#!/bin/sh
+echo "iw \$*" >> "$ROOT/iw-calls"
+EOF
+chmod 755 "$ROOT/fake-bin/iw"
+prelaunch() {
+	rm -f "$ROOT/iw-calls"
+	( PATH="$ROOT/fake-bin:$PATH" NETPLAY_PAK="$NP" \
+		NETPLAY_BOOT_ID_PATH="$ROOT/boot-id" . "$NP/launcher/pre-launch.sh" ) >/dev/null 2>&1
+}
+printf 'role=host\n' > "$STATE/session"
+rm -f "$STATE/settings"
+prelaunch
+grep -q "power_save" "$ROOT/iw-calls" 2>/dev/null \
+	&& bad "power save touched by default" \
+	|| ok "power save left to the platform by default"
+printf 'disable_powersave=1\n' > "$STATE/settings"
+prelaunch
+grep -q "set power_save off" "$ROOT/iw-calls" 2>/dev/null \
+	&& ok "setting on disables power save for an armed launch" \
+	|| bad "setting on left power save alone"
+printf 'disable_powersave=0\n' > "$STATE/settings"
+prelaunch
+grep -q "power_save" "$ROOT/iw-calls" 2>/dev/null \
+	&& bad "power save touched with the setting off" \
+	|| ok "setting off leaves power save to the platform"
+printf 'disable_powersave=1\n' > "$STATE/settings"
+rm -f "$STATE/session"
+prelaunch
+grep -q "power_save" "$ROOT/iw-calls" 2>/dev/null \
+	&& bad "unarmed launch touched power save" \
+	|| ok "unarmed launch leaves power save alone"
+rm -f "$STATE/settings" "$ROOT/fake-bin/iw"
 rm -f "$STATE/session"
 
 # A stand-in minarch that just reports the arguments and env it was handed.

@@ -362,7 +362,7 @@ app:
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
 			CMD='sh -c "cd app && make PLATFORM='$$p' NEXTUI=/opt/nextui-src"' || exit 1; \
 	done
-	@ls -la bin/*/netplay.elf bin/*/netplay-broker.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
+	@ls -la bin/*/netplay.elf bin/*/netplay-broker.elf bin/*/netplay-wifips.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
 test:
 	@./shim/test/run.sh
@@ -441,6 +441,7 @@ dist-base: $(BASE_DIST_CHECKS)
 		cp bin/$$p/netplay_shim.so "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay-broker.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
+		cp bin/$$p/netplay-wifips.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		done
 	@chmod 755 "$(BASE_STAGE)/$(PAK)/launch.sh" "$(BASE_STAGE)/$(PAK)/launcher"/*
 	@find "$(BASE_STAGE)" -name '.DS_Store' -delete

@@ -52,7 +52,8 @@ NP_PROC="${NP_PROC:-/proc}"
 #   NP_INIT      path to the platform's wifi_init.sh, or empty
 #   NP_HOOK      1 if a `wpa_cli -a <script>` DHCP hook must be replayed with
 #                the supplicant (H700 drives DHCP entirely from that hook)
-#   NP_PS        iw | none                power-save control
+#   NP_PS        nl80211 | rtw-reload     how radio power save is switched:
+#                at runtime through nl80211, or only by reloading the driver
 #   NP_CTRL      default supplicant ctrl_interface when none is running
 ###########################################################################
 
@@ -62,7 +63,7 @@ np_platform_profile() {
 	NP_DHCP_ARGS=
 	NP_INIT=
 	NP_HOOK=0
-	NP_PS=iw
+	NP_PS=nl80211
 	NP_CTRL=
 
 	case "$PLATFORM" in
@@ -103,7 +104,7 @@ np_platform_profile() {
 		NP_DHCP=dhclient
 		NP_INIT="$SYSTEM_PATH/etc/wifi/wifi_init.sh"
 		NP_HOOK=1
-		NP_PS=none
+		NP_PS=rtw-reload
 		NP_CTRL=/tmp/wifi/sockets
 		;;
 	esac
@@ -411,20 +412,133 @@ np_hook_replay() {
 # power save
 ###########################################################################
 
-np_powersave_get() {
-	np_platform_profile
-	[ "$NP_PS" = iw ] || return 1
-	np_have iw || return 1
-	iw dev "$NP_WIFI_IF" get power_save 2>/dev/null |
-		sed -n 's/.*Power save: *//p' | head -1
+# `iw` where the image has it; otherwise the pak's own nl80211 helper, which is
+# the same two netlink calls `iw` would make, for images that ship without iw.
+np_wifips_helper() {
+	if [ -n "${NP_WIFIPS:-}" ]; then
+		_h="$NP_WIFIPS"
+	elif [ -n "${NETPLAY_PAK:-}" ]; then
+		_h="$NETPLAY_PAK/bin/$PLATFORM/netplay-wifips.elf"
+	else
+		# Run as a program from the pak's launcher/ directory.
+		_h="$(dirname -- "$0")/../bin/$PLATFORM/netplay-wifips.elf"
+	fi
+	[ -x "$_h" ] && echo "$_h"
 }
 
+# H700's 8821cs vendor driver accepts nl80211 power save and reports it back,
+# but never applies it: the radio stays in LPS at whatever rtw_power_mgnt the
+# module was loaded with (2, maximum, from BaseOS's bare insmod). The module
+# parameter is read once at load, so the only real switch is a reload. It then
+# holds until the next boot - WiFi restarts and sleep do not reload the driver.
+: "${NP_RTW_MODULE:=8821cs}"
+: "${NP_RTW_KO:=/lib/modules/8821cs.ko}"
+: "${NP_RTW_PS_INFO:=/proc/net/rtl8821cs/$NP_WIFI_IF/ps_info}"
+: "${NP_RTW_RF:=/sys/class/misc/sunxi-wlan/rf-ctrl}"
+: "${NP_RTW_SLOW_FLAG:=/data/wifi-slow-radio}"
+: "${NP_SYS_NET:=/sys/class/net}"
+
+# The driver's own view: "LPS mode: MAX" (or MIN/DTIM/SELF_DEFINED) is power
+# save, anything else is the active mode a reload with rtw_power_mgnt=0 gives.
+np_rtw_powersave_get() {
+	_mode=$(sed -n 's/^ *LPS mode: *//p' "$NP_RTW_PS_INFO" 2>/dev/null | head -1)
+	case "$_mode" in
+	"") return 1 ;;
+	MAX*|MIN*|DTIM*|SELF*) echo on ;;
+	*) echo off ;;
+	esac
+}
+
+np_rtw_log() { echo "wifi-platform: $*" >&2; }
+
+# One load attempt, with BaseOS rcS's own preparation: with the radio powered
+# off, ask the platform to drop the stale SDIO card before the driver powers it
+# up again, or the probe races the driver's own rescan.
+np_rtw_load() {  # np_rtw_load <rtw_power_mgnt> <quarter-seconds to wait>
+	if [ -w "$NP_RTW_RF/scan_device" ] && read -r _pw < "$NP_RTW_RF/power_state" 2>/dev/null &&
+	   [ "$_pw" = 0 ]; then
+		printf '1\n' > "$NP_RTW_RF/scan_device"
+		_w=0
+		for _card in /sys/bus/sdio/devices/*; do
+			while [ -d "$_card" ] && [ "$_w" -lt 20 ]; do sleep 0.05; _w=$((_w + 1)); done
+		done
+	fi
+	insmod "$NP_RTW_KO" "rtw_power_mgnt=$1" 2>/dev/null
+	_w=0
+	while [ ! -d "$NP_SYS_NET/$NP_WIFI_IF" ] && [ "$_w" -lt "$2" ]; do
+		sleep 0.25; _w=$((_w + 1))
+	done
+	[ -d "$NP_SYS_NET/$NP_WIFI_IF" ]
+}
+
+# Reload the driver with power save on or off, then bring the platform's client
+# stack back. Several seconds by design: the radio is held powered off for as
+# long as BaseOS holds it at boot, longer on units it has marked slow to reset,
+# because a quick re-power is exactly what those units fail on.
+np_rtw_reload() {  # np_rtw_reload on|off
+	np_platform_profile
+	[ "$NP_PS" = rtw-reload ] || return 1
+	case "$1" in on) _mgnt=2 ;; off) _mgnt=0 ;; *) return 2 ;; esac
+	[ -f "$NP_RTW_KO" ] || { np_rtw_log "no $NP_RTW_KO"; return 1; }
+	_hold=2; [ -e "$NP_RTW_SLOW_FLAG" ] && _hold=5
+
+	np_rtw_log "reloading $NP_RTW_MODULE with rtw_power_mgnt=$_mgnt (radio off ${_hold}s)"
+	np_wifi_init stop
+	rmmod "$NP_RTW_MODULE" 2>/dev/null
+	sleep "$_hold"
+	if ! np_rtw_load "$_mgnt" 40; then
+		np_rtw_log "no $NP_WIFI_IF after the first load; retrying after a longer power-off"
+		rmmod "$NP_RTW_MODULE" 2>/dev/null
+		sleep 5
+		np_rtw_load "$_mgnt" 40 || { np_rtw_log "driver did not come back"; return 1; }
+	fi
+	rfkill unblock wifi 2>/dev/null
+	ip link set "$NP_WIFI_IF" up 2>/dev/null
+	np_wifi_init start
+	_w=0
+	while ! np_has_ip && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+	np_has_ip || { np_rtw_log "driver reloaded but no address yet"; return 3; }
+	np_rtw_log "reloaded, power save $(np_rtw_powersave_get), address $(np_ip)"
+	return 0
+}
+
+np_powersave_get() {
+	np_platform_profile
+	if [ "$NP_PS" = rtw-reload ]; then
+		np_rtw_powersave_get
+		return
+	fi
+	if np_have iw; then
+		iw dev "$NP_WIFI_IF" get power_save 2>/dev/null |
+			sed -n 's/.*Power save: *//p' | head -1
+		return 0
+	fi
+	_h=$(np_wifips_helper) || return 1
+	"$_h" "$NP_WIFI_IF" 2>/dev/null
+}
+
+# Runtime switch. Where only a reload can change the state this succeeds only
+# if the radio is already where it was asked to be, so callers re-applying
+# "off" before each launch cost nothing and change nothing.
 np_powersave() {
 	np_platform_profile
-	[ "$NP_PS" = iw ] || return 1
-	np_have iw || return 1
-	iw dev "$NP_WIFI_IF" set power_save "$1" >/dev/null 2>&1
-	return 0
+	if [ "$NP_PS" = rtw-reload ]; then
+		[ "$(np_rtw_powersave_get)" = "$1" ]
+		return
+	fi
+	if np_have iw; then
+		iw dev "$NP_WIFI_IF" set power_save "$1" >/dev/null 2>&1
+		return 0
+	fi
+	_h=$(np_wifips_helper) || return 1
+	"$_h" "$NP_WIFI_IF" "$1" >/dev/null 2>&1
+}
+
+# Whether turning power save off needs the slow driver reload: yes only on a
+# reload platform whose radio is currently in power save.
+np_powersave_needs_reload() {
+	np_platform_profile
+	[ "$NP_PS" = rtw-reload ] && [ "$(np_rtw_powersave_get)" = on ]
 }
 
 ###########################################################################
@@ -455,6 +569,8 @@ wifi-platform.sh)
 	hook-replay)    np_hook_replay "${2:-}" ;;
 	powersave)      np_powersave "${2:-off}" ;;
 	powersave-get)  np_powersave_get ;;
+	powersave-needs-reload) np_powersave_needs_reload ;;
+	powersave-reload) np_rtw_reload "${2:-off}" ;;
 	"")             : ;;
 	*)              echo "usage: wifi-platform.sh <assoc|has-ip|dhcp-start|...>" >&2; exit 2 ;;
 	esac

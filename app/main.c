@@ -31,6 +31,7 @@ typedef enum {
 	SCREEN_MGBA_INSTALL,
 	SCREEN_MGBA_MISMATCH,
 	SCREEN_MGBA_RESTORE,
+	SCREEN_POWERSAVE_CONFIRM,
 	SCREEN_CHECKS,
 	SCREEN_JOINING,
 } Screen;
@@ -157,7 +158,7 @@ static int draw_row(SDL_Surface* screen_s, const char* text, int y, bool selecte
 enum { MENU_HOST, MENU_JOIN, MENU_TOOLS, MENU_COUNT };
 enum { HOST_ADHOC, HOST_WIFI, HOST_COUNT };
 enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
-enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_COUNT };
+enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
 
 static const char* menu_label(int item) {
@@ -261,6 +262,9 @@ static void setting_row(char* out, int len, int item) {
 		break;
 	case SET_GAMESWITCHER:
 		snprintf(out, len, "Add Netplay to GameSwitcher:  %s", c->add_gameswitcher ? "Yes" : "No");
+		break;
+	case SET_POWERSAVE:
+		snprintf(out, len, "Disable Wi-Fi Power Saving:  %s", c->disable_powersave ? "Yes" : "No");
 		break;
 	default: out[0] = '\0';
 	}
@@ -467,6 +471,8 @@ static void render(SDL_Surface* s) {
 			hint = "While armed, the switcher contains only Netplay."; break;
 		case SET_INSTANCED:
 			hint = "Both devices, and both carts on each. Else link cable."; break;
+		case SET_POWERSAVE:
+			hint = "Lower latency while armed. Uses more battery."; break;
 		}
 		y = draw_line(s, hint, y, COLOR_GRAY, true);
 		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
@@ -539,6 +545,16 @@ static void render(SDL_Surface* s) {
 		y = draw_row(s, "Reinstall", y, prompt_sel == 0);
 		draw_row(s, "Ignore this build", y, prompt_sel == 1);
 		GFX_blitButtonGroup((char*[]){"B", "IGNORE", "A", "SELECT", NULL}, 1, s, 1);
+		break;
+	}
+	case SCREEN_POWERSAVE_CONFIRM: {
+		draw_title(s, "Disable Power Saving?");
+		int y = SCALE1(PADDING + 44);
+		y = draw_line(s, "Disabling Power Saving requires a driver reboot", y, COLOR_WHITE, true);
+		y = draw_line(s, "that may take several seconds. Continue?", y, COLOR_WHITE, true);
+		y += SCALE1(5);
+		draw_line(s, "WiFi drops briefly. Lasts until the device reboots.", y, COLOR_GRAY, true);
+		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "CONTINUE", NULL}, 1, s, 1);
 		break;
 	}
 	case SCREEN_MGBA_RESTORE: {
@@ -756,6 +772,13 @@ int main(int argc, char* argv[]) {
 			snprintf(status, sizeof(status), "A session is already set up.");
 		}
 	}
+	/* Where only a driver reload turns power save off, a reboot turns it back
+	 * on behind the setting's back. Show what the radio is actually doing. */
+	if (NS_settings()->disable_powersave && NS_wifiPowerSaveNeedsReload()) {
+		NS_settings()->disable_powersave = false;
+		NS_settingsSave();
+		snprintf(status, sizeof(status), "WiFi power saving is back on after a reboot.");
+	}
 	/* An installed pak can be replaced by an updater while the setting remains
 	 * enabled. Check once per setup-app launch; an ignored verdict is keyed to
 	 * both hashes, so it stays quiet only until either binary changes. */
@@ -952,6 +975,25 @@ int main(int argc, char* argv[]) {
 					if (!c->compatibility_cores) c->force_compatibility = false;
 					break;
 				case SET_GAMESWITCHER: c->add_gameswitcher = !c->add_gameswitcher; break;
+				case SET_POWERSAVE:
+					/* Applies to an armed session now, not only from the next
+					 * game launch: Restore is a no-op when nothing was recorded. */
+					if (!c->disable_powersave && NS_wifiPowerSaveNeedsReload()) {
+						screen = SCREEN_POWERSAVE_CONFIRM;   /* H700: slow, so ask */
+						break;
+					}
+					c->disable_powersave = !c->disable_powersave;
+					if (c->disable_powersave) {
+						NS_SessionInfo armed;
+						if (NS_sessionInfo(&armed)) NS_wifiPowerSaveDisable();
+					} else {
+						NS_wifiPowerSaveRestore();
+						/* Reloading back would cost the same wait again for no
+						 * gain; the next boot loads the driver's default. */
+						if (!strcmp(PLATFORM, "h700"))
+							snprintf(status, sizeof(status), "Power saving returns after the next reboot.");
+					}
+					break;
 				case SET_INSTANCED:
 					stage_instanced();
 					inst_sel = 0;
@@ -1039,6 +1081,29 @@ int main(int argc, char* argv[]) {
 						screen = SCREEN_SETTINGS;
 					} else screen = SCREEN_INSTANCED;
 				} else screen = SCREEN_INSTANCED;
+				dirty = 1;
+			}
+			break;
+
+		case SCREEN_POWERSAVE_CONFIRM:
+			if (PAD_justPressed(BTN_B)) { screen = SCREEN_SETTINGS; dirty = 1; }
+			if (PAD_justPressed(BTN_A)) {
+				/* Blocking for the whole reload; one progress frame says why. */
+				set_progress("Disabling Power Saving", "WiFi reconnects when the driver is back.");
+				draw_progress("Restarting the WiFi driver", 1, 1);
+				NS_Settings* c = NS_settings();
+				status[0] = '\0';
+				if (NS_wifiPowerSaveReload(status, sizeof(status))) {
+					c->disable_powersave = true;
+					NS_settingsSave();
+					NS_SessionInfo armed;
+					if (NS_sessionInfo(&armed)) NS_wifiPowerSaveDisable();
+					if (!status[0])
+						snprintf(status, sizeof(status), "Power saving off until the device reboots.");
+				}
+				set_progress("Joining", "This can take up to a minute.");
+				wifi_poll(true);
+				screen = SCREEN_SETTINGS;
 				dirty = 1;
 			}
 			break;

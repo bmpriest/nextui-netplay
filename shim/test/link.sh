@@ -466,16 +466,83 @@ expect "$OUT/c13.log" "connection 2 requires an authoritative sync" "surviving g
 expect "$OUT/c13.log" "authoritative resync .* committed" "surviving guest adopted restored host state"
 
 echo
+echo "== a slow first echo does not size the input delay"
+# The first probe of a connection can be answered late by a peer still loading
+# its game. On hardware that one sample (280-800 ms) used to set 20 frames.
+PORT32=$((PORT + 31))
+printf 'role=host\nport=%s\nmode=netplay\ninput_delay=3\ninput_delay_auto=1\n' "$PORT32" > "$OUT/h32.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\ninput_delay=3\ninput_delay_auto=1\n' "$PORT32" > "$OUT/c32.session"
+NETLINK_TEST_SLOW_FIRST_RTT_MS=600 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h32.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/h32.log" 2>&1 &
+H32=$!
+sleep 0.2
+NETLINK_TEST_SLOW_FIRST_RTT_MS=600 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c32.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/c32.log" 2>&1 &
+C32=$!
+wait $H32 2>/dev/null || true
+wait $C32 2>/dev/null || true
+for side in h32 c32; do
+	n=$(sed -n 's/.*link rtt over \([0-9]*\) samples.*/\1/p' "$OUT/$side.log" | head -1)
+	[ -n "$n" ] && [ "$n" -ge 3 ] \
+		&& echo "  ok   $side proposed from $n samples, not the first alone" \
+		|| { echo "  MISS $side proposed from '${n:-no}' samples"; fail=1; }
+	delay=$(sed -n 's/.*agreed input delay \([0-9]*\).*/\1/p' "$OUT/$side.log" | tail -1)
+	[ "$delay" = "3" ] \
+		&& echo "  ok   $side kept its 3-frame delay" \
+		|| { echo "  MISS $side negotiated delay ${delay:-none} instead of 3"; fail=1; }
+done
+
+echo
+echo "== a checkpoint the relaunched core cannot load is discarded, not fatal"
+PORT31=$((PORT + 30))
+SID31=$(printf '%032x' "$PORT31")
+printf 'role=host\nport=%s\nmode=netplay\nsession_id=%s\n' "$PORT31" "$SID31" > "$OUT/h31.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\nsession_id=%s\n' "$PORT31" "$SID31" > "$OUT/c31.session"
+FAKE_NO_SAVE_RAM=1 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h31.session" "$OUT/harness" "$SHIM" 700 5 > "$OUT/h31a.log" 2>&1 &
+H31=$!
+sleep 0.3
+FAKE_NO_SAVE_RAM=1 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c31.session" "$OUT/harness" "$SHIM" 700 5 > "$OUT/c31a.log" 2>&1 &
+C31=$!
+wait $H31 2>/dev/null || true
+wait $C31 2>/dev/null || true
+HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h31.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/h31b.log" 2>&1 &
+H31=$!
+sleep 0.3
+HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c31.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/c31b.log" 2>&1 &
+C31=$!
+wait $H31 2>/dev/null || true
+wait $C31 2>/dev/null || true
+expect "$OUT/h31a.log" "confirmed host checkpoint promoted at frame [1-9][0-9]*" "first run left a checkpoint"
+expect "$OUT/h31b.log" "state rejected: sizes" "relaunched host named the mismatch"
+expect "$OUT/h31b.log" "discarded unusable host checkpoint" "relaunched host dropped the checkpoint"
+expect "$OUT/h31b.log" "authoritative initial state sent" "relaunched host synchronized live state"
+expect "$OUT/c31b.log" "authoritative resync .* committed" "relaunched guest joined"
+if grep -q "could not adopt synchronization state" "$OUT/h31b.log"; then
+	echo "  FAIL relaunched host still failed the barrier"; fail=1
+else
+	echo "  ok   no barrier failure after the discarded checkpoint"
+fi
+if [ "$(grep -c 'state rejected' "$OUT/h31b.log")" -le 1 ]; then
+	echo "  ok   the rejection was not retried every frame"
+else
+	echo "  FAIL rejection repeated $(grep -c 'state rejected' "$OUT/h31b.log") times"; fail=1
+fi
+
+echo
 echo "== ROM-content mismatch is rejected before state loading"
 PORT14=$((PORT + 13))
 printf 'role=host\nport=%s\nmode=netplay\n' "$PORT14" > "$OUT/h14.session"
 printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT14" > "$OUT/c14.session"
 HARNESS_ROM_ID=rom-a NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h14.session" \
-	"$OUT/harness" "$SHIM" 180 5 > "$OUT/h14.log" 2>&1 &
+	"$OUT/harness" "$SHIM" 400 5 > "$OUT/h14.log" 2>&1 &
 H14=$!
 sleep 0.2
 HARNESS_ROM_ID=rom-b NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c14.session" \
-	"$OUT/harness" "$SHIM" 180 5 > "$OUT/c14.log" 2>&1 &
+	"$OUT/harness" "$SHIM" 400 5 > "$OUT/c14.log" 2>&1 &
 C14=$!
 wait $H14 2>/dev/null || true
 wait $C14 2>/dev/null || true

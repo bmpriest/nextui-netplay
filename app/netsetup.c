@@ -309,6 +309,9 @@ static bool wifi_powerSaveGet(char* out, int len) {
 void NS_wifiPowerSaveDisable(void) {
 	char prior[16] = "";
 	char path[512];
+	/* Off by choice: leave the radio as the platform configured it. pre-launch.sh
+	 * reads the same key from the settings file for the per-game re-apply. */
+	if (!NS_settings()->disable_powersave) return;
 	ps_state_path(path, sizeof(path));
 
 	/* Record the prior value once. Re-arming without disarming first must not
@@ -318,6 +321,24 @@ void NS_wifiPowerSaveDisable(void) {
 		if (f) { fprintf(f, "%s\n", prior); fclose(f); }
 	}
 	wifi_plat("powersave off");
+}
+
+bool NS_wifiPowerSaveNeedsReload(void) {
+	return wifi_plat("powersave-needs-reload") == 0;
+}
+
+bool NS_wifiPowerSaveReload(char* err, int errlen) {
+	ns_log("reloading the wifi driver with power save off\n");
+	int rc = wifi_plat("powersave-reload off");
+	if (rc == 0) return true;
+	/* 3 is "driver back, no address yet": the supplicant usually finishes on
+	 * its own, so power save is off even though WiFi is not quite back. */
+	bool reloaded = WIFEXITED(rc) && WEXITSTATUS(rc) == 3;
+	snprintf(err, errlen, reloaded
+	         ? "Driver reloaded - WiFi is still reconnecting."
+	         : "Could not reload the WiFi driver - reboot to recover.");
+	ns_log("wifi driver reload exited %d\n", WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
+	return reloaded && !NS_wifiPowerSaveNeedsReload();
 }
 
 void NS_wifiPowerSaveRestore(void) {
@@ -352,6 +373,7 @@ static NS_Settings ns_set = {
 	.verbose_logs = true,
 	.simple_client = false,
 	.add_gameswitcher = false,
+	.disable_powersave = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
 };
@@ -403,6 +425,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "verbose_logs")) ns_set.verbose_logs = v != 0;
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
+		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -436,6 +459,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "verbose_logs=%d\n", ns_set.verbose_logs ? 1 : 0);
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
+	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);

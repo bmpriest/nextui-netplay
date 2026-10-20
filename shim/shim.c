@@ -940,6 +940,15 @@ static int rtt_proposed_delay(void) {
  * this is around ten samples, which is enough for a maximum to have seen a
  * spike, and short enough to disappear behind the bootstrap overlay. */
 #define RTT_SETTLE_MS 1000
+/* ...or until this many have arrived, whichever is first. A maximum needs more
+ * than one sample to mean anything; three keeps startup well under a second. */
+#define RTT_MIN_SAMPLES 3
+
+static bool rtt_settled(const struct timeval* since) {
+	unsigned samples = 0;
+	NetLink_rttStats(NULL, NULL, &samples);
+	return samples >= RTT_MIN_SAMPLES || elapsed_ms(since) >= RTT_SETTLE_MS;
+}
 
 /* Both sides adopt the higher proposal. Order-independent and needs no extra
  * round trip, which is what preserves the exact-agreement invariant the
@@ -2059,15 +2068,25 @@ static bool capture_authoritative_state(void** out, size_t* out_len, uint32_t* o
 
 static bool apply_core_state(Core* target, const void* data, size_t len) {
 	AuthoritativeHeader h;
-	uint32_t local_sram, local_rtc;
-	if (!parse_authoritative_state(data, len, &h) ||
-	    h.state_size != target->serialize_size() ||
-	    !core_memory_sizes(target, &local_sram, &local_rtc) ||
-	    h.sram_size != local_sram || h.rtc_size != local_rtc)
+	uint32_t local_sram = 0, local_rtc = 0;
+	if (!parse_authoritative_state(data, len, &h)) {
+		shim_log("state rejected: malformed header\n");
 		return false;
+	}
+	if (h.state_size != target->serialize_size() ||
+	    !core_memory_sizes(target, &local_sram, &local_rtc) ||
+	    h.sram_size != local_sram || h.rtc_size != local_rtc) {
+		shim_log("state rejected: sizes state %u/%zu sram %u/%u rtc %u/%u (state/local)\n",
+		         h.state_size, target->serialize_size(), h.sram_size, local_sram,
+		         h.rtc_size, local_rtc);
+		return false;
+	}
 
 	const uint8_t* state = (const uint8_t*)data + sizeof(AuthoritativeHeader);
-	if (!target->unserialize(state, h.state_size)) return false;
+	if (!target->unserialize(state, h.state_size)) {
+		shim_log("state rejected: core unserialize failed (%u bytes)\n", h.state_size);
+		return false;
+	}
 	void* sram = h.sram_size ? target->get_memory_data(RETRO_MEMORY_SAVE_RAM) : NULL;
 	void* rtc = h.rtc_size ? target->get_memory_data(RETRO_MEMORY_RTC) : NULL;
 	if ((h.sram_size && !sram) || (h.rtc_size && !rtc)) return false;
@@ -2222,14 +2241,16 @@ static void netplay_handshake(void) {
 		NetLink_resetSync();
 		shim_log("connection %u requires an authoritative sync\n", generation);
 	}
+	/* A failed barrier stays failed until the next connection; retrying it
+	 * every frame only repeats the same failure. */
+	if (recovery_failed) return;
 
 	if (!connection_identity_sent) {
 		/* Same settle-then-propose as the instanced path; recovery_started is
 		 * set at the generation change, so it dates the connection. */
 		if (!input_delay_pinned) {
-			int proposed = rtt_proposed_delay();
-			if (!proposed && elapsed_ms(&recovery_started) < RTT_SETTLE_MS) return;
-			adopt_measured_delay(proposed);
+			if (!rtt_settled(&recovery_started)) return;
+			adopt_measured_delay(rtt_proposed_delay());
 		}
 		NetLinkSessionIdentity mine;
 		memset(&mine, 0, sizeof(mine));
@@ -2274,7 +2295,22 @@ static void netplay_handshake(void) {
 		}
 		source_frame = netplay_ever_synced ? netplay_frame : 0;
 	}
-	if (!apply_authoritative_state(buf, sz)) {
+	if (restored && !apply_authoritative_state(buf, sz)) {
+		/* The checkpoint only resumes a relaunched host where it left off.
+		 * One this core cannot load must not cost the session: drop it and
+		 * synchronize from the state the host is actually running. */
+		free(buf);
+		buf = NULL;
+		restored = false;
+		unlink(checkpoint_path);
+		shim_log("discarded unusable host checkpoint; syncing live state\n");
+		if (!capture_authoritative_state(&buf, &sz, NULL)) {
+			recovery_fail("Host could not capture synchronization state.");
+			return;
+		}
+		source_frame = netplay_ever_synced ? netplay_frame : 0;
+	}
+	if (!restored && !apply_authoritative_state(buf, sz)) {
 		free(buf);
 		recovery_fail("Host could not adopt synchronization state.");
 		return;
@@ -3512,13 +3548,13 @@ static bool dual_bootstrap_tick(void) {
 			dual_fail("Could not identify the local cartridge.");
 			return false;
 		}
-		/* Let the probes settle before proposing, but never wait on them: a link
-		 * that has not answered one probe in RTT_SETTLE_MS is not one whose
-		 * measurement we would trust anyway, and the configured value stands. */
+		/* Let the probes settle before proposing - one sample is not a
+		 * maximum - but never wait past that: a link that has not answered a
+		 * probe in RTT_SETTLE_MS is not one whose measurement we would trust
+		 * anyway, and the configured value stands. */
 		if (!input_delay_pinned) {
-			int proposed = rtt_proposed_delay();
-			if (!proposed && elapsed_ms(&dual_wait_since) < RTT_SETTLE_MS) return false;
-			adopt_measured_delay(proposed);
+			if (!rtt_settled(&dual_wait_since)) return false;
+			adopt_measured_delay(rtt_proposed_delay());
 		}
 		NetLinkSessionIdentity mine;
 		memset(&mine, 0, sizeof(mine));

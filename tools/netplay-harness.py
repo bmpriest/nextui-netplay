@@ -326,6 +326,12 @@ def device_addresses(args):
     return [("host", args.host), ("client", args.client)]
 
 
+def platform_for(args, role):
+    """A pair may mix devices, so each role names its own platform directory."""
+    specific = getattr(args, f"{role}_platform", None)
+    return specific or args.platform
+
+
 NETPLAY_STATE = "/mnt/SDCARD/.userdata/shared/Netplay"
 HARNESS_STATE = f"{NETPLAY_STATE}/netplay-harness"
 
@@ -442,8 +448,9 @@ def command_doctor(args):
     failed = False
     with remote_from_args(args) as remote:
         for role, address, jump in resolved_devices(remote, args):
-            result = remote.run(address, probe_script(args.platform), check=False, jump=jump)
-            print(f"[{role}: {route_label(address, jump)}]")
+            platform = platform_for(args, role)
+            result = remote.run(address, probe_script(platform), check=False, jump=jump)
+            print(f"[{role}: {route_label(address, jump)} {platform}]")
             keys = ("firmware=", "arch=", "netplay=", "mgba=", "mgba_core=",
                     "mgba_dual=", "mgba_shim=", "netplay_app=", "netplay_shim=",
                     "drastic=", "drastic_binary=", "ssh=", "ui=", "active_",
@@ -510,7 +517,7 @@ def command_session(args):
         return 0
     with remote_from_args(args) as remote:
         for role, address, jump in resolved_devices(remote, args):
-            pak = f"/mnt/SDCARD/Tools/{args.platform}/Netplay.pak"
+            pak = f"/mnt/SDCARD/Tools/{platform_for(args, role)}/Netplay.pak"
             if remote.run(address, f"test -f {shlex.quote(pak + '/pak.json')}",
                           check=False, jump=jump).returncode:
                 raise HarnessError(f"{address}: Netplay.pak is not installed")
@@ -541,7 +548,6 @@ def command_deploy(args):
     source = args.file.resolve()
     if not source.is_file():
         raise HarnessError(f"artifact does not exist: {source}")
-    destination, mode = artifact_destination(args.artifact, args.platform)
     digest = sha256(source)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     with remote_from_args(args) as remote:
@@ -549,11 +555,13 @@ def command_deploy(args):
         if args.target != "both":
             selected = [item for item in selected if item[0] == args.target]
         for role, address, jump in selected:
+            platform = platform_for(args, role)
+            destination, mode = artifact_destination(args.artifact, platform)
             uploaded = f"/tmp/netplay-artifact-{uuid.uuid4().hex}"
             remote.upload(address, source, uploaded, jump=jump)
             parent = str(Path(destination).parent)
             backup = f"{HARNESS_STATE}/backups/{stamp}/{args.artifact}"
-            legacy = f"/mnt/SDCARD/.userdata/{args.platform}/netplay-harness"
+            legacy = f"/mnt/SDCARD/.userdata/{platform}/netplay-harness"
             command = (
                 f"set -e; mkdir -p {shlex.quote(HARNESS_STATE)}; "
                 f"if test -d {shlex.quote(legacy)}; then "
@@ -580,7 +588,7 @@ def command_deploy(args):
 def command_launch_plan(args):
     for role, address in device_addresses(args):
         rom = args.host_rom if role == "host" else args.client_rom
-        print(f"[{role} {address}]\n{launch_command(args.engine, args.platform, rom)}")
+        print(f"[{role} {address}]\n{launch_command(args.engine, platform_for(args, role), rom)}")
     print("Execution is gated until a NextUI display/input handoff adapter is installed.",
           file=sys.stderr)
     return 0
@@ -592,8 +600,8 @@ def command_collect(args):
         devices = resolved_devices(remote, args)
         session_id = args.session_id
         if args.latest:
-            _, address, jump = devices[0]
-            root = f"/mnt/SDCARD/.userdata/{args.platform}/logs/netplay-games"
+            role, address, jump = devices[0]
+            root = f"/mnt/SDCARD/.userdata/{platform_for(args, role)}/logs/netplay-games"
             result = remote.run(
                 address,
                 f"ls -td {shlex.quote(root)}/*/* 2>/dev/null | head -1",
@@ -616,11 +624,12 @@ def command_collect(args):
         for role, address, jump in devices:
             target = output / role
             target.mkdir(parents=True, exist_ok=True)
+            logs = f"/mnt/SDCARD/.userdata/{platform_for(args, role)}/logs"
             sources = [
-                f"/mnt/SDCARD/.userdata/{args.platform}/logs/netplay-games/*/{session_id}",
-                f"/mnt/SDCARD/.userdata/{args.platform}/logs/MGBA.txt",
-                f"/mnt/SDCARD/.userdata/{args.platform}/logs/NDS.txt",
-                f"/mnt/SDCARD/.userdata/{args.platform}/logs/NDS-wifi-*.txt",
+                f"{logs}/netplay-games/*/{session_id}",
+                f"{logs}/MGBA.txt",
+                f"{logs}/NDS.txt",
+                f"{logs}/NDS-wifi-*.txt",
                 f"{NETPLAY_STATE}/broker.log",
             ]
             copied = []
@@ -644,6 +653,10 @@ def add_connection_arguments(parser):
     parser.add_argument("--host", required=True, type=validate_address)
     parser.add_argument("--client", required=True, type=validate_address)
     parser.add_argument("--platform", default=DEFAULT_PLATFORM)
+    parser.add_argument("--host-platform",
+                        help="platform directory on the host (default: --platform)")
+    parser.add_argument("--client-platform",
+                        help="platform directory on the client (default: --platform)")
     parser.add_argument("--user", default="root")
     parser.add_argument("--ssh-port", type=int, default=22)
     parser.add_argument("--identity", type=Path)
