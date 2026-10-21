@@ -1,11 +1,12 @@
 {
   "name": "Netplay",
-  "version": "v3.1.1-test",
+  "version": "v3.2.0-rc-1",
   "type": "TOOL",
   "description": "Shared-screen netplay and link-cable play between two handhelds, over an ad hoc network the devices create themselves.",
   "author": "bmpriest",
   "release_filename": "Netplay.pak.zip",
   "changelog": {
+    "v3.2.0-rc-1": "Improving h700 performance. Added experimental wifi power saving toggle.",
     "v3.1.1-test": "Test build for different devices, including dual instance support for gambatte and mgba.",
     "v2.1.0-test": "Instanced link play for Game Boy: both devices emulate both consoles and WiFi carries only controller inputs. Works with two different linked cartridges - Gold/Silver, Seasons/Ages - found inside a zipped library without transferring any game file. Cartridge real-time clocks are negotiated so each console keeps its own owner's time. Verified with a completed Pokemon trade across 13,500 frames with no desync.",
     "v2.0.0-test": "Libretro shim, ad hoc networking, local compatibility-core fallback, bind-mounted pak wrapping, and WiFi recovery. Adds my282, my355 and h700."
