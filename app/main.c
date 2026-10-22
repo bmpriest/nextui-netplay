@@ -158,7 +158,7 @@ static int draw_row(SDL_Surface* screen_s, const char* text, int y, bool selecte
 enum { MENU_HOST, MENU_JOIN, MENU_TOOLS, MENU_COUNT };
 enum { HOST_ADHOC, HOST_WIFI, HOST_COUNT };
 enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
-enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
+enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_STATUS_ICON, SET_COUNT };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
 
 static const char* menu_label(int item) {
@@ -199,6 +199,7 @@ static const char* tool_label(int item) {
  * boolean. Instanced cores is the exception: it has a third state that opens a
  * picker, shown as ">" so it reads as "there is more behind this". */
 static int settings_sel = 0;
+static int settings_top = 0;   /* first visible row once the list outgrows the screen */
 static int debug_sel = 0;
 static int inst_sel = 0;
 static bool inst_staged[NS_INST_CORES];
@@ -265,6 +266,9 @@ static void setting_row(char* out, int len, int item) {
 		break;
 	case SET_POWERSAVE:
 		snprintf(out, len, "Disable Wi-Fi Power Saving:  %s", c->disable_powersave ? "Yes" : "No");
+		break;
+	case SET_STATUS_ICON:
+		snprintf(out, len, "Use status icon:  %s", c->status_icon ? "Yes" : "No");
 		break;
 	default: out[0] = '\0';
 	}
@@ -456,7 +460,21 @@ static void render(SDL_Surface* s) {
 		draw_title(s, "Settings");
 		int y = SCALE1(PADDING + 44);
 		char row[128];
-		for (int i = 0; i < SET_COUNT; i++) {
+		/* Six rows do not fit above the button bar at NextUI's row height (the
+		 * Brick has room for four with the hint, 640x480 for fewer), and the
+		 * hint under the selection is what explains each setting. So the list
+		 * scrolls instead: the window is whatever fits above the hint and any
+		 * status line, and follows the selection. */
+		int line_h = TTF_FontHeight(font.small) + SCALE1(4);
+		int bottom = s->h - SCALE1(PADDING + PILL_SIZE + PADDING) - SCALE1(6)
+		           - line_h * (status[0] ? 2 : 1);
+		int visible = (bottom - y) / SCALE1(PILL_SIZE);
+		if (visible < 1) visible = 1;
+		if (visible > SET_COUNT) visible = SET_COUNT;
+		if (settings_sel < settings_top) settings_top = settings_sel;
+		if (settings_sel >= settings_top + visible) settings_top = settings_sel - visible + 1;
+		if (settings_top > SET_COUNT - visible) settings_top = SET_COUNT - visible;
+		for (int i = settings_top; i < settings_top + visible; i++) {
 			setting_row(row, sizeof(row), i);
 			y = draw_row(s, row, y, i == settings_sel);
 		}
@@ -473,6 +491,10 @@ static void render(SDL_Surface* s) {
 			hint = "Both devices, and both carts on each. Else link cable."; break;
 		case SET_POWERSAVE:
 			hint = "Lower latency while armed. Uses more battery."; break;
+		case SET_STATUS_ICON:
+			hint = NS_varnishInstalled()
+			     ? "N at the top while armed: grey, white once connected."
+			     : "Needs Varnish.pak, which draws the icon."; break;
 		}
 		y = draw_line(s, hint, y, COLOR_GRAY, true);
 		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
@@ -771,6 +793,7 @@ int main(int argc, char* argv[]) {
 		} else {
 			snprintf(status, sizeof(status), "A session is already set up.");
 		}
+		NS_statusIconSync();   /* restart the icon if its watcher died */
 	}
 	/* Where only a driver reload turns power save off, a reboot turns it back
 	 * on behind the setting's back. Show what the radio is actually doing. */
@@ -975,6 +998,7 @@ int main(int argc, char* argv[]) {
 					if (!c->compatibility_cores) c->force_compatibility = false;
 					break;
 				case SET_GAMESWITCHER: c->add_gameswitcher = !c->add_gameswitcher; break;
+				case SET_STATUS_ICON: c->status_icon = !c->status_icon; break;
 				case SET_POWERSAVE:
 					/* Applies to an armed session now, not only from the next
 					 * game launch: Restore is a no-op when nothing was recorded. */

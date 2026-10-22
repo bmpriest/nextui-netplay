@@ -170,11 +170,14 @@ typedef struct {
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
 	bool        disable_powersave; /* radio power save off while a session is armed */
+	bool        status_icon;    /* Varnish.pak overlay icon: grey armed, white connected */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
 
 NS_Settings* NS_settings(void);   /* live, mutable; call NS_settingsSave after */
+bool NS_varnishInstalled(void);   /* the overlay the status icon is drawn by */
+void NS_statusIconSync(void);     /* start/stop the icon watcher to match setting + session */
 void NS_settingsLoad(void);
 void NS_settingsSave(void);
 

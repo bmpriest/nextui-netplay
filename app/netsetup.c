@@ -374,6 +374,7 @@ static NS_Settings ns_set = {
 	.simple_client = false,
 	.add_gameswitcher = false,
 	.disable_powersave = false,
+	.status_icon   = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
 };
@@ -381,6 +382,23 @@ static bool ns_set_loaded = false;
 
 static void settings_path(char* out, int len) {
 	snprintf(out, len, "%s/settings", ns_state);
+}
+
+/* The status icon watcher follows the setting and the session file on its own
+ * once running; this starts it, or stops it and hides the icon, right away. */
+void NS_statusIconSync(void) {
+	char cmd[1200];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/status-icon.sh' sync >/dev/null 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	system(cmd);
+}
+
+bool NS_varnishInstalled(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/Tools/%s/Varnish.pak/varnish", ns_sd, ns_platform);
+	return access(path, X_OK) == 0;
 }
 
 static const char* compatibility_arch(void) {
@@ -426,6 +444,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
+		else if (!strcmp(k, "status_icon")) ns_set.status_icon = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -460,6 +479,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
+	fprintf(f, "status_icon=%d\n", ns_set.status_icon ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -475,6 +495,7 @@ void NS_settingsSave(void) {
 	         ns_sd, ns_platform, ns_pak, ns_pak,
 	         ns_set.add_gameswitcher ? (NS_isArmed() ? "active" : "enable") : "disable");
 	system(cmd);
+	NS_statusIconSync();
 }
 
 /* Three places a core can legitimately live: the platform's own directory, the
@@ -1774,6 +1795,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		         ns_sd, ns_platform, ns_pak, ns_pak);
 		system(cmd);
 	}
+	NS_statusIconSync();
 	return true;
 }
 
@@ -1799,6 +1821,7 @@ void NS_disarm(void) {
 	         "sh '%s/launcher/gameswitcher.sh' idle >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_pak, ns_pak);
 	system(cmd);
+	NS_statusIconSync();
 
 	NS_hotspotStop();
 	NS_wifiPowerSaveRestore();
@@ -1826,6 +1849,7 @@ void NS_endSession(void) {
 	         "sh '%s/launcher/gameswitcher.sh' idle >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_pak, ns_pak);
 	system(cmd);
+	NS_statusIconSync();
 
 	/* A session is a network arrangement as much as a file. Remember the role
 	 * before removing that file: a guest must restore its station interface,

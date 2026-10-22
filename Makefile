@@ -378,6 +378,7 @@ test:
 	@./testing/test-wifi-platform.sh
 	@./testing/test-log-rotation.sh
 	@./testing/test-wifi-watchdog.sh
+	@./testing/test-status-icon.sh
 	@./launcher/test.sh
 	@PYTHONDONTWRITEBYTECODE=1 python3 tools/test-netplay-harness.py
 
@@ -415,8 +416,11 @@ dist-base: $(BASE_DIST_CHECKS)
 	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
 	    launcher/mount-common.sh launcher/state-path.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh launcher/mgba-manage.sh \
-	    launcher/wifi-platform.sh \
+	    launcher/wifi-platform.sh launcher/status-icon.sh \
 	    "$(BASE_STAGE)/$(PAK)/launcher/"
+	@mkdir -p "$(BASE_STAGE)/$(PAK)/res"
+	@cp res/status@1x.png res/status@2x.png res/status@3x.png res/status@4x.png \
+	    "$(BASE_STAGE)/$(PAK)/res/"
 	@cp launcher/session.conf.example "$(BASE_STAGE)/$(PAK)/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override"
 	@for p in $(PLATFORMS); do \
