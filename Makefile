@@ -362,7 +362,7 @@ app:
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
 			CMD='sh -c "cd app && make PLATFORM='$$p' NEXTUI=/opt/nextui-src"' || exit 1; \
 	done
-	@ls -la bin/*/netplay.elf bin/*/netplay-broker.elf bin/*/netplay-wifips.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
+	@ls -la bin/*/netplay.elf bin/*/netplay-broker.elf bin/*/netplay-wifips.elf bin/*/netplay-quickmenu.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
 test:
 	@./shim/test/run.sh
@@ -379,6 +379,7 @@ test:
 	@./testing/test-log-rotation.sh
 	@./testing/test-wifi-watchdog.sh
 	@./testing/test-status-icon.sh
+	@./testing/test-quick-menu.sh
 	@./launcher/test.sh
 	@PYTHONDONTWRITEBYTECODE=1 python3 tools/test-netplay-harness.py
 
@@ -416,7 +417,7 @@ dist-base: $(BASE_DIST_CHECKS)
 	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
 	    launcher/mount-common.sh launcher/state-path.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh launcher/mgba-manage.sh \
-	    launcher/wifi-platform.sh launcher/status-icon.sh \
+	    launcher/wifi-platform.sh launcher/status-icon.sh launcher/quick-menu.sh \
 	    "$(BASE_STAGE)/$(PAK)/launcher/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/res"
 	@cp res/status@1x.png res/status@2x.png res/status@3x.png res/status@4x.png \
@@ -446,6 +447,7 @@ dist-base: $(BASE_DIST_CHECKS)
 		cp bin/$$p/netplay.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay-broker.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay-wifips.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
+		cp bin/$$p/netplay-quickmenu.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		done
 	@chmod 755 "$(BASE_STAGE)/$(PAK)/launch.sh" "$(BASE_STAGE)/$(PAK)/launcher"/*
 	@find "$(BASE_STAGE)" -name '.DS_Store' -delete
@@ -490,6 +492,8 @@ check-app-%:
 		echo "missing bin/$*/netplay.elf - run 'make app' first"; exit 1; }
 	@test -f bin/$*/netplay-broker.elf || { \
 		echo "missing bin/$*/netplay-broker.elf - run 'make app' first"; exit 1; }
+	@test -f bin/$*/netplay-quickmenu.elf || { \
+		echo "missing bin/$*/netplay-quickmenu.elf - run 'make app' first"; exit 1; }
 
 clean:
 	rm -rf dist

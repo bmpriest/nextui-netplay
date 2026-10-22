@@ -3,8 +3,8 @@
 # session - grey N (x=0) while armed, white N (x=12) once a peer is connected,
 # hidden over gameplay and gone when the session ends.
 #
-# Varnish is a stand-in that logs its arguments, so this checks exactly what
-# would be drawn without a device.
+# Varnish is a stand-in: a reader on its command FIFO that logs each line, so
+# this checks exactly what would be drawn without a device.
 #
 #   ./test-status-icon.sh
 
@@ -18,6 +18,7 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; 
 ROOT=$(mktemp -d)
 cleanup() {
 	SDCARD_PATH="$ROOT" PLATFORM=tg5040 NETPLAY_PAK="$NP" sh "$SCRIPT" stop 2>/dev/null
+	[ -n "${READER:-}" ] && kill "$READER" 2>/dev/null
 	rm -rf "$ROOT"
 }
 trap cleanup EXIT
@@ -34,11 +35,18 @@ mkdir -p "$NP/launcher" "$STATE" "$VARNISH_DIR" "$BIN"
 cp "$HERE/../launcher/status-icon.sh" "$HERE/../launcher/state-path.sh" "$NP/launcher/"
 SCRIPT="$NP/launcher/status-icon.sh"
 
-cat > "$VARNISH_DIR/varnish" <<EOF
-#!/bin/sh
-echo "\$*" >> "$LOG"
-EOF
+printf '#!/bin/sh\nexit 0\n' > "$VARNISH_DIR/varnish"
 chmod 755 "$VARNISH_DIR/varnish"
+VARNISH_FIFO="$ROOT/varnish.fifo"
+VARNISH_PID="$ROOT/varnish.pid"
+export VARNISH_FIFO VARNISH_PID
+mkfifo "$VARNISH_FIFO"
+# The daemon: logs each command line for as long as the test runs.
+( while [ -p "$VARNISH_FIFO" ]; do
+	while IFS= read -r line; do echo "$line" >> "$LOG"; done < "$VARNISH_FIFO"
+  done ) &
+READER=$!
+echo "$READER" > "$VARNISH_PID"
 
 # pidof stand-in: a game is "running" while the marker exists.
 cat > "$BIN/pidof" <<EOF
@@ -67,9 +75,9 @@ watcher_alive() {
 }
 
 SHEET="$NP/res/status@%dx.png"
-ARMED="--icon netplay top-center 0 0 0 12 12 $SHEET"
-CONNECTED="--icon netplay top-center 0 12 0 12 12 $SHEET"
-HIDE="--hide netplay"
+ARMED="ICON netplay bottom-center 0 0 0 12 12 $SHEET"
+CONNECTED="ICON netplay bottom-center 0 12 0 12 12 $SHEET"
+HIDE="HIDE netplay"
 
 echo "== setting off"
 printf 'role=host\n' > "$STATE/session"

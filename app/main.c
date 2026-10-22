@@ -158,7 +158,7 @@ static int draw_row(SDL_Surface* screen_s, const char* text, int y, bool selecte
 enum { MENU_HOST, MENU_JOIN, MENU_TOOLS, MENU_COUNT };
 enum { HOST_ADHOC, HOST_WIFI, HOST_COUNT };
 enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
-enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_STATUS_ICON, SET_COUNT };
+enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_STATUS_ICON, SET_QUICK_MENU, SET_COUNT };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
 
 static const char* menu_label(int item) {
@@ -269,6 +269,9 @@ static void setting_row(char* out, int len, int item) {
 		break;
 	case SET_STATUS_ICON:
 		snprintf(out, len, "Use status icon:  %s", c->status_icon ? "Yes" : "No");
+		break;
+	case SET_QUICK_MENU:
+		snprintf(out, len, "Quick menu (START):  %s", c->quick_menu ? "Yes" : "No");
 		break;
 	default: out[0] = '\0';
 	}
@@ -493,8 +496,12 @@ static void render(SDL_Surface* s) {
 			hint = "Lower latency while armed. Uses more battery."; break;
 		case SET_STATUS_ICON:
 			hint = NS_varnishInstalled()
-			     ? "N at the top while armed: grey, white once connected."
+			     ? "N at the bottom while armed: grey, white once connected."
 			     : "Needs Varnish.pak, which draws the icon."; break;
+		case SET_QUICK_MENU:
+			hint = NS_varnishInstalled()
+			     ? "START in NextUI's menus opens a Netplay menu."
+			     : "Needs Varnish.pak, which draws the menu."; break;
 		}
 		y = draw_line(s, hint, y, COLOR_GRAY, true);
 		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
@@ -999,6 +1006,7 @@ int main(int argc, char* argv[]) {
 					break;
 				case SET_GAMESWITCHER: c->add_gameswitcher = !c->add_gameswitcher; break;
 				case SET_STATUS_ICON: c->status_icon = !c->status_icon; break;
+				case SET_QUICK_MENU: c->quick_menu = !c->quick_menu; break;
 				case SET_POWERSAVE:
 					/* Applies to an armed session now, not only from the next
 					 * game launch: Restore is a no-op when nothing was recorded. */

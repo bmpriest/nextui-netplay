@@ -23,9 +23,10 @@ SETTINGS="$STATE/settings"
 SESSION="$STATE/session"
 PIDFILE="$STATE/status-icon.pid"
 VARNISH="$SDCARD_PATH/Tools/$PLATFORM/Varnish.pak/varnish"
-VARNISH_PID=/tmp/varnish.pid
+VARNISH_PID="${VARNISH_PID:-/tmp/varnish.pid}"
+VARNISH_FIFO="${VARNISH_FIFO:-/tmp/varnish.fifo}"
 CLIENT=netplay
-POSITION=top-center
+POSITION=bottom-center
 SHEET="$NP/res/status@%dx.png"
 
 # Varnish drops overlays sent during its start-up warm-up and forgets them all if
@@ -59,17 +60,27 @@ in_game() {
 	pidof minarch.elf >/dev/null 2>&1
 }
 
+# Straight to Varnish's command FIFO rather than through its binary: the
+# binary needs NextUI's library path to load SDL, and the watcher can be
+# started from places that do not have it (the quick menu, the boot hook).
+# Only while the daemon is alive, as opening a FIFO nobody reads would block.
+send() {
+	[ -x "$VARNISH" ] && [ -p "$VARNISH_FIFO" ] || return 1
+	_vpid=$(cat "$VARNISH_PID" 2>/dev/null)
+	[ -n "$_vpid" ] && kill -0 "$_vpid" 2>/dev/null || return 1
+	printf '%s\n' "$1" > "$VARNISH_FIFO" 2>/dev/null
+}
+
 show() {
-	[ -x "$VARNISH" ] || return 1
 	case "$1" in
 		connected) _x=12 ;;
 		*)         _x=0 ;;
 	esac
-	"$VARNISH" --icon "$CLIENT" "$POSITION" 0 "$_x" 0 12 12 "$SHEET" >/dev/null 2>&1
+	send "ICON $CLIENT $POSITION 0 $_x 0 12 12 $SHEET"
 }
 
 hide() {
-	[ -x "$VARNISH" ] && "$VARNISH" --hide "$CLIENT" >/dev/null 2>&1
+	send "HIDE $CLIENT"
 	:
 }
 

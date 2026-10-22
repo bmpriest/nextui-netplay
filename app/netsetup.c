@@ -375,6 +375,7 @@ static NS_Settings ns_set = {
 	.add_gameswitcher = false,
 	.disable_powersave = false,
 	.status_icon   = false,
+	.quick_menu    = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
 };
@@ -391,6 +392,16 @@ void NS_statusIconSync(void) {
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
 	         "sh '%s/launcher/status-icon.sh' sync >/dev/null 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	system(cmd);
+}
+
+/* The quick menu runs for as long as the setting is on, armed or not. */
+void NS_quickMenuSync(void) {
+	char cmd[1200];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/quick-menu.sh' sync >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_pak, ns_pak);
 	system(cmd);
 }
@@ -445,6 +456,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
 		else if (!strcmp(k, "status_icon")) ns_set.status_icon = v != 0;
+		else if (!strcmp(k, "quick_menu")) ns_set.quick_menu = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -480,6 +492,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
 	fprintf(f, "status_icon=%d\n", ns_set.status_icon ? 1 : 0);
+	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -496,6 +509,7 @@ void NS_settingsSave(void) {
 	         ns_set.add_gameswitcher ? (NS_isArmed() ? "active" : "enable") : "disable");
 	system(cmd);
 	NS_statusIconSync();
+	NS_quickMenuSync();
 }
 
 /* Three places a core can legitimately live: the platform's own directory, the

@@ -14,6 +14,7 @@ SUPPORTED_PLATFORMS = tg5040 tg5050 my282 my355 h700
 TARGET  = netplay.elf
 BROKER_TARGET = netplay-broker.elf
 WIFIPS_TARGET = netplay-wifips.elf
+QUICKMENU_TARGET = netplay-quickmenu.elf
 NEXTUI ?= ../../../NextUI
 
 ifeq (,$(PLATFORM))
@@ -62,6 +63,7 @@ BROKER_LDFLAGS = $(filter -L%,$(LDFLAGS)) -ldl
 PRODUCT = ../bin/$(PLATFORM)/$(TARGET)
 BROKER_PRODUCT = ../bin/$(PLATFORM)/$(BROKER_TARGET)
 WIFIPS_PRODUCT = ../bin/$(PLATFORM)/$(WIFIPS_TARGET)
+QUICKMENU_PRODUCT = ../bin/$(PLATFORM)/$(QUICKMENU_TARGET)
 
 all:
 	@mkdir -p ../bin/$(PLATFORM)
@@ -71,8 +73,12 @@ all:
 	@echo "built $(BROKER_PRODUCT)"
 	$(CROSS_COMPILE)gcc wifi-ps.c -o $(WIFIPS_PRODUCT) -O2 -s -Wall -std=gnu99
 	@echo "built $(WIFIPS_PRODUCT)"
+	# Like the broker: netsetup.c's hosting without the frontend. It reads
+	# evdev itself and has Varnish draw, so it links no SDL at all.
+	$(CROSS_COMPILE)gcc quickmenu.c netsetup.c -o $(QUICKMENU_PRODUCT) $(CFLAGS) $(BROKER_LDFLAGS)
+	@echo "built $(QUICKMENU_PRODUCT)"
 
 clean:
-	rm -f ../bin/*/$(TARGET) ../bin/*/$(BROKER_TARGET) ../bin/*/$(WIFIPS_TARGET)
+	rm -f ../bin/*/$(TARGET) ../bin/*/$(BROKER_TARGET) ../bin/*/$(WIFIPS_TARGET) ../bin/*/$(QUICKMENU_TARGET)
 
 .PHONY: all clean
