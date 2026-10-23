@@ -53,7 +53,7 @@ load test_helper
         u="$(echo "$p" | tr '[:lower:]' '[:upper:]')"
         mk "${u}_IMAGE"
         case "$output" in
-        ghcr.io/loveretro/*-toolchain:*) ;;
+        ghcr.io/loveretro/*-toolchain@sha256:*) ;;
         *) return 1 ;;
         esac
     done
@@ -68,9 +68,15 @@ load test_helper
     [ "$h700" != "$output" ]
 }
 
-@test "the upstream pin is a tag, not a branch" {
-    mk DSPERATE_TAG
-    [[ "$output" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+@test "the upstream pin is a full commit hash, not a branch" {
+    mk DSPERATE_REV
+    [[ "$output" =~ ^[0-9a-f]{40}$ ]]
+}
+
+@test "the shipping build turns Vulkan off" {
+    # The sysroots' headers predate what upstream's presenter needs.
+    mk DSP_CMAKE_COMMON
+    [[ "$output" == *"-DDSPERATE_VULKAN=OFF"* ]]
 }
 
 @test "the shipping build never compiles the Wayland tier" {
@@ -162,9 +168,10 @@ load test_helper
 }
 
 @test "every patch in patches/ is applied by the clone rule" {
-    grep -q 'for p in $(PATCHES)/\*.patch' "$REPO_ROOT/Makefile"
-    # A drifted patch must be fatal, not silently skipped.
-    grep -q 'git apply "$$p"' "$REPO_ROOT/Makefile"
+    # git am of the whole series: a drifted patch stops the clone outright.
+    grep -q 'am -q $(PATCHES)/\*.patch' "$REPO_ROOT/Makefile"
+    # And verify-pin checks the series sits on the pinned commit.
+    grep -q 'HEAD~$$(ls $(PATCHES)/\*.patch | wc -l)' "$REPO_ROOT/Makefile"
 }
 
 @test "minui-power-control is gone" {
@@ -174,38 +181,28 @@ load test_helper
     ! grep -q "minui-power-control" "$REPO_ROOT/launch.sh"
 }
 
-@test "the vendored MinUI module is copied in before the patches apply" {
-    # Patch 0003 only modifies files upstream already has, so the module has to
-    # be in the tree first or the build fails at the CMake target_sources line.
-    mk OVERLAY
-    [ -n "$output" ]
-    for f in minui.h minui.cpp; do
-        [ -f "$REPO_ROOT/overlay/$f" ] || return 1
-    done
-    copy_line="$(grep -n 'OVERLAY)/minui' "$REPO_ROOT/Makefile" | head -1 | cut -d: -f1)"
-    patch_line="$(grep -n 'for p in $(PATCHES)/\*.patch' "$REPO_ROOT/Makefile" | head -1 | cut -d: -f1)"
-    [ -n "$copy_line" ] && [ -n "$patch_line" ]
-    [ "$copy_line" -lt "$patch_line" ]
+@test "the GCC 8 workaround is still present" {
+    # A compiler bug, not an upstream one: drop it when the toolchain moves
+    # past GCC 8, not before.
+    [ -f "$REPO_ROOT/patches/0001-gcc8-neon-scale-row-grid-miscompile.patch" ]
 }
 
-@test "the GCC 8 workarounds are still present" {
-    # Both are compiler bugs, not upstream ones: drop them when the toolchain
-    # moves past GCC 8, not before.
-    [ -f "$REPO_ROOT/patches/0001-gcc8-constexpr-in-nested-lambda.patch" ]
-    [ -f "$REPO_ROOT/patches/0002-gcc8-neon-scale-row-grid-miscompile.patch" ]
-}
-
-@test "the MinUI integration patch is present and adds no files" {
-    p="$REPO_ROOT/patches/0003-minui-integration.patch"
+@test "the MinUI integration patch brings its own module" {
+    p="$REPO_ROOT/patches/0002-minui-integration.patch"
     [ -f "$p" ]
-    # A patch that creates files conflicts far more readily on a tag bump, and
-    # the Makefile copies the vendored sources in instead.
-    ! grep -q "new file mode" "$p"
+    grep -q "src/frontend/sdl/minui.cpp" "$p"
+    grep -q "src/frontend/sdl/minui.h" "$p"
     # Thumbnails reuse the emulator's own PNG writer. Both launchers read them
     # with IMG_Load, which sniffs magic rather than the extension, so there is
     # no reason to carry an image encoder of our own.
     ! grep -q "write_bmp" "$p"
-    [ ! -f "$REPO_ROOT/overlay/minui_bmp.cpp" ]
+}
+
+@test "the Netplay fixes are in the series" {
+    for p in 0003-lan-join-retry 0004-input-open-every-controller \
+        0005-lan-configurable-timeout 0006-wifi-late-transport-begin; do
+        [ -f "$REPO_ROOT/patches/$p.patch" ] || return 1
+    done
 }
 
 @test "bump-version refuses to run without a version" {

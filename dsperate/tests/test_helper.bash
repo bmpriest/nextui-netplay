@@ -17,8 +17,16 @@ pak_platforms() {
 }
 
 # Replace the current platform's dsp-pad-guid with one reporting <guid> <name>.
+# dsp-pad-guid prints one "GUID<TAB>name" line per joystick. Arguments come
+# in pairs: guid name [guid name ...].
 stub_pad_guid() {
-    printf '#!/bin/sh\nprintf "%%s\\n" "%s" "%s"\n' "$1" "$2" >"$PAK/$PLATFORM/dsp-pad-guid"
+    {
+        printf '#!/bin/sh\n'
+        while [ $# -ge 2 ]; do
+            printf "printf '%%s\\t%%s\\n' '%s' '%s'\n" "$1" "$2"
+            shift 2
+        done
+    } >"$PAK/$PLATFORM/dsp-pad-guid"
     chmod +x "$PAK/$PLATFORM/dsp-pad-guid"
 }
 

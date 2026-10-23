@@ -39,7 +39,7 @@ setup() {
 @test "the config is seeded from the profile the device maps to" {
     dsp_seed_config
     [ -f "$DSP_CONFIG" ]
-    [ "$(cat "$DSP_DEVICE_FILE")" = "no-sticks" ]
+    [ "$(cat "$DSP_DEVICE_FILE")" = "no-sticks@3" ]
     grep -q "stylus_dpad" "$DSP_CONFIG"
 }
 
@@ -67,9 +67,19 @@ setup() {
     # Pretend the card moved to a device with two sticks.
     dsp_platform_profile tg5040 smartpro
     dsp_seed_config
-    [ "$(cat "$DSP_DEVICE_FILE")" = "two-sticks" ]
+    [ "$(cat "$DSP_DEVICE_FILE")" = "two-sticks@3" ]
     grep -q "original" "$DSP_USERDATA_DIR/dsperate.ini.bak"
     ! grep -q "original" "$DSP_CONFIG"
+}
+
+@test "a config seeded by an older revision is re-seeded once" {
+    dsp_seed_config
+    echo "# old revision" >>"$DSP_CONFIG"
+    echo "no-sticks" >"$DSP_DEVICE_FILE"
+    dsp_seed_config
+    ! grep -q "old revision" "$DSP_CONFIG"
+    grep -q "face_fix = off" "$DSP_CONFIG"
+    grep -q "quit = mod+b" "$DSP_CONFIG"
 }
 
 @test "deleting the marker re-seeds" {
@@ -137,6 +147,95 @@ setup_h700_pad() {
     stub_pad_guid "$DSP_H700_FIXED_GUID" "Fake Pad"
     dsp_export_pad_mapping
     [ "$SDL_GAMECONTROLLERCONFIG" = "$DSP_H700_FIXED_GUID,Fake Pad,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
+}
+
+@test "DevBridge's virtual pad on TrimUI shares the built-in body" {
+    # Same bus/vendor/product/version, different name CRC in bytes 2-3.
+    stub_pad_guid 0300a3845e0400008e02000014010000 "Xbox 360 Controller" \
+        03008ece5e0400008e02000014010000 "Xbox 360 Controller"
+    dsp_export_pad_mapping
+    [ "$SDL_GAMECONTROLLERCONFIG" = "0300a3845e0400008e02000014010000,Xbox 360 Controller,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux
+03008ece5e0400008e02000014010000,Xbox 360 Controller,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
+}
+
+@test "DevBridge's virtual pad on h700 takes its own body" {
+    setup_launch h700 rg35xxh
+    unset LD_LIBRARY_PATH SDL_GAMECONTROLLERCONFIG
+    dsp_platform_profile h700 rg35xxh
+    dsp_init_env
+    stub_pad_guid "$DSP_H700_FIXED_GUID" ANBERNIC-keys 06000000414e4245524e49432d6b6500 ANBERNIC-keys
+    dsp_export_pad_mapping
+    [ "$SDL_GAMECONTROLLERCONFIG" = "$DSP_H700_FIXED_GUID,ANBERNIC-keys,$DSP_MAP_TRIMUI,platform:Linux
+06000000414e4245524e49432d6b6500,ANBERNIC-keys,$DSP_MAP_H700_VIRTUAL,platform:Linux" ]
+}
+
+@test "an unknown second pad is left to SDL" {
+    stub_pad_guid 030000004c050000c405000011010000 "Fake Pad" 05000000aaaa0000bbbb000001000000 "BT Pad"
+    dsp_export_pad_mapping
+    [ "$SDL_GAMECONTROLLERCONFIG" = "030000004c050000c405000011010000,Fake Pad,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
+}
+
+@test "no session means no network arguments" {
+    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+}
+
+# A fake Netplay.pak whose pre-launch.sh does nothing, and a session file.
+setup_session() {
+    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
+    NETPLAY_PAK="$BATS_TEST_TMPDIR/Netplay.pak"
+    mkdir -p "$NETPLAY_STATE" "$NETPLAY_PAK/launcher"
+    : >"$NETPLAY_PAK/launcher/pre-launch.sh"
+    printf '%s\n' "$@" >"$NETPLAY_STATE/session"
+    DSP_RESUME_ARGS=""
+    unset DS_LAN_TIMEOUT_MS DS_VERBOSE
+}
+
+@test "a host session hosts and boots fresh" {
+    setup_session role=host adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
+    [ "$DSP_RESUME_ARGS" = "--no-autoload" ]
+    # Ad hoc keeps DSperate's own MP wait.
+    [ -z "${DS_LAN_TIMEOUT_MS:-}" ]
+}
+
+@test "a guest session joins the host by address" {
+    setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-join 10.0.0.1" ]
+}
+
+@test "a picked slot survives a session" {
+    setup_session role=client peer=10.0.0.1
+    DSP_RESUME_ARGS="--load-state /x.3.dss"
+    dsp_netplay_args
+    [ "$DSP_RESUME_ARGS" = "--load-state /x.3.dss" ]
+}
+
+@test "a session through an access point waits longer for MP replies" {
+    setup_session role=client peer=192.168.0.2
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "100" ]
+    setup_session role=client peer=192.168.0.2 dsp_lan_timeout_ms=60
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "60" ]
+}
+
+@test "a guest with an unusable host address plays offline" {
+    setup_session role=client "peer=10.0.0.1;reboot"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+    setup_session role=client
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+}
+
+@test "verbose Netplay logs turn on DSperate's" {
+    setup_session role=host verbose_logs=1
+    dsp_netplay_args
+    [ "$DS_VERBOSE" = "1" ]
 }
 
 @test "no pad means no mapping rather than a broken one" {
