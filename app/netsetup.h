@@ -162,6 +162,14 @@ typedef enum {
 	NS_INST_SELECTED,    /* only the ones ticked below */
 } NS_InstMode;
 
+/* Values are what the settings file stores; 1 was the old "on", which showed
+ * the icon only while armed, so it keeps meaning that. */
+typedef enum {
+	NS_ICON_OFF = 0,        /* never */
+	NS_ICON_SESSION = 1,    /* only while a session is armed */
+	NS_ICON_PERSISTENT = 2, /* always, dimmed when no session is armed */
+} NS_IconMode;
+
 typedef struct {
 	bool        share_cores;    /* frozen: retained so the setting can return later */
 	bool        compatibility_cores; /* fall back to the pak's matched core set */
@@ -170,7 +178,7 @@ typedef struct {
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
 	bool        disable_powersave; /* radio power save off while a session is armed */
-	bool        status_icon;    /* Varnish.pak overlay icon: grey armed, white connected */
+	NS_IconMode status_icon;    /* Varnish.pak overlay icon: dim, half lit hosting, lit connected */
 	bool        quick_menu;     /* START in NextUI's menus opens a Varnish-drawn menu */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];

@@ -1,7 +1,8 @@
 #!/bin/sh
 # launcher/status-icon.sh: the Varnish status icon follows the setting and the
-# session - grey N (x=0) while armed, white N (x=12) once a peer is connected,
-# hidden over gameplay and gone when the session ends.
+# session - dimmed N (x=0) with no session when persistent, left half lit
+# (x=14) while hosting, both halves (x=28) once a peer is connected, hidden over
+# gameplay, and gone when the session ends unless persistent.
 #
 # Varnish is a stand-in: a reader on its command FIFO that logs each line, so
 # this checks exactly what would be drawn without a device.
@@ -75,8 +76,9 @@ watcher_alive() {
 }
 
 SHEET="$NP/res/status@%dx.png"
-ARMED="ICON netplay bottom-center 0 0 0 12 12 $SHEET"
-CONNECTED="ICON netplay bottom-center 0 12 0 12 12 $SHEET"
+IDLE="ICON netplay bottom-center 0 0 0 14 14 $SHEET"
+HOSTING="ICON netplay bottom-center 0 14 0 14 14 $SHEET"
+CONNECTED="ICON netplay bottom-center 0 28 0 14 14 $SHEET"
 HIDE="HIDE netplay"
 
 echo "== setting off"
@@ -86,15 +88,15 @@ sh "$SCRIPT" sync
 sleep 1.5
 watcher_alive && bad "watcher started with the setting off" || ok "no watcher with the setting off"
 
-echo "== host, no guests: grey"
+echo "== session: host, no guests: left half lit"
 printf 'status_icon=1\n' > "$STATE/settings"
 sh "$SCRIPT" sync
-wait_for "$ARMED" && ok "armed icon shown" || bad "armed icon not shown (last: '$(last)')"
+wait_for "$HOSTING" && ok "hosting icon shown" || bad "hosting icon not shown (last: '$(last)')"
 sh "$SCRIPT" sync
 pids=$(ps -eo args | grep -c '[s]tatus-icon.sh watch')
 check "a second sync does not start a second watcher" "$pids" "1"
 
-echo "== host with a guest: white"
+echo "== session: host with a guest: both halves lit"
 printf 'pid=1\nguest_count=1\n' > "$STATE/broker.status"
 wait_for "$CONNECTED" && ok "connected icon shown" || bad "connected icon not shown (last: '$(last)')"
 
@@ -104,15 +106,14 @@ wait_for "$HIDE" && ok "hidden during gameplay" || bad "not hidden in game (last
 rm -f "$ROOT/in-game"
 wait_for "$CONNECTED" && ok "shown again after the game" || bad "not restored after game (last: '$(last)')"
 
-echo "== session ends: watcher exits and hides"
-rm -f "$STATE/session"
+echo "== session: session ends: watcher exits and hides"
+rm -f "$STATE/session" "$STATE/broker.status"
 wait_for "$HIDE" && ok "hidden when the session ends" || bad "not hidden at session end (last: '$(last)')"
 sleep 1.5
 watcher_alive && bad "watcher outlived the session" || ok "watcher exited with the session"
 
-echo "== guest: white once joined"
+echo "== session: guest lit once joined"
 printf 'role=client\npeer=10.0.0.1\n' > "$STATE/session"
-rm -f "$STATE/broker.status"
 sh "$SCRIPT" sync
 wait_for "$CONNECTED" && ok "joined guest shows connected" || bad "guest icon wrong (last: '$(last)')"
 
@@ -122,6 +123,35 @@ sh "$SCRIPT" sync
 check "sync with the setting off hides at once" "$(last)" "$HIDE"
 sleep 1.5
 watcher_alive && bad "watcher survived the setting off" || ok "watcher stopped"
+
+echo "== persistent: dimmed with no session"
+rm -f "$STATE/session"
+printf 'status_icon=2\n' > "$STATE/settings"
+sh "$SCRIPT" sync
+wait_for "$IDLE" && ok "idle icon shown without a session" || bad "idle icon not shown (last: '$(last)')"
+
+echo "== persistent: follows a session and outlives it"
+printf 'role=host\n' > "$STATE/session"
+wait_for "$HOSTING" && ok "hosting icon once armed" || bad "hosting icon not shown (last: '$(last)')"
+printf 'pid=1\nguest_count=2\n' > "$STATE/broker.status"
+wait_for "$CONNECTED" && ok "connected icon with guests" || bad "connected icon not shown (last: '$(last)')"
+rm -f "$STATE/session" "$STATE/broker.status"
+wait_for "$IDLE" && ok "back to idle when the session ends" || bad "not idle after session (last: '$(last)')"
+sleep 1.5
+watcher_alive && ok "watcher stays for a persistent icon" || bad "persistent watcher exited"
+
+echo "== persistent: hidden in a game"
+: > "$ROOT/in-game"
+wait_for "$HIDE" && ok "hidden during gameplay" || bad "not hidden in game (last: '$(last)')"
+rm -f "$ROOT/in-game"
+wait_for "$IDLE" && ok "idle again after the game" || bad "not restored after game (last: '$(last)')"
+
+echo "== persistent: switched to session with no session"
+printf 'status_icon=1\n' > "$STATE/settings"
+sh "$SCRIPT" sync
+check "hidden at once" "$(last)" "$HIDE"
+sleep 1.5
+watcher_alive && bad "watcher survived with nothing to show" || ok "watcher stopped"
 
 echo "== no Varnish installed"
 rm -rf "$VARNISH_DIR"

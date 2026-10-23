@@ -5,10 +5,15 @@
 #   status-icon.sh stop    stop the watcher and hide the icon
 #   status-icon.sh watch   (internal) the watcher loop
 #
+# The setting (status_icon=) is 0 no icon, 1 only while a session is armed,
+# 2 always - dimmed with no session, so Netplay's presence shows at a glance.
+#
 # The icon comes from res/status@<scale>x.png, a NextUI-style asset sheet: one
-# pixel-exact sheet per device scale, each state its own 12x12 (1x units) icon,
+# pixel-exact sheet per device scale, each state its own 14x14 (1x units) icon,
 # recoloured by Varnish with the theme's icon colour exactly as NextUI recolours
-# its own status icons. Armed is the grey N, a connected peer the white N.
+# its own status icons (tools/make-status-icons.py builds them). The N is a
+# plug and a socket: dim when idle, the left half lit while hosting, both once
+# a peer is connected.
 #
 # Optional by design: without Varnish (or on a platform it does not support)
 # every send fails quietly and Netplay behaves exactly as before.
@@ -33,8 +38,18 @@ SHEET="$NP/res/status@%dx.png"
 # it restarts, so an unchanged icon is re-sent this often (seconds).
 RESEND=30
 
-enabled() {
-	grep -q '^status_icon=1$' "$SETTINGS" 2>/dev/null
+mode() {
+	_mode=$(sed -n 's/^status_icon=//p' "$SETTINGS" 2>/dev/null)
+	echo "${_mode:-0}"
+}
+
+# Whether the icon belongs on screen at all, game or not.
+wanted() {
+	case $(mode) in
+		2) return 0 ;;
+		1) [ -f "$SESSION" ] ;;
+		*) return 1 ;;
+	esac
 }
 
 watcher_pid() {
@@ -43,15 +58,19 @@ watcher_pid() {
 	echo "$_pid"
 }
 
-# armed | connected. A host is connected once the broker has a guest; a guest
-# is connected by joining, which is what the Netplay app itself reports.
+# idle | hosting | connected. A host is connected once the broker has a guest;
+# a guest is connected by joining, which is what the Netplay app itself reports.
 session_state() {
+	if [ ! -f "$SESSION" ]; then
+		echo idle
+		return
+	fi
 	if grep -q '^role=client$' "$SESSION" 2>/dev/null; then
 		echo connected
 		return
 	fi
 	_guests=$(sed -n 's/^guest_count=//p' "$STATE/broker.status" 2>/dev/null)
-	if [ "${_guests:-0}" -gt 0 ] 2>/dev/null; then echo connected; else echo armed; fi
+	if [ "${_guests:-0}" -gt 0 ] 2>/dev/null; then echo connected; else echo hosting; fi
 }
 
 # Over gameplay a centred icon would cover the game; the shim draws its own
@@ -73,10 +92,11 @@ send() {
 
 show() {
 	case "$1" in
-		connected) _x=12 ;;
+		connected) _x=28 ;;
+		hosting)   _x=14 ;;
 		*)         _x=0 ;;
 	esac
-	send "ICON $CLIENT $POSITION 0 $_x 0 12 12 $SHEET"
+	send "ICON $CLIENT $POSITION 0 $_x 0 14 14 $SHEET"
 }
 
 hide() {
@@ -90,7 +110,7 @@ watch() {
 	_shown=
 	_since=0
 	_daemon=
-	while [ -f "$SESSION" ] && enabled; do
+	while wanted; do
 		if in_game; then
 			_want=hidden
 		else
@@ -113,7 +133,7 @@ watch() {
 
 case "$1" in
 	sync)
-		if [ -f "$SESSION" ] && enabled; then
+		if wanted; then
 			watcher_pid >/dev/null && exit 0
 			# Detached, so it outlives the app that armed the session. The pid
 			# is recorded here as well as by the watcher so two quick syncs

@@ -268,7 +268,9 @@ static void setting_row(char* out, int len, int item) {
 		snprintf(out, len, "Disable Wi-Fi Power Saving:  %s", c->disable_powersave ? "Yes" : "No");
 		break;
 	case SET_STATUS_ICON:
-		snprintf(out, len, "Use status icon:  %s", c->status_icon ? "Yes" : "No");
+		snprintf(out, len, "Use status icon:  %s",
+		         c->status_icon == NS_ICON_PERSISTENT ? "Persistent"
+		       : c->status_icon == NS_ICON_SESSION ? "Session" : "No");
 		break;
 	case SET_QUICK_MENU:
 		snprintf(out, len, "Quick menu (START):  %s", c->quick_menu ? "Yes" : "No");
@@ -496,7 +498,9 @@ static void render(SDL_Surface* s) {
 			hint = "Lower latency while armed. Uses more battery."; break;
 		case SET_STATUS_ICON:
 			hint = NS_varnishInstalled()
-			     ? "N at the bottom while armed: grey, white once connected."
+			     ? (NS_settings()->status_icon == NS_ICON_PERSISTENT ? "N always at the bottom; lights up while armed."
+			       : NS_settings()->status_icon == NS_ICON_SESSION ? "N at the bottom while a session is armed."
+			       : "Persistent: always shown. Session: only while armed.")
 			     : "Needs Varnish.pak, which draws the icon."; break;
 		case SET_QUICK_MENU:
 			hint = NS_varnishInstalled()
@@ -1005,7 +1009,11 @@ int main(int argc, char* argv[]) {
 					if (!c->compatibility_cores) c->force_compatibility = false;
 					break;
 				case SET_GAMESWITCHER: c->add_gameswitcher = !c->add_gameswitcher; break;
-				case SET_STATUS_ICON: c->status_icon = !c->status_icon; break;
+				case SET_STATUS_ICON:   /* No > Persistent > Session > No */
+					c->status_icon = c->status_icon == NS_ICON_OFF ? NS_ICON_PERSISTENT
+					               : c->status_icon == NS_ICON_PERSISTENT ? NS_ICON_SESSION
+					               : NS_ICON_OFF;
+					break;
 				case SET_QUICK_MENU: c->quick_menu = !c->quick_menu; break;
 				case SET_POWERSAVE:
 					/* Applies to an armed session now, not only from the next

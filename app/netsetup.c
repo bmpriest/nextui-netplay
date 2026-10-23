@@ -374,7 +374,7 @@ static NS_Settings ns_set = {
 	.simple_client = false,
 	.add_gameswitcher = false,
 	.disable_powersave = false,
-	.status_icon   = false,
+	.status_icon   = NS_ICON_OFF,
 	.quick_menu    = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
@@ -455,7 +455,8 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
-		else if (!strcmp(k, "status_icon")) ns_set.status_icon = v != 0;
+		else if (!strcmp(k, "status_icon"))
+			ns_set.status_icon = (v < 0 || v > NS_ICON_PERSISTENT) ? NS_ICON_OFF : (NS_IconMode)v;
 		else if (!strcmp(k, "quick_menu")) ns_set.quick_menu = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
@@ -491,7 +492,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
-	fprintf(f, "status_icon=%d\n", ns_set.status_icon ? 1 : 0);
+	fprintf(f, "status_icon=%d\n", (int)ns_set.status_icon);
 	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
