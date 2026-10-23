@@ -55,8 +55,8 @@ turning it off offers to restore them. Put your games in
 With a session armed, launch the same game on both devices (in either order)
 and use the game's own wireless menu: one player creates a group, the other
 joins it. Use the ad hoc network: through a router the games run at about a
-third of full speed. Mario Kart DS races run at about 50 fps on a Trimui Brick
-and an RG35XX H; menus run at full speed. DSP.pak is built for tg5040, tg5050 and h700.
+third of full speed. On a Trimui Brick and an RG35XX H, Mario Kart DS races
+run at about 50 fps (menus at full speed) and Asphalt: Urban GT 2 at about 57. DSP.pak is built for tg5040, tg5050 and h700.
 Save states are off while the two consoles are talking. Details and
 measurements: [docs/dsperate.md](docs/dsperate.md).
 

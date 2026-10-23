@@ -140,8 +140,11 @@ fake card, and runs in `make test`.
 ## Not done / known gaps
 
 - **tg5050** builds but has never run on hardware.
-- Only Mario Kart DS has been played. Asphalt GT2's ROM is on both test
-  devices but untested. Pokémon (Union Room, trading) is untested.
+- Played: Mario Kart DS (scripted test) and Asphalt: Urban GT 2 (by hand:
+  HOST GAME / JOIN GAME, both cars on the grid, ~57 fps racing on both with
+  matching positions; the menus need one stylus tap, L2, at "touch to
+  start"). Asphalt is the game whose start transition DraStic's emulated
+  radio never got past. Pokémon (Union Room, trading) is untested.
 - The race runs at ~83 % on these A53 devices. Shipped DSperate leaves one more
   lever: a GPU 3D path where the device has Vulkan. None of these do.
 - Through an access point the race runs at about a third of full speed. The
