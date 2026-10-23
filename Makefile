@@ -302,7 +302,7 @@ nds-wifi-brick-pak: nds-wifi-hooks
 		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/drastic/drastic" \
 		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/drastic/show_hotkeys" \
 		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/bin/"*
-	@sed -i 's|LD_PRELOAD=$$EMU_DIR/libs/libadvdrastic.so|DRASTIC_WIFI_MODE="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo model \|\| echo passthrough)" DRASTIC_WIFI_CYCLE="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo 1 \|\| echo 0)" DRASTIC_WIFI_IRQ="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo 1 \|\| echo 0)" DRASTIC_WIFI_SESSION="/mnt/SDCARD/Tools/tg5040/Netplay.pak/state/session" DRASTIC_WIFI_TRACE="$$LOGS_PATH/NDS-wifi-$$(date +%Y%m%d-%H%M%S).txt" LD_PRELOAD="$$EMU_DIR/libs/libdrastic_wifi.so:$$EMU_DIR/libs/libadvdrastic.so"|' \
+	@sed -i 's|LD_PRELOAD=$$EMU_DIR/libs/libadvdrastic.so|DRASTIC_WIFI_MODE="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo model \|\| echo passthrough)" DRASTIC_WIFI_CYCLE="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo 1 \|\| echo 0)" DRASTIC_WIFI_IRQ="$$(test -f "$$EMU_DIR/wifi_model.enabled" \&\& echo 1 \|\| echo 0)" DRASTIC_WIFI_SESSION="/mnt/SDCARD/Tools/tg5040/Netplay.pak/state/session" DRASTIC_WIFI_TRACE="/tmp/NDS-wifi-$$(date +%Y%m%d-%H%M%S).txt" LD_PRELOAD="$$EMU_DIR/libs/libdrastic_wifi.so:$$EMU_DIR/libs/libadvdrastic.so"|' \
 		"$(NDS_WIFI_BRICK_STAGE)/Emus/tg5040/NDS.pak/launch.sh"
 	@cp testing/roms/NDS-README.txt \
 		"$(NDS_WIFI_BRICK_STAGE)/Roms/Nintendo DS (NDS)/README.txt"

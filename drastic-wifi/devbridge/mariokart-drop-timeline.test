@@ -1,0 +1,112 @@
+# Cold two-Brick Mario Kart DS join.
+#
+# Every step that can silently land in the wrong place is gated on VERIFY, so a
+# bad run aborts at the step that actually went wrong instead of pressing
+# buttons into the wrong menu for another minute and being diagnosed afterwards
+# from the wreckage. The final VERIFY makes the whole macro a pass/fail: it
+# checks the racer badge region, because a lobby with one player and one with
+# two differ by a single row of text that disappears into a whole-screen
+# average.
+SESSION mariokart-drop-{date}-{time} devbridge-sessions
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+STATUS
+# OPEN_GAME is silently skipped when a game is already in the foreground, and
+# the macro then drives whatever session is up — which is how runs ended in
+# Grand Prix cc-selection and were later misread as multiplayer failures. Fail
+# fast instead: this errors immediately unless both consoles are at DevBridge.
+all:WAIT_FOR devbridge 3000
+all:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+
+# Measured: the primary menu appears about 5 s after launch and the attract
+# demo starts about 11 s in, so the menu is simply waited for rather than
+# recovered from. VERIFY_WAIT checks at 4, 7 and 10 s, all inside that window.
+# No input is sent here: the old sequence pressed A to leave the demo and B to
+# undo the Single Player that A selected when the demo had already ended, which
+# cost about 25 s a run and could itself land in the wrong menu.
+WAIT 4000
+all:VERIFY_WAIT drastic-wifi/devbridge/reference/mk-main-menu.png 6000
+
+# Single Player -> Multiplayer. The menu animates, so give the press room.
+all:BTN DOWN
+WAIT 1200
+all:BTN A
+WAIT 3000
+
+# Host creates a group and begins advertising.
+host:BTN UP
+WAIT 1200
+host:BTN A
+WAIT 1500
+host:BTN A
+host:VERIFY_WAIT drastic-wifi/devbridge/reference/mk-host-seeking.png 10000
+
+# Discovery is beacon-driven; wait on the room appearing rather than guessing.
+client:VERIFY_WAIT drastic-wifi/devbridge/reference/mk-client-room-list.png 20000
+client:BTN A
+host:SCREEN d00
+WAIT 1500
+host:SCREEN d01
+WAIT 1500
+host:SCREEN d02
+WAIT 1500
+host:SCREEN d03
+WAIT 1500
+host:SCREEN d04
+WAIT 1500
+host:SCREEN d05
+WAIT 1500
+host:SCREEN d06
+WAIT 1500
+host:SCREEN d07
+WAIT 1500
+host:SCREEN d08
+WAIT 1500
+host:SCREEN d09
+WAIT 1500
+host:SCREEN d10
+WAIT 1500
+host:SCREEN d11
+WAIT 1500
+host:SCREEN d12
+WAIT 1500
+host:SCREEN d13
+WAIT 1500
+host:SCREEN d14
+WAIT 1500
+host:SCREEN d15
+WAIT 1500
+host:SCREEN d16
+WAIT 1500
+host:SCREEN d17
+WAIT 1500
+host:SCREEN d18
+WAIT 1500
+host:SCREEN d19
+WAIT 1500
+host:SCREEN d20
+WAIT 1500
+host:SCREEN d21
+WAIT 1500
+host:SCREEN d22
+WAIT 1500
+host:SCREEN d23
+WAIT 1500
+host:SCREEN d24
+WAIT 1500
+host:SCREEN d25
+WAIT 1500
+host:SCREEN d26
+WAIT 1500
+host:SCREEN d27
+WAIT 1500
+host:SCREEN d28
+WAIT 1500
+host:SCREEN d29
+WAIT 1500
+host:SCREEN d30
+WAIT 1500
+host:SCREEN d31
+WAIT 1500
+all:SCREEN d99-final
+STATUS

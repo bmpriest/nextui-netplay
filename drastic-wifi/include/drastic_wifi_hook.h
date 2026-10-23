@@ -37,5 +37,6 @@ int dwifi_words_match(const void *actual, const uint32_t *expected,
 int dwifi_is_drastic_command(const char *cmdline, size_t length);
 int dwifi_brick_dispatcher_is_wifi(uint32_t address);
 uint32_t dwifi_brick_packet_store_address(uint16_t offset);
+int dwifi_is_packet_tx_slot(uint32_t register_offset);
 
 #endif

@@ -25,6 +25,19 @@ static void test_brick_dispatcher_wifi_gate(void)
 		UINT32_C(0x00805ffe));
 }
 
+static void test_packet_tx_slots(void)
+{
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x0080)));
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x0090)));
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x0094)));
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x0098)));
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x00a0)));
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x00a4)));
+	assert(dwifi_is_packet_tx_slot(UINT32_C(0x00a8)));
+	assert(!dwifi_is_packet_tx_slot(UINT32_C(0x0084)));
+	assert(!dwifi_is_packet_tx_slot(UINT32_C(0x009c)));
+}
+
 static void test_absolute_jump(void)
 {
 	uint32_t words[2] = {0};
@@ -77,6 +90,7 @@ int main(void)
 {
 	test_register_offset();
 	test_brick_dispatcher_wifi_gate();
+	test_packet_tx_slots();
 	test_absolute_jump();
 	test_aarch64_jump();
 	test_prologue_validation();

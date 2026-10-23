@@ -1,0 +1,88 @@
+--- drastic-wifi/src/transport.c	2026-09-01 18:59:55.318441355 -0600
++++ /tmp/claude-1000/-home-benja-dev-sbcs-my-paks-Profiles-pak/b6dec7da-8af5-4720-ad9c-bc232e152558/scratchpad/transport.c.new	2026-09-01 18:59:55.309512326 -0600
+@@ -27,8 +27,6 @@
+ static size_t pending_mp_cmd_length;
+ static uint8_t pending_mp_ack[NETLINK_MAX_PACKET];
+ static size_t pending_mp_ack_length;
+-static uint8_t candidate_mp_cmd[NETLINK_MAX_PACKET];
+-static size_t candidate_mp_cmd_length;
+ static uint8_t next_mp_cmd[NETLINK_MAX_PACKET];
+ static size_t next_mp_cmd_length;
+ static uint8_t next_mp_ack[NETLINK_MAX_PACKET];
+@@ -328,52 +326,39 @@
+ 		target = pending_mp_reply;
+ 		target_length = &pending_mp_reply_length;
+ 	} else if (mp_role == 1) {
+-		memcpy(candidate_mp_cmd, frame, length);
+-		candidate_mp_cmd_length = length;
++		/* Do not wait for the closing ACK before publishing a command. The
++		 * station must receive this frame in order to generate the reply which
++		 * lets the host finish the transfer and send that ACK. */
++		if (!pending_mp_cmd_length && !pending_mp_wants_ack) {
++			memcpy(pending_mp_cmd, frame, length);
++			pending_mp_cmd_length = length;
++		} else {
++			memcpy(next_mp_cmd, frame, length);
++			next_mp_cmd_length = length;
++		}
+ 		return;
+ 	} else if (mp_role == 2) {
+ 		/* A station may send application data on the ACK multicast flow. The
+ 		 * NetLink host has no incoming command to pair it with; deliver it as an
+ 		 * ordinary hardware-classified ACK frame instead of silently dropping
+ 		 * the payload. */
+-		if (NetLink_getRole() == NETLINK_ROLE_HOST &&
+-		    !candidate_mp_cmd_length) {
++		if (NetLink_getRole() == NETLINK_ROLE_HOST) {
+ 			target = pending_other;
+ 			target_length = &pending_other_length;
+ 			memcpy(target, frame, length);
+ 			*target_length = length;
+ 			return;
+ 		}
+-		/* Commit only complete generations.  An ACK closes the most recently
+-		 * observed command; keeping that pair together prevents independent
+-		 * coalescing from splicing two host cycles. */
+-		if (!candidate_mp_cmd_length)
+-			return;
+-		uint16_t command_sequence = frame_sequence(candidate_mp_cmd,
+-			candidate_mp_cmd_length);
+-		uint16_t ack_sequence = frame_sequence(frame, length);
+-		if (command_sequence == UINT16_C(0xffff) ||
+-		    ack_sequence != (uint16_t)((command_sequence + 1) & 0x0fff)) {
+-			/* The command which this ACK closes was lost before reaching the
+-			 * bounded inbox.  Do not splice it onto a different generation. */
+-			candidate_mp_cmd_length = 0;
+-			return;
+-		}
+-		if (!pending_mp_cmd_length && !pending_mp_ack_length &&
+-		    !pending_mp_wants_ack) {
+-			memcpy(pending_mp_cmd, candidate_mp_cmd,
+-				candidate_mp_cmd_length);
+-			pending_mp_cmd_length = candidate_mp_cmd_length;
++		/* The command is already visible to the client. Keep its closing ACK
++		 * in the matching bounded generation so it follows that command. */
++		if (!pending_mp_ack_length &&
++		    (pending_mp_wants_ack || pending_mp_cmd_length)) {
+ 			memcpy(pending_mp_ack, frame, length);
+ 			pending_mp_ack_length = length;
+-		} else {
+-			memcpy(next_mp_cmd, candidate_mp_cmd,
+-				candidate_mp_cmd_length);
+-			next_mp_cmd_length = candidate_mp_cmd_length;
++		} else if (next_mp_cmd_length) {
+ 			memcpy(next_mp_ack, frame, length);
+ 			next_mp_ack_length = length;
+ 		}
+-		candidate_mp_cmd_length = 0;
+ 		return;
+ 	}
+ 	memcpy(target, frame, length);
+@@ -520,7 +505,6 @@
+ 	pending_beacon_length = 0;
+ 	pending_mp_cmd_length = 0;
+ 	pending_mp_ack_length = 0;
+-	candidate_mp_cmd_length = 0;
+ 	next_mp_cmd_length = 0;
+ 	next_mp_ack_length = 0;
+ 	pending_mp_reply_length = 0;

@@ -18,6 +18,35 @@ static void capture_packet_write(void *opaque, uint16_t offset, uint16_t value)
 	write->calls++;
 }
 
+/* capture_packet_write keeps only the newest write, which cannot answer
+ * "did this particular store ever reach the guest". This keeps the whole
+ * sequence so a single expected write can be looked for among many. */
+struct write_log {
+	struct { uint16_t offset; uint16_t value; } entries[256];
+	unsigned calls;
+};
+static void log_packet_write(void *opaque, uint16_t offset, uint16_t value)
+{
+	struct write_log *log = opaque;
+	if (log->calls < sizeof(log->entries) / sizeof(log->entries[0])) {
+		log->entries[log->calls].offset = offset;
+		log->entries[log->calls].value = value;
+	}
+	log->calls++;
+}
+static int write_log_has(const struct write_log *log, uint16_t offset,
+	uint16_t value)
+{
+	unsigned limit = log->calls;
+	if (limit > sizeof(log->entries) / sizeof(log->entries[0]))
+		limit = sizeof(log->entries) / sizeof(log->entries[0]);
+	for (unsigned index = 0; index < limit; ++index)
+		if (log->entries[index].offset == offset &&
+		    log->entries[index].value == value)
+			return 1;
+	return 0;
+}
+
 static int receive_frame_complete(struct dwifi_model *model,
 	const uint8_t *frame, size_t length)
 {
@@ -265,6 +294,10 @@ static void test_tx_frames_carry_sequence_numbers(void)
 	dwifi_model_write16(&model, UINT32_C(0x048000a0), UINT16_C(0x8000));
 	assert(sent.calls == 1);
 	assert(sent.bytes[12 + 22] == 0 && sent.bytes[12 + 23] == 0);
+	/* The medium is occupied for the first frame's airtime, so the second
+	 * cannot go out in the same instant. Hardware serialises the air; let it
+	 * clear, as test_medium_serialises_transmission() covers directly. */
+	dwifi_model_advance_us(&model, 512);
 	dwifi_model_write16(&model, UINT32_C(0x048000a0), UINT16_C(0x8000));
 	assert(sent.calls == 2);
 	assert(sent.bytes[12 + 22] == UINT8_C(0x10));
@@ -281,7 +314,8 @@ static void test_rf_status_and_tx_header_writeback(void)
 	dwifi_model_reset(&model);
 	assert(dwifi_model_read16(&model, UINT32_C(0x04800214)) == 1);
 	assert(dwifi_model_read16(&model, UINT32_C(0x0480019c)) == UINT16_C(0x84));
-	/* Not served to the guest yet: see set_rf_status. */
+	/* Tracked but deliberately not served to the guest yet: doing so regressed
+	 * the join while the radio state is still partial. See dwifi_model_owns_read. */
 	assert(!dwifi_model_owns_read(UINT32_C(0x04800214)));
 
 	dwifi_model_set_send_callback(&model, capture_frame, &sent);
@@ -377,6 +411,17 @@ static void test_mp_command_transfer(void)
 }
 
 /* Receiving a command frame makes a station answer without the guest asking. */
+/* Cross the call boundary a scheduled multiplayer reply is owed to. The model
+ * deliberately will not answer inside the call that received the command, so a
+ * test must let the clock move and then re-enter, exactly as the emulator's
+ * event hook does around a turn of the guest CPU. */
+static void run_scheduled_reply(struct dwifi_model *model)
+{
+	/* Comfortably past the model's turnaround, then re-enter. */
+	dwifi_model_advance_us(model, 64);
+	dwifi_model_advance_us(model, 8);
+}
+
 static void test_mp_reply_is_automatic(void)
 {
 	struct dwifi_model model;
@@ -405,6 +450,11 @@ static void test_mp_reply_is_automatic(void)
 	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
 	assert(dwifi_model_read16(&model, UINT32_C(0x04804000)) ==
 		UINT16_C(0x801c));
+
+	/* Nothing is answered from inside the receiving call: the guest has not run
+	 * yet and could not have staged anything. */
+	assert(sent.calls == 0);
+	run_scheduled_reply(&model);
 
 	/* With no reply slot armed the station still answers, with an empty frame. */
 	assert(sent.calls == 1 && sent.length == 12 + 28);
@@ -475,6 +525,8 @@ static void test_mp_reply_slot_latches(void)
 	static const uint8_t cmd_flow[6] = {3, 9, 0xbf, 0, 0, 0};
 	memcpy(frame + 12 + 4, cmd_flow, sizeof(cmd_flow));
 	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	assert(sent.calls == 0);
+	run_scheduled_reply(&model);
 
 	assert(sent.calls == 1 && sent.length == 12 + 26);
 	assert(sent.bytes[4] == 1);
@@ -483,6 +535,359 @@ static void test_mp_reply_slot_latches(void)
 	assert(dwifi_model_read16(&model, UINT32_C(0x04800094)) == 0);
 	assert(dwifi_model_read16(&model, UINT32_C(0x04800098)) ==
 		UINT16_C(0x8640));
+}
+
+
+/* Real hardware serialises the air. This model honoured that on the receiving
+ * side only — rx_active holds for each frame's airtime — while the transmit
+ * path emitted in zero emulated time, so the host out-produced what the
+ * client's receiver could accept and the wall-clock reply barrier was left
+ * compensating for it. */
+static void test_medium_serialises_transmission(void)
+{
+	struct dwifi_model model;
+	struct sent_frame sent = {0};
+	dwifi_model_reset(&model);
+	dwifi_model_set_send_callback(&model, capture_frame, &sent);
+	dwifi_model_write16(&model, UINT32_C(0x04800030), UINT16_C(0x8000));
+	dwifi_model_write16(&model, UINT32_C(0x0480400a), UINT16_C(24));
+	dwifi_model_write16(&model, UINT32_C(0x048000ae), UINT16_C(1));
+
+	dwifi_model_write16(&model, UINT32_C(0x048000a0), UINT16_C(0x8000));
+	assert(sent.calls == 1);
+
+	/* A 24-byte frame at 1 Mbit/s occupies 192 + 24 * 8 = 384 us. Asking again
+	 * inside that window must not put a second frame on the air. */
+	dwifi_model_write16(&model, UINT32_C(0x048000a0), UINT16_C(0x8000));
+	assert(sent.calls == 1);
+	dwifi_model_advance_us(&model, 200);
+	assert(sent.calls == 1);
+
+	/* And it must not be lost either: fire_tx() runs only from the guest's
+	 * register writes, so the retry has to come from the model's own clock. */
+	dwifi_model_advance_us(&model, 200);
+	assert(sent.calls == 2);
+}
+
+
+/* The beacon occupies the air like any other frame but is never made to wait
+ * for it. Deferring the frame that keeps a station associated is precisely the
+ * beacon starvation this project measured at length. */
+static void test_beacon_is_not_blocked_by_a_busy_medium(void)
+{
+	struct dwifi_model model;
+	struct sent_frame sent = {0};
+	dwifi_model_reset(&model);
+	dwifi_model_set_send_callback(&model, capture_frame, &sent);
+	dwifi_model_write16(&model, UINT32_C(0x04800030), UINT16_C(0x8000));
+	dwifi_model_write16(&model, UINT32_C(0x0480c00a), UINT16_C(40));
+	dwifi_model_write16(&model, UINT32_C(0x0480c022), UINT16_C(0xffff));
+	dwifi_model_write16(&model, UINT32_C(0x048000e8), UINT16_C(1));
+	dwifi_model_write16(&model, UINT32_C(0x04800080), UINT16_C(0x8000));
+	dwifi_model_write16(&model, UINT32_C(0x0480008c), UINT16_C(10));
+	dwifi_model_write16(&model, UINT32_C(0x048000f2), UINT16_C(1));
+	dwifi_model_write16(&model, UINT32_C(0x048000ea), UINT16_C(1));
+
+	/* Occupy the air with an ordinary transmission, then let the beacon fall
+	 * due while it is still busy. */
+	dwifi_model_write16(&model, UINT32_C(0x0480400a), UINT16_C(24));
+	dwifi_model_write16(&model, UINT32_C(0x048000ae), UINT16_C(1));
+	dwifi_model_write16(&model, UINT32_C(0x048000a0), UINT16_C(0x8000));
+	unsigned before = sent.calls;
+	assert(model.medium_busy_until_us > model.us_timestamp);
+
+	dwifi_model_advance_us(&model, 11000);
+	assert(sent.calls > before);
+}
+
+/* The reply barrier blocks this console for milliseconds of wall time with its
+ * emulated clock frozen, so its beacon timer stops while the peer — which
+ * measures the interval in its own emulated time — keeps counting. The DS MAC
+ * sends the beacon from W_TXSlotBeacon without the CPU, so the obligation is
+ * serviced across that stall from wall time. */
+static void test_beacon_obligation_survives_a_stall(void)
+{
+	struct dwifi_model model;
+	struct sent_frame sent = {0};
+	dwifi_model_reset(&model);
+	dwifi_model_set_send_callback(&model, capture_frame, &sent);
+	dwifi_model_write16(&model, UINT32_C(0x0480c00a), UINT16_C(40));
+	dwifi_model_write16(&model, UINT32_C(0x0480c022), UINT16_C(0xffff));
+	/* A recognisable byte in the staged beacon body, to prove the frame that
+	 * goes out is the guest's packet RAM rather than anything synthesised. */
+	dwifi_model_write16(&model, UINT32_C(0x0480c014), UINT16_C(0xbeef));
+	dwifi_model_write16(&model, UINT32_C(0x048000e8), UINT16_C(1));
+	dwifi_model_write16(&model, UINT32_C(0x04800080), UINT16_C(0x8000));
+	dwifi_model_write16(&model, UINT32_C(0x0480008c), UINT16_C(10));
+	dwifi_model_write16(&model, UINT32_C(0x048000f2), UINT16_C(1));
+	dwifi_model_write16(&model, UINT32_C(0x048000ea), UINT16_C(1));
+
+	/* No emulated time passes at all — this is the stall. */
+	uint64_t frozen = model.us_timestamp;
+	dwifi_model_advance_beacon_wall_us(&model, 11000);
+	assert(model.us_timestamp == frozen);
+	assert(model.beacon_wall_raises == 1);
+	assert(sent.calls == 1 && sent.length == 52);
+
+	/* And it is the guest's staged beacon that went out, not a fabrication:
+	 * the frame body is the packet RAM the guest wrote. */
+	assert(sent.bytes[12 + 8] == UINT8_C(0xef) &&
+		sent.bytes[12 + 9] == UINT8_C(0xbe));
+}
+
+
+/* The guest was told the transceiver is permanently in state 0x0200 — powered
+ * down — no matter what the power state machine did, and that W_ModeReset reads
+ * back zero after it writes one. Both are constants predating power management.
+ * With radio ownership on they must reflect the model. */
+static void test_radio_ownership_retires_the_stub_constants(void)
+{
+	struct dwifi_model model;
+	dwifi_model_reset(&model);
+
+	dwifi_model_set_radio_ownership(0);
+	assert(dwifi_model_read16(&model, UINT32_C(0x0480003c)) ==
+		UINT16_C(0x0200));
+	assert(!dwifi_model_owns_read(UINT32_C(0x04800214)));
+
+	dwifi_model_set_radio_ownership(1);
+	/* Now served from the model, which reset leaves powered up and idle. */
+	assert(dwifi_model_read16(&model, UINT32_C(0x0480003c)) !=
+		UINT16_C(0x0200));
+	assert(dwifi_model_owns_read(UINT32_C(0x04800214)));
+	assert(dwifi_model_owns_read(UINT32_C(0x0480019c)));
+
+	/* W_ModeReset reads back what the guest wrote, rather than zero. */
+	dwifi_model_write16(&model, UINT32_C(0x04800004), UINT16_C(1));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800004)) == UINT16_C(1));
+
+	dwifi_model_set_radio_ownership(0);
+}
+
+/* Retiring a reply slot marks its buffer as sent, and that mark has to reach
+ * the guest. model->packet_ram is a shadow, so a store16 alone leaves the
+ * station unable to observe that the payload it staged ever went out — which is
+ * the state a guest inspects before staging the next one. */
+static void test_retired_reply_is_marked_sent_for_the_guest(void)
+{
+	struct dwifi_model model;
+	struct sent_frame sent = {0};
+	struct write_log log = {0};
+	uint8_t frame[12 + 30] = {0};
+	dwifi_model_reset(&model);
+	dwifi_model_set_send_callback(&model, capture_frame, &sent);
+	dwifi_model_set_packet_write_callback(&model, log_packet_write, &log);
+	dwifi_model_write16(&model, UINT32_C(0x04800050), UINT16_C(0x4000));
+	dwifi_model_write16(&model, UINT32_C(0x04800052), UINT16_C(0x4800));
+	dwifi_model_write16(&model, UINT32_C(0x04800030), UINT16_C(0x8001));
+
+	frame[10] = 30;
+	frame[12] = 0x28;
+	frame[13] = 0x02;
+	frame[12 + 24] = 0xff;
+	frame[12 + 25] = 0x7f;
+	static const uint8_t cmd_flow[6] = {3, 9, 0xbf, 0, 0, 0};
+	memcpy(frame + 12 + 4, cmd_flow, sizeof(cmd_flow));
+
+	/* First generation: stage 0x8640 (packet offset 0xc80) and let a command
+	 * retire it into Reply2 and transmit it. */
+	dwifi_model_write16(&model, UINT32_C(0x04804c8a), UINT16_C(26));
+	dwifi_model_write16(&model, UINT32_C(0x04800094), UINT16_C(0x8640));
+	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	run_scheduled_reply(&model);
+	assert(sent.calls == 1);
+	assert(!write_log_has(&log, UINT16_C(0x0c80), UINT16_C(0x0001)));
+
+	/* Second generation: staging again is what retires the first buffer, and
+	 * the guest must see 0x0001 land at its offset 0. */
+	dwifi_model_write16(&model, UINT32_C(0x04804d0a), UINT16_C(26));
+	dwifi_model_write16(&model, UINT32_C(0x04800094), UINT16_C(0x8680));
+	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	run_scheduled_reply(&model);
+	assert(sent.calls == 2);
+	assert(write_log_has(&log, UINT16_C(0x0c80), UINT16_C(0x0001)));
+}
+
+
+/* The point of deferring the reply: a guest which stages its slot from the
+ * command's own receive interrupt still gets its payload on the air. Under the
+ * previous inline behaviour this frame was impossible to send. */
+static void test_reply_staged_after_command_is_sent(void)
+{
+	struct dwifi_model model;
+	struct sent_frame sent = {0};
+	uint8_t frame[12 + 30] = {0};
+	dwifi_model_reset(&model);
+	dwifi_model_set_send_callback(&model, capture_frame, &sent);
+	dwifi_model_write16(&model, UINT32_C(0x04800050), UINT16_C(0x4000));
+	dwifi_model_write16(&model, UINT32_C(0x04800052), UINT16_C(0x4800));
+	dwifi_model_write16(&model, UINT32_C(0x04800030), UINT16_C(0x8001));
+
+	frame[10] = 30;
+	frame[12] = 0x28;
+	frame[13] = 0x02;
+	frame[12 + 24] = 0xff;
+	frame[12 + 25] = 0x7f;
+	static const uint8_t cmd_flow[6] = {3, 9, 0xbf, 0, 0, 0};
+	memcpy(frame + 12 + 4, cmd_flow, sizeof(cmd_flow));
+	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	assert(sent.calls == 0);
+
+	/* Stand in for the guest's interrupt handler: stage a 26-byte reply at
+	 * packet offset 0xc80 only now, after the command was received. */
+	dwifi_model_write16(&model, UINT32_C(0x04804c8a), UINT16_C(26));
+	dwifi_model_write16(&model, UINT32_C(0x04800094), UINT16_C(0x8640));
+
+	run_scheduled_reply(&model);
+	assert(sent.calls == 1 && sent.length == 12 + 26);
+	static const uint8_t reply_flow[6] = {3, 9, 0xbf, 0, 0, 0x10};
+	assert(memcmp(sent.bytes + 12 + 16, reply_flow, sizeof(reply_flow)) == 0);
+}
+
+
+/* melonDS ignores a CMD frame whose sequence number repeats: the guest sees no
+ * header and no RX-complete, but the station still owes the host a reply. */
+static void test_duplicate_command_is_not_delivered(void)
+{
+	struct dwifi_model model;
+	struct sent_frame sent = {0};
+	uint8_t frame[12 + 30] = {0};
+	dwifi_model_reset(&model);
+	dwifi_model_set_send_callback(&model, capture_frame, &sent);
+	dwifi_model_write16(&model, UINT32_C(0x04800050), UINT16_C(0x4000));
+	dwifi_model_write16(&model, UINT32_C(0x04800052), UINT16_C(0x4800));
+	dwifi_model_write16(&model, UINT32_C(0x04800030), UINT16_C(0x8001));
+
+	frame[10] = 30;
+	frame[12] = 0x28;
+	frame[13] = 0x02;
+	frame[12 + 24] = 0xff;
+	frame[12 + 25] = 0x7f;
+	/* Sequence control at +22 is what the duplicate check compares. */
+	frame[12 + 22] = 0x40;
+	frame[12 + 23] = 0x01;
+	static const uint8_t cmd_flow[6] = {3, 9, 0xbf, 0, 0, 0};
+	memcpy(frame + 12 + 4, cmd_flow, sizeof(cmd_flow));
+
+	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	uint16_t cursor = dwifi_model_read16(&model, UINT32_C(0x04800054));
+	run_scheduled_reply(&model);
+	assert(sent.calls == 1);
+
+	/* The very same frame again: still answered, but not delivered. */
+	sent.calls = 0;
+	dwifi_model_write16(&model, UINT32_C(0x04800010), UINT16_C(0xffff));
+	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800054)) == cursor);
+	assert(!(dwifi_model_read16(&model, UINT32_C(0x04800010)) & UINT16_C(1)));
+	run_scheduled_reply(&model);
+	assert(sent.calls == 1);
+
+	/* A new sequence number is delivered normally again. */
+	frame[12 + 22] = 0x50;
+	assert(receive_frame_complete(&model, frame, sizeof(frame)) == 1);
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800054)) != cursor);
+}
+
+
+/* Transceiver power management. The guest polls the radio state and will not
+ * proceed while it reads as nothing, so the state has to move in response to
+ * the power registers and settle after the hardware's power-up delay. */
+static void test_transceiver_power_management(void)
+{
+	struct dwifi_model model;
+	dwifi_model_reset(&model);
+
+	/* Mode 3 hands power control to W_PowerState. */
+	dwifi_model_write16(&model, UINT32_C(0x04800006), UINT16_C(0x0003));
+	/* W_ModeReset bit 0 must be set or the transceiver is forced off. */
+	dwifi_model_write16(&model, UINT32_C(0x04800004), UINT16_C(0x0001));
+
+	/* Ask for power down: the transceiver reports powered down. */
+	dwifi_model_write16(&model, UINT32_C(0x0480003c), UINT16_C(0x0001));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800214)) == 9);
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800034)) == 0);
+	/* W_PowerState itself still reads back a stub constant to the guest, so the
+	 * transceiver's own registers are what tell the truth here. */
+
+	/* Ask for power up. The radio is not usable instantly: hardware takes about
+	 * 2 ms, and the guest is told with IRQ11. */
+	dwifi_model_write16(&model, UINT32_C(0x04800012), UINT16_C(0xffff));
+	dwifi_model_write16(&model, UINT32_C(0x0480003c), UINT16_C(0x0002));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800010)) &
+		UINT16_C(1 << 11));
+	assert(model.us_until_power_on < 0);
+
+	/* Still settling part way through. */
+	dwifi_model_advance_us(&model, 1024);
+	assert(model.us_until_power_on < 0);
+
+	/* Once the delay elapses the transceiver is on and idle. */
+	dwifi_model_advance_us(&model, 1200);
+	assert(model.us_until_power_on == 0);
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800214)) == 1);
+	assert(dwifi_model_read16(&model, UINT32_C(0x0480019c)) == UINT16_C(0x84));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800034)) == 1);
+
+	/* W_PowerForce overrides everything. */
+	dwifi_model_write16(&model, UINT32_C(0x04800040), UINT16_C(0x8001));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800214)) == 9);
+	dwifi_model_write16(&model, UINT32_C(0x04800040), UINT16_C(0x8000));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800034)) == 1);
+
+	/* Clearing W_ModeReset bit 0 forces the transceiver off regardless. */
+	dwifi_model_write16(&model, UINT32_C(0x04800040), 0);
+	dwifi_model_write16(&model, UINT32_C(0x04800004), 0);
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800214)) == 9);
+}
+
+
+/* Pre-beacon wakeup and post-beacon sleep. Auto wakeup applies in every power
+ * management mode; auto power-down only in mode 0, because a station in mode 2
+ * does not service these interrupts and would never wake again. */
+static void test_beacon_power_interrupts(void)
+{
+	struct dwifi_model model;
+	dwifi_model_reset(&model);
+	dwifi_model_write16(&model, UINT32_C(0x04800006), UINT16_C(0x0003));
+	dwifi_model_write16(&model, UINT32_C(0x04800004), UINT16_C(0x0001));
+
+	/* Power down, then let the pre-beacon comparison come round. */
+	dwifi_model_write16(&model, UINT32_C(0x0480003c), UINT16_C(0x0001));
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800214)) == 9);
+
+	/* W_PowerTX bit 0 enables auto wakeup. */
+	dwifi_model_write16(&model, UINT32_C(0x04800038), UINT16_C(0x0001));
+	dwifi_model_write16(&model, UINT32_C(0x04800110), 0);
+	dwifi_model_write16(&model, UINT32_C(0x048000e8), UINT16_C(1));
+	dwifi_model_write16(&model, UINT32_C(0x048000ea), UINT16_C(1));
+	dwifi_model_advance_us(&model, 2048);
+	assert(dwifi_model_read16(&model, UINT32_C(0x04800010)) &
+		UINT16_C(1 << 15));
+	/* The wakeup was requested, so the power-up delay is now running. */
+	assert(model.us_until_power_on < 0 ||
+		dwifi_model_read16(&model, UINT32_C(0x04800034)) == 1);
+
+	/* In mode 2 the post-beacon interrupt must not power the radio down: a
+	 * station there does not service IRQ13/IRQ15 and would never wake. */
+	struct dwifi_model quiet;
+	dwifi_model_reset(&quiet);
+	dwifi_model_write16(&quiet, UINT32_C(0x04800006), UINT16_C(0x0002));
+	dwifi_model_write16(&quiet, UINT32_C(0x04800004), UINT16_C(0x0001));
+	dwifi_model_write16(&quiet, UINT32_C(0x04800134), UINT16_C(1));
+	dwifi_model_advance_us(&quiet, 1000);
+	assert(dwifi_model_read16(&quiet, UINT32_C(0x04800010)) &
+		UINT16_C(1 << 13));
+	assert(dwifi_model_read16(&quiet, UINT32_C(0x04800214)) != 9);
+
+	/* Mode 0 is the one that does power down on the same interrupt. */
+	struct dwifi_model sleepy;
+	dwifi_model_reset(&sleepy);
+	dwifi_model_write16(&sleepy, UINT32_C(0x04800006), 0);
+	dwifi_model_write16(&sleepy, UINT32_C(0x04800004), UINT16_C(0x0001));
+	dwifi_model_write16(&sleepy, UINT32_C(0x04800134), UINT16_C(1));
+	dwifi_model_advance_us(&sleepy, 1000);
+	assert(dwifi_model_read16(&sleepy, UINT32_C(0x04800214)) == 9);
 }
 
 /* A station adopts the host's clock from a beacon on its own network, so that
@@ -694,6 +1099,10 @@ static void test_microsecond_compare_irq(void)
 	dwifi_model_reset(&model);
 	dwifi_model_set_irq_callback(&model, count_irq, &edges);
 	dwifi_model_write16(&model, UINT32_C(0x04800012), UINT16_C(1 << 14));
+	/* Park W_PreBeacon out of reach. With the beacon counter at zero the
+	 * pre-beacon comparison would otherwise match once per 1024 us and set
+	 * IRQ15 alongside the compare interrupt under test. */
+	dwifi_model_write16(&model, UINT32_C(0x04800110), UINT16_C(0x0800));
 	/* Preserve the counter's sub-tick low bits: the millisecond boundary is the
 	 * first 8 us window, rather than only the exact value ending in zero. */
 	dwifi_model_write16(&model, UINT32_C(0x048000f8), UINT16_C(4));
@@ -733,6 +1142,15 @@ int main(void)
 	test_mp_reply_is_automatic();
 	test_populated_mp_reply_uses_ack_flow();
 	test_mp_reply_slot_latches();
+	test_radio_ownership_retires_the_stub_constants();
+	test_beacon_obligation_survives_a_stall();
+	test_medium_serialises_transmission();
+	test_beacon_is_not_blocked_by_a_busy_medium();
+	test_retired_reply_is_marked_sent_for_the_guest();
+	test_reply_staged_after_command_is_sent();
+	test_duplicate_command_is_not_delivered();
+	test_transceiver_power_management();
+	test_beacon_power_interrupts();
 	test_beacon_synchronises_the_counter();
 	test_rx_ring_and_fifo();
 	test_rx_start_precedes_completion();

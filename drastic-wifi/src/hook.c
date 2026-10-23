@@ -6,6 +6,8 @@
 #include "drastic_wifi_transport.h"
 
 #include <errno.h>
+#include <sys/stat.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <stdio.h>
@@ -20,6 +22,11 @@
 #include <unistd.h>
 
 #define DWIFI_TRACE_LIMIT UINT64_C(16384)
+/* The transmit-slot block keeps its own budget beyond the general limit. The
+ * general trace fills during startup, well before multiplayer begins, which
+ * left the whole MP phase invisible and made slot access counts look like
+ * behaviour when they were only where the buffer ran out. */
+#define DWIFI_SLOT_TRACE_LIMIT UINT64_C(24576)
 #define DWIFI_ARM_PATCH_WORDS 2
 #define DWIFI_ARM_TRAMPOLINE_WORDS 4
 #define DWIFI_A64_PATCH_WORDS 4
@@ -89,6 +96,17 @@ uint32_t dwifi_brick_packet_store_address(uint16_t offset)
 	 * separate region the guest never sees: a host beacon at packet offset
 	 * 0x0238 reads correctly at 0x4238 and as zero at 0xc238. */
 	return UINT32_C(0x00804000) + (offset & UINT16_C(0x1ffe));
+}
+
+int dwifi_is_packet_tx_slot(uint32_t register_offset)
+{
+	return register_offset == UINT32_C(0x0080) ||
+		register_offset == UINT32_C(0x0090) ||
+		register_offset == UINT32_C(0x0094) ||
+		register_offset == UINT32_C(0x0098) ||
+		register_offset == UINT32_C(0x00a0) ||
+		register_offset == UINT32_C(0x00a4) ||
+		register_offset == UINT32_C(0x00a8);
 }
 
 void dwifi_make_absolute_jump(uint32_t words[2], uintptr_t destination)
@@ -180,6 +198,30 @@ static uint64_t event_sequence;
 static uint64_t load_count;
 static uint64_t store_count;
 static uint64_t dropped_count;
+static uint64_t slot_trace_count;
+static uint64_t trace_format_ns;
+static uint64_t trace_write_ns;
+static uint64_t trace_emitted;
+/* Wall time attributed to the three sections of the event hook, to establish
+ * where the client's multiplayer stall actually lives. A backward counter delta
+ * is silently treated as zero elapsed, which would hide a scheduler anomaly, so
+ * those are counted too. */
+static uint64_t events_ns;
+static uint64_t advance_ns;
+static uint64_t poll_ns;
+static uint64_t poll_calls;
+static uint64_t zero_delta_events;
+static uint64_t backward_delta_events;
+/* The same three sections, but scoped to the multiplayer phase. Whole-run
+ * totals dilute it: the host runs near real time for most of a run and
+ * collapses only once multiplayer traffic starts, so an average over the run
+ * hides exactly the interval of interest. Per-call maxima are kept too, since a
+ * handful of pathological calls and a uniform slowdown look identical in a
+ * total. */
+static int mp_phase_seen;
+static uint64_t mp_events_ns, mp_advance_ns, mp_poll_ns;
+static uint64_t mp_event_calls, mp_poll_calls;
+static uint64_t max_events_ns, max_advance_ns, max_poll_ns;
 static uint64_t poll_019c_count;
 static struct dwifi_model wifi_model;
 static struct dwifi_irq_adapter irq_adapter;
@@ -214,10 +256,101 @@ static uint64_t monotonic_ns(void)
 	return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 }
 
+
+/* Trace output is buffered. A synchronous write() per register access to vfat
+ * on SD slowed the guest by three orders of magnitude, which changed the very
+ * multiplayer timing the trace exists to observe. One write per full buffer
+ * costs about a thousandth of that.
+ *
+ * The buffer is deliberately modest: a crash loses at most this much, and a
+ * crash is evidence worth keeping, so the handler below flushes it. */
+#define DWIFI_TRACE_BUFFER_SIZE (64u * 1024u)
+static char trace_buffer[DWIFI_TRACE_BUFFER_SIZE];
+static size_t trace_buffer_used;
+static pthread_mutex_t trace_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Push the buffer to the file. Callers hold trace_buffer_lock; the crash
+ * handler does not, because taking a lock is not async-signal-safe and the
+ * process is ending regardless. */
+static void trace_flush_locked(void)
+{
+	size_t used = trace_buffer_used;
+	trace_buffer_used = 0;
+	size_t offset = 0;
+	while (trace_fd >= 0 && offset < used) {
+		ssize_t written = write(trace_fd, trace_buffer + offset,
+			used - offset);
+		if (written <= 0)
+			break;
+		offset += (size_t)written;
+	}
+}
+
+static void trace_write(const void *data, size_t length)
+{
+	if (trace_fd < 0 || !data || !length)
+		return;
+	pthread_mutex_lock(&trace_buffer_lock);
+	if (length >= sizeof(trace_buffer)) {
+		/* Larger than the buffer itself: order it after whatever is queued. */
+		trace_flush_locked();
+		size_t offset = 0;
+		while (offset < length) {
+			ssize_t written = write(trace_fd,
+				(const char *)data + offset, length - offset);
+			if (written <= 0)
+				break;
+			offset += (size_t)written;
+		}
+	} else {
+		if (trace_buffer_used + length > sizeof(trace_buffer))
+			trace_flush_locked();
+		memcpy(trace_buffer + trace_buffer_used, data, length);
+		trace_buffer_used += length;
+	}
+	pthread_mutex_unlock(&trace_buffer_lock);
+}
+
+static const int trace_crash_signals[] = {
+	SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE
+};
+static struct sigaction trace_previous_action[
+	sizeof(trace_crash_signals) / sizeof(trace_crash_signals[0])];
+
+/* Flush on the way down, then hand the signal back to whoever had it. DraStic
+ * installs handlers of its own, so this must chain rather than replace. */
+static void trace_crash_handler(int number)
+{
+	trace_flush_locked();
+	for (size_t index = 0;
+	     index < sizeof(trace_crash_signals) / sizeof(trace_crash_signals[0]);
+	     ++index) {
+		if (trace_crash_signals[index] != number)
+			continue;
+		(void)sigaction(number, &trace_previous_action[index], NULL);
+		break;
+	}
+	raise(number);
+}
+
+static void install_trace_crash_handlers(void)
+{
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = trace_crash_handler;
+	action.sa_flags = SA_NODEFER;
+	sigemptyset(&action.sa_mask);
+	for (size_t index = 0;
+	     index < sizeof(trace_crash_signals) / sizeof(trace_crash_signals[0]);
+	     ++index)
+		(void)sigaction(trace_crash_signals[index], &action,
+			&trace_previous_action[index]);
+}
+
 static void trace_text(const char *message)
 {
-	if (trace_fd >= 0 && message)
-		(void)write(trace_fd, message, strlen(message));
+	if (message)
+		trace_write(message, strlen(message));
 }
 
 #if defined(__aarch64__)
@@ -257,7 +390,7 @@ static void trace_addresses(const char *stage, uintptr_t first,
 		"drastic-wifi stage=%s first=%llx second=%llx\n", stage,
 		(unsigned long long)first, (unsigned long long)second);
 	if (length > 0)
-		(void)write(trace_fd, line, (size_t)length);
+		trace_write(line, (size_t)length);
 }
 #endif
 
@@ -286,18 +419,30 @@ static void trace_event(enum dwifi_operation operation, uint32_t address,
 	uint64_t sequence = __sync_fetch_and_add(&event_sequence, 1);
 
 	if (sequence >= DWIFI_TRACE_LIMIT) {
-		__sync_fetch_and_add(&dropped_count, 1);
-		return;
+		uint32_t slot_offset = dwifi_register_offset(address);
+		if (slot_offset < UINT32_C(0x0090) ||
+		    slot_offset > UINT32_C(0x00b0) ||
+		    __sync_add_and_fetch(&slot_trace_count, 1) >
+			DWIFI_SLOT_TRACE_LIMIT) {
+			__sync_fetch_and_add(&dropped_count, 1);
+			return;
+		}
 	}
 
+	uint64_t format_start = monotonic_ns();
 	int length = snprintf(line, sizeof(line),
 		"wifi16 seq=%llu host_ns=%llu op=%c addr=%08x off=%04x value=%04x\n",
 		(unsigned long long)sequence,
 		(unsigned long long)monotonic_ns(),
 		operation == DWIFI_OP_LOAD16 ? 'R' : 'W', address,
 		dwifi_register_offset(address), value);
+	uint64_t write_start = monotonic_ns();
 	if (length > 0)
-		(void)write(trace_fd, line, (size_t)length);
+		trace_write(line, (size_t)length);
+	uint64_t done = monotonic_ns();
+	__sync_fetch_and_add(&trace_format_ns, write_start - format_start);
+	__sync_fetch_and_add(&trace_write_ns, done - write_start);
+	__sync_fetch_and_add(&trace_emitted, 1);
 }
 
 static void ensure_model_adapter(void *memory)
@@ -349,7 +494,7 @@ static void probe_packet_store(void *opaque, uint16_t offset)
 	store_trace_hex16(strstr(line, "off=") + 4, offset);
 	store_trace_hex16(strstr(line, "pre=") + 4,
 		original_load16(opaque, UINT32_C(0x4000) + offset));
-	(void)write(trace_fd, line, sizeof(line) - 1);
+	trace_write(line, sizeof(line) - 1);
 }
 
 static void probe_packet_mirror(void *opaque, uint16_t offset, uint16_t value)
@@ -364,7 +509,7 @@ static void probe_packet_mirror(void *opaque, uint16_t offset, uint16_t value)
 		original_load16(opaque, UINT32_C(0x4000) + offset));
 	store_trace_hex16(strstr(line, "rc000=") + 6,
 		original_load16(opaque, UINT32_C(0xc000) + offset));
-	(void)write(trace_fd, line, sizeof(line) - 1);
+	trace_write(line, sizeof(line) - 1);
 }
 
 #if defined(__aarch64__)
@@ -476,7 +621,7 @@ static void locate_guest_packet_ram(void *memory)
 				for (unsigned index = 0; index < 4; ++index)
 					store_trace_hex16(digits + index * 4,
 						(uint16_t)(delta >> (48 - index * 16)));
-				(void)write(trace_fd, line, sizeof(line) - 1);
+				trace_write(line, sizeof(line) - 1);
 			}
 			return;
 		}
@@ -511,6 +656,8 @@ static void hooked_write_packet(void *opaque, uint16_t offset, uint16_t value)
 static unsigned receive_trace_count;
 static unsigned receive_stage_trace_count;
 static unsigned mp_receive_trace_count;
+static unsigned mp_completion_trace_count;
+static uint64_t mp_completion_event_count;
 static uint16_t receive_header_offset;
 static int join_trace_armed;
 #if defined(__aarch64__)
@@ -528,6 +675,52 @@ static void hooked_trace_receive(void *opaque, const char *stage,
 	const uint8_t *frame, size_t length, uint16_t address)
 {
 	struct dwifi_model *model = opaque;
+	if (strncmp(stage, "mp-", 3) == 0) {
+		/* Command completion remains relevant after the generic MMIO trace has
+		 * filled. Asphalt reaches these boundaries thousands of times per second,
+		 * so retain startup plus a sparse sample which survives a long lobby. */
+		uint64_t sample = mp_completion_event_count++;
+		/* A populated reply is the event this whole investigation turns on and
+		 * happens a handful of times per run, so it is never sampled away. The
+		 * empty default is thousands of times more common and stays sparse. */
+		int always = strcmp(stage, "mp-reply-populated") == 0;
+		if ((always || sample < 12 || (sample & UINT64_C(0x7f)) == 0) &&
+		    mp_completion_trace_count++ < 8192 && trace_fd >= 0) {
+			uint16_t header_status = 0;
+			uint16_t header_fail = 0;
+			uint16_t header_count = 0;
+			if ((uint32_t)address + 6 <= DWIFI_PACKET_RAM_SIZE) {
+				memcpy(&header_status, model->packet_ram + address, 2);
+				memcpy(&header_fail, model->packet_ram + address + 2, 2);
+				memcpy(&header_count, model->packet_ram + address + 4, 2);
+			}
+			char mp_line[320];
+			int mp_length = snprintf(mp_line, sizeof(mp_line),
+				"drastic-wifi mp-state=%s us=%llu wall_ns=%llu addr=%04x len=%zu"
+				" hdr=%04x/%04x/%04x mask=%04x fail=%04x slot=%04x"
+				" busy=%04x stat=%04x if=%04x ie=%04x rf=%04x"
+				" seq=%04x cmdcount=%04x replytime=%04x irq=%u\n",
+				stage, (unsigned long long)model->us_timestamp,
+				(unsigned long long)monotonic_ns(),
+				(unsigned)address, length, (unsigned)header_status,
+				(unsigned)header_fail, (unsigned)header_count,
+				(unsigned)model->mp_client_mask,
+				(unsigned)model->mp_client_fail,
+				(unsigned)model->mp_cmd_slot,
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x00b6)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x00b8)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x0010)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x0012)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x0214)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x0210)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x0118)),
+				(unsigned)dwifi_model_read16(model, UINT32_C(0x00c4)),
+				(unsigned)dwifi_model_irq_pending(model));
+			if (mp_length > 0)
+				trace_write(mp_line, (size_t)mp_length);
+		}
+		return;
+	}
 	if (receive_stage_trace_count++ < 12) {
 		trace_text("drastic-wifi rx-stage=");
 		trace_text(stage);
@@ -572,7 +765,7 @@ static void hooked_trace_receive(void *opaque, const char *stage,
 			line[used++] = digits[value & 15];
 		}
 		line[used++] = '\n';
-		(void)write(trace_fd, line, used);
+		trace_write(line, used);
 	}
 #endif
 	/* DraStic's event thread has almost no spare stack. Emit one fixed-buffer
@@ -682,7 +875,7 @@ static void refresh_beacon_packet(void *memory)
 		}
 		if (used > 0 && (size_t)used + 1 < sizeof(line)) {
 			line[used++] = '\n';
-			(void)write(trace_fd, line, (size_t)used);
+			trace_write(line, (size_t)used);
 		}
 	}
 }
@@ -733,9 +926,7 @@ static void hooked_store16(void *memory, uint32_t address, uint32_t value)
 	if (model_enabled && wifi_access) {
 		uint32_t offset = dwifi_register_offset(address);
 		if (dwifi_transport_is_active() &&
-		    (offset == UINT32_C(0x0080) || offset == UINT32_C(0x0090) ||
-		     offset == UINT32_C(0x00a0) || offset == UINT32_C(0x00a4) ||
-		     offset == UINT32_C(0x00a8)) && (value & UINT32_C(0x8000))) {
+		    dwifi_is_packet_tx_slot(offset) && (value & UINT32_C(0x8000))) {
 			uint32_t packet_offset = (value & UINT32_C(0x0fff)) << 1;
 			uint16_t frame_length = original_load16(memory,
 				UINT32_C(0x4000) + packet_offset + 10) & UINT16_C(0x3fff);
@@ -757,7 +948,7 @@ static void hooked_store16(void *memory, uint32_t address, uint32_t value)
 					(unsigned)value, (unsigned)packet_offset,
 					(unsigned)frame_length);
 				if (length > 0)
-					(void)write(trace_fd, line, (size_t)length);
+					trace_write(line, (size_t)length);
 			}
 		}
 		/* A read-only MMIO burst cannot raise a modeled interrupt, so avoid
@@ -778,11 +969,30 @@ static void hooked_execute_events(void *system)
 {
 	observed_system = system;
 	uint64_t before = load_u64((uint8_t *)system + 8);
+	uint64_t events_start = monotonic_ns();
 	original_execute_events(system);
+	uint64_t events_cost = monotonic_ns() - events_start;
+	__sync_fetch_and_add(&events_ns, events_cost);
+	/* Both consoles must latch this: only the host sets mp_cmd_active, so gating
+	 * on it alone left the client's multiplayer-phase costs unmeasured, which is
+	 * exactly the comparison needed. */
+	if (wifi_model.mp_cmd_active || wifi_model.mp_reply_active ||
+	    wifi_model.mp_ack_active)
+		mp_phase_seen = 1;
+	if (mp_phase_seen) {
+		mp_events_ns += events_cost;
+		mp_event_calls++;
+		if (events_cost > max_events_ns)
+			max_events_ns = events_cost;
+	}
 	uint64_t after = load_u64((uint8_t *)system + 8);
 	/* A reset or savestate load may move the absolute counter backwards during
 	 * an event callback. Treat that boundary as zero elapsed instead of wrapping. */
 	uint64_t elapsed = after >= before ? after - before : 0;
+	if (after < before)
+		backward_delta_events++;
+	else if (elapsed == 0)
+		zero_delta_events++;
 	event_call_count++;
 	emulated_cycle_count += elapsed;
 	/* ARM7 packet RAM is ordinary emulated memory and can be modified without
@@ -793,7 +1003,15 @@ static void hooked_execute_events(void *system)
 		last_beacon_refresh_us = wifi_model.us_timestamp;
 		refresh_beacon_packet(observed_memory);
 	}
+	uint64_t advance_start = monotonic_ns();
 	(void)dwifi_cycle_clock_advance(&cycle_clock, &wifi_model, elapsed);
+	uint64_t advance_cost = monotonic_ns() - advance_start;
+	__sync_fetch_and_add(&advance_ns, advance_cost);
+	if (mp_phase_seen) {
+		mp_advance_ns += advance_cost;
+		if (advance_cost > max_advance_ns)
+			max_advance_ns = advance_cost;
+	}
 #if defined(__aarch64__)
 	/* execute_events is the outermost emulator frame, so the one-time packet
 	 * RAM search runs with a full stack rather than inside the receive
@@ -814,7 +1032,17 @@ static void hooked_execute_events(void *system)
 	 * still avoids per-event locking while promptly starting the next frame. */
 	if (wifi_model.us_timestamp - last_transport_poll_us >= UINT64_C(64)) {
 		last_transport_poll_us = wifi_model.us_timestamp;
+		uint64_t poll_start = monotonic_ns();
 		dwifi_transport_poll(&wifi_model);
+		uint64_t poll_cost = monotonic_ns() - poll_start;
+		__sync_fetch_and_add(&poll_ns, poll_cost);
+		poll_calls++;
+		if (mp_phase_seen) {
+			mp_poll_ns += poll_cost;
+			mp_poll_calls++;
+			if (poll_cost > max_poll_ns)
+				max_poll_ns = poll_cost;
+		}
 	}
 }
 
@@ -982,6 +1210,16 @@ static void dwifi_initialize(void)
 	const char *irq = getenv("DRASTIC_WIFI_IRQ");
 	const char *session = getenv("DRASTIC_WIFI_SESSION");
 	const char *verbose = getenv("DRASTIC_WIFI_VERBOSE");
+	const char *no_default_reply = getenv("DRASTIC_WIFI_NO_DEFAULT_REPLY");
+	const char *own_radio = getenv("DRASTIC_WIFI_OWN_RADIO");
+	dwifi_model_set_radio_ownership(own_radio && own_radio[0] == '1');
+	fprintf(stderr, "[drastic-wifi] radio ownership=%s\n",
+		(own_radio && own_radio[0] == '1') ? "on" : "off");
+	const char *own_datapath = getenv("DRASTIC_WIFI_OWN_DATAPATH");
+	dwifi_model_set_datapath_ownership(own_datapath &&
+		own_datapath[0] == '1');
+	fprintf(stderr, "[drastic-wifi] datapath ownership=%s\n",
+		(own_datapath && own_datapath[0] == '1') ? "on" : "off");
 	if (!requested_trace_path || !*requested_trace_path)
 		return;
 	char trace_path[4096];
@@ -1011,12 +1249,36 @@ static void dwifi_initialize(void)
 	unsetenv("DRASTIC_WIFI_IRQ");
 	unsetenv("DRASTIC_WIFI_SESSION");
 	unsetenv("DRASTIC_WIFI_VERBOSE");
+	unsetenv("DRASTIC_WIFI_NO_DEFAULT_REPLY");
 	if (model_enabled)
 		dwifi_model_reset(&wifi_model);
+	/* Set after the reset, which zeroes the struct. Diagnostic only: it stops the
+	 * model answering a poll the guest never staged a reply for, so the host sees
+	 * a real non-answer instead of a fabricated one. */
+	if (model_enabled && no_default_reply && strcmp(no_default_reply, "0") != 0)
+		wifi_model.suppress_default_reply = 1;
 
 	trace_fd = open(trace_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (trace_fd < 0 && errno == ENOENT) {
+		/* The traces live in their own directory so they do not bury the rest
+		 * of the emulator logs. Create it rather than depending on whichever
+		 * launcher supplied the path. */
+		char parent[sizeof(trace_path)];
+		size_t length = strlen(trace_path);
+		if (length < sizeof(parent)) {
+			memcpy(parent, trace_path, length + 1);
+			char *slash = strrchr(parent, '/');
+			if (slash && slash != parent) {
+				*slash = '\0';
+				(void)mkdir(parent, 0755);
+				trace_fd = open(trace_path,
+					O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+			}
+		}
+	}
 	if (trace_fd < 0)
 		return;
+	install_trace_crash_handlers();
 	if (model_enabled)
 		dwifi_model_set_receive_trace_callback(&wifi_model,
 			hooked_trace_receive, &wifi_model);
@@ -1107,7 +1369,7 @@ static void dwifi_initialize(void)
 __attribute__((destructor))
 static void dwifi_shutdown(void)
 {
-	char line[256];
+	char line[1280];
 	if (trace_fd < 0)
 		return;
 	dwifi_transport_stop();
@@ -1115,7 +1377,14 @@ static void dwifi_shutdown(void)
 		"drastic-wifi summary loads=%llu stores=%llu dropped=%llu "
 		"model_reads=%llu model_writes=%llu event_calls=%llu "
 		"arm9_cycles=%llu wifi_us=%llu irq_injections=%llu "
-		"packet_syncs=%llu tx_frames=%llu rx_frames=%llu errno=%d\n",
+		"packet_syncs=%llu tx_frames=%llu rx_frames=%llu errno=%d "
+		"trace_emitted=%llu format_ms=%llu write_ms=%llu "
+		"events_ms=%llu advance_ms=%llu poll_ms=%llu polls=%llu "
+		"zero_delta=%llu backward_delta=%llu "
+		"MP[events_ms=%llu advance_ms=%llu poll_ms=%llu calls=%llu "
+		"polls=%llu max_ev_us=%llu max_adv_us=%llu max_poll_us=%llu] "
+		"MODEL[ticks=%llu adv_calls=%llu halfwords=%llu prebeacon=%llu]"
+		" REPLY[cmd_delivered=%llu cmd_duplicate=%llu sent=%llu populated=%llu]\n",
 		(unsigned long long)load_count,
 		(unsigned long long)store_count,
 		(unsigned long long)dropped_count,
@@ -1127,9 +1396,37 @@ static void dwifi_shutdown(void)
 		(unsigned long long)irq_injection_count,
 		(unsigned long long)packet_sync_count,
 		(unsigned long long)wifi_model.tx_frame_count,
-		(unsigned long long)wifi_model.rx_frame_count, errno);
+		(unsigned long long)wifi_model.rx_frame_count, errno,
+		(unsigned long long)trace_emitted,
+		(unsigned long long)(trace_format_ns / 1000000),
+		(unsigned long long)(trace_write_ns / 1000000),
+		(unsigned long long)(events_ns / 1000000),
+		(unsigned long long)(advance_ns / 1000000),
+		(unsigned long long)(poll_ns / 1000000),
+		(unsigned long long)poll_calls,
+		(unsigned long long)zero_delta_events,
+		(unsigned long long)backward_delta_events,
+		(unsigned long long)(mp_events_ns / 1000000),
+		(unsigned long long)(mp_advance_ns / 1000000),
+		(unsigned long long)(mp_poll_ns / 1000000),
+		(unsigned long long)mp_event_calls,
+		(unsigned long long)mp_poll_calls,
+		(unsigned long long)(max_events_ns / 1000),
+		(unsigned long long)(max_advance_ns / 1000),
+		(unsigned long long)(max_poll_ns / 1000),
+		(unsigned long long)wifi_model.tick_count,
+		(unsigned long long)wifi_model.advance_calls,
+		(unsigned long long)wifi_model.rx_halfword_writes,
+		(unsigned long long)wifi_model.pre_beacon_raises,
+		(unsigned long long)wifi_model.mp_cmd_delivered,
+		(unsigned long long)wifi_model.mp_cmd_duplicate,
+		(unsigned long long)wifi_model.mp_replies_sent,
+		(unsigned long long)wifi_model.mp_replies_populated);
 	if (length > 0)
-		(void)write(trace_fd, line, (size_t)length);
+		trace_write(line, (size_t)length);
+	pthread_mutex_lock(&trace_buffer_lock);
+	trace_flush_locked();
+	pthread_mutex_unlock(&trace_buffer_lock);
 	close(trace_fd);
 	trace_fd = -1;
 }

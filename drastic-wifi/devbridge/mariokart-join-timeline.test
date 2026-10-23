@@ -1,0 +1,39 @@
+# Cold Mario Kart join, then sample the host densely across the moment the
+# client registers. The racer count goes 1/8 -> 2/8 -> 1/8 too quickly for the
+# ordinary post-join capture to see it.
+SESSION mariokart-timeline-{date}-{time} devbridge-sessions
+CONNECT_ADB 1c000c66050607724dd host
+CONNECT_ADB 2c000c81b5c4078245d client
+STATUS
+all:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+WAIT 20000
+all:BTN A
+WAIT 2500
+all:BTN DOWN
+WAIT 300
+all:BTN A
+WAIT 2500
+host:BTN UP
+WAIT 300
+host:BTN A
+WAIT 1000
+host:BTN A
+WAIT 2500
+host:SCREEN t00-before-join
+client:BTN A
+host:SCREEN t01
+host:SCREEN t02
+host:SCREEN t03
+host:SCREEN t04
+host:SCREEN t05
+host:SCREEN t06
+host:SCREEN t07
+host:SCREEN t08
+host:SCREEN t09
+host:SCREEN t10
+host:SCREEN t11
+host:SCREEN t12
+all:SCREEN t13-late
+WAIT 8000
+all:SCREEN t14-settled
+STATUS

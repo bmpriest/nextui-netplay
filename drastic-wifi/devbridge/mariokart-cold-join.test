@@ -1,28 +1,54 @@
-# Cold-launch both copies. At 20 seconds Mario Kart is in its deterministic
-# idle demo; A returns from that loop to the primary menu on both consoles.
+# Cold two-Brick Mario Kart DS join.
+#
+# Every step that can silently land in the wrong place is gated on VERIFY, so a
+# bad run aborts at the step that actually went wrong instead of pressing
+# buttons into the wrong menu for another minute and being diagnosed afterwards
+# from the wreckage. The final VERIFY makes the whole macro a pass/fail: it
+# checks the racer badge region, because a lobby with one player and one with
+# two differ by a single row of text that disappears into a whole-screen
+# average.
 SESSION drastic-cold-join-{date}-{time} devbridge-sessions
 CONNECT_ADB 1c000c66050607724dd host
 CONNECT_ADB 2c000c81b5c4078245d client
 STATUS
+# OPEN_GAME is silently skipped when a game is already in the foreground, and
+# the macro then drives whatever session is up — which is how runs ended in
+# Grand Prix cc-selection and were later misread as multiplayer failures. Fail
+# fast instead: this errors immediately unless both consoles are at DevBridge.
+all:WAIT_FOR devbridge 3000
 all:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
-WAIT 20000
-all:BTN A
-WAIT 2500
-all:SCREEN primary-menu
-all:BTN DOWN
-WAIT 300
-all:BTN A
-WAIT 2500
-host:BTN UP
-WAIT 300
-host:BTN A
-WAIT 1000
-host:BTN A
-WAIT 2500
-host:SCREEN host-waiting
-client:SCREEN client-room-visible
-client:BTN A
+
+# Measured: the primary menu appears about 5 s after launch and the attract
+# demo starts about 11 s in, so the menu is simply waited for rather than
+# recovered from. VERIFY_WAIT checks at 4, 7 and 10 s, all inside that window.
+# No input is sent here: the old sequence pressed A to leave the demo and B to
+# undo the Single Player that A selected when the demo had already ended, which
+# cost about 25 s a run and could itself land in the wrong menu.
 WAIT 4000
-STATUS
-host:SCREEN post-join
-client:SCREEN post-join
+all:VERIFY_WAIT drastic-wifi/devbridge/reference/mk-main-menu.png 6000
+
+# Single Player -> Multiplayer. The menu animates, so give the press room.
+all:BTN DOWN
+WAIT 1200
+all:BTN A
+WAIT 3000
+
+# Host creates a group and begins advertising.
+host:BTN UP
+WAIT 1200
+host:BTN A
+WAIT 1500
+host:BTN A
+# Mario Kart slides its menus in, and a capture taken mid-transition matches
+# nothing. 15 s gives checks at 0, 7.5 and 15 s, so at least one lands on a
+# settled screen.
+host:VERIFY_WAIT drastic-wifi/devbridge/reference/mk-host-seeking.png 15000
+
+# Discovery is beacon-driven and takes time. Waiting on the room appearing is
+# what makes the join deterministic; the client's list starts empty with the
+# highlight on CREATE GROUP, so pressing A early creates a rival group.
+client:VERIFY_WAIT drastic-wifi/devbridge/reference/mk-client-room-list.png 20000
+client:BTN A
+WAIT 6000
+all:SCREEN post-join
+host:VERIFY drastic-wifi/devbridge/reference/mk-host-two-racers.png threshold=2 region=900,160,115,35

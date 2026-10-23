@@ -14,7 +14,13 @@
  * gives the opt-in model a conservative baseline while register side effects,
  * interrupts and timing are added deliberately. */
 #define REG_MODE_RST        UINT32_C(0x0004)
+#define REG_MODE_WEP        UINT32_C(0x0006)
+#define REG_TRX_POWER       UINT32_C(0x0034)
+#define REG_POWER_US        UINT32_C(0x0036)
+#define REG_POWER_TX        UINT32_C(0x0038)
 #define REG_POWER_STATE     UINT32_C(0x003c)
+#define REG_POWER_FORCE     UINT32_C(0x0040)
+#define REG_POWER_DOWN_CTRL UINT32_C(0x0048)
 #define REG_RX_CNT          UINT32_C(0x0030)
 #define REG_RX_BUF_BEGIN    UINT32_C(0x0050)
 #define REG_RX_BUF_END      UINT32_C(0x0052)
@@ -43,6 +49,7 @@
 #define REG_LISTEN_COUNT    UINT32_C(0x0088)
 #define REG_TX_SLOT_BEACON  UINT32_C(0x0080)
 #define REG_LISTEN_INTERVAL UINT32_C(0x008e)
+#define REG_PRE_BEACON      UINT32_C(0x0110)
 #define REG_BEACON_COUNT1   UINT32_C(0x011c)
 #define REG_BEACON_COUNT2   UINT32_C(0x0134)
 #define REG_BEACON_INTERVAL UINT32_C(0x008c)
@@ -92,8 +99,12 @@ enum dwifi_rf_status {
 };
 
 static void set_rf_status(struct dwifi_model *model, unsigned status);
+static void update_power_status(struct dwifi_model *model, int power);
 static void complete_tx_header(struct dwifi_model *model, uint32_t address);
 static void send_mp_reply(struct dwifi_model *model, uint16_t client_time);
+static void occupy_medium(struct dwifi_model *model, uint16_t frame_length,
+	uint8_t rate);
+static void fire_tx(struct dwifi_model *model);
 
 /* fire_beacon runs inside DraStic's small event-thread stack. There is one
  * Wi-Fi model per emulator process, so static transmit scratch is sufficient. */
@@ -112,6 +123,20 @@ static uint8_t mp_ack_frame[12 + 32];
 #define WIFI_IRQ_POST_BEACON   13
 #define WIFI_IRQ_TX_COUNT      8
 #define WIFI_IRQ_RX_COUNT      9
+#define WIFI_IRQ_RF_WAKEUP     11
+#define WIFI_IRQ_PRE_BEACON    15
+
+/* Emulated turnaround between a received multiplayer command and this station's
+ * reply. Short enough to stay well inside the command's advertised client
+ * window, and non-zero so the reply is owed to a later call into the model. */
+#define DWIFI_MP_REPLY_TURNAROUND_US 16
+
+/* How long a station stays credited on its last reply. Hardware marks a client
+ * failed the moment it misses a reply window, but hardware is not waiting on a
+ * TCP round trip: a reply that cannot cross the link inside an emulated window
+ * of a few hundred microseconds is a transport limitation, not an absent
+ * station. Roughly two beacon periods. */
+#define DWIFI_MP_REPLY_GRACE_US UINT64_C(500000)
 
 static uint32_t window_offset(uint32_t address)
 {
@@ -129,6 +154,14 @@ static uint16_t load16(const uint8_t *memory, uint32_t offset)
 {
 	return (uint16_t)(memory[offset] | ((uint16_t)memory[offset + 1] << 8));
 }
+/* Transmit and receive are deliberately NOT gated on the transceiver power
+ * state, though melonDS gates both. melonDS can, because its receive path and
+ * its radio share one timeline. Here frames arrive whenever the socket has
+ * them, and the guest forces the transceiver off and on over a hundred times a
+ * run, so gating silenced the radio outright: with it in place neither console
+ * emitted a single frame, not even a beacon, and Mario Kart never discovered a
+ * group. The power state machine below is still modelled and driven; only its
+ * effect on the data path is withheld until the two timelines are related. */
 
 static void store16(uint8_t *memory, uint32_t offset, uint16_t value)
 {
@@ -212,6 +245,51 @@ static void trace_receive(struct dwifi_model *model, const char *stage,
 		model->trace_receive(model->trace_opaque, stage, frame, length, address);
 }
 
+/* The curated ownership set leaves every other register answered by DraStic's
+ * stub, which returns zero — so each unowned register is a silent zero waiting
+ * to gate something. Six registers are actively maintained by this model and
+ * still not served; the guest polls them hundreds of times a run and is told
+ * nothing.
+ *
+ * Two of those six are not radio state at all. W_RXTXAddr is the cursor melonDS
+ * streams received payload through, and W_TXSeqNo is incremented by this model
+ * on every transmit. The model is the sole authority for both, so serving them
+ * is not the "partial radio state" that regressed the join when W_RFStatus and
+ * W_RFPins were flipped — that pair is deliberately left alone here.
+ *
+ * Runtime-gated so the change stays attributable without a rebuild. */
+static int own_datapath_registers;
+
+void dwifi_model_set_datapath_ownership(int enabled)
+{
+	own_datapath_registers = enabled ? 1 : 0;
+}
+
+/* Serve the radio state the model already tracks: W_RFStatus, W_RFPins, and the
+ * two registers still answered by hardcoded constants from before power
+ * management existed.
+ *
+ * Direct evidence for this. Immediately before the client clears its AID and
+ * transmits a disassociation, its last two reads are of W_RFStatus, and both
+ * return zero — which is not a state this radio can be in. It then leaves. The
+ * teardown is not a timeout; it is the station acting on a radio that reports
+ * nothing.
+ *
+ * Flipping this pair regressed the join once before, but that was measured
+ * before the power state machine, IRQ15, the reply-slot fix and medium
+ * contention existed, and the log's own next-step list asks for it to be
+ * retried as one deliberate change with its own verification run. The two stub
+ * constants must go with it: while REG_POWER_STATE answers a constant 0x0200
+ * the guest is told the transceiver is permanently powered down no matter what
+ * the model does, which makes serving W_RFStatus incoherent rather than
+ * merely partial. */
+static int own_radio_registers;
+
+void dwifi_model_set_radio_ownership(int enabled)
+{
+	own_radio_registers = enabled ? 1 : 0;
+}
+
 int dwifi_model_owns_read(uint32_t address)
 {
 	uint32_t window = window_offset(address);
@@ -228,6 +306,19 @@ int dwifi_model_owns_read(uint32_t address)
 	 * zero for it, and Mario Kart's host times the association exchange from
 	 * W_US_COUNT: with a counter frozen at zero it abandons the join and
 	 * deauthenticates instead of answering the association request. */
+	/* Not served to the guest yet. The power state machine below is modelled
+	 * and tracked, but serving W_RFStatus/W_RFPins on top of it regressed the
+	 * join: the client stopped registering with the host entirely. The radio
+	 * state is still partial — no TX/RX gating on power, no IRQ15 wake, no
+	 * W_PowerUS — so the guest sees transitions it cannot reconcile. Flip this
+	 * on again only once those are modelled, as its own change. */
+	if (own_datapath_registers &&
+	    (window == REG_RX_TX_ADDR || window == REG_TX_SEQ_NO))
+		return 1;
+	if (own_radio_registers &&
+	    (window == REG_RF_STATUS || window == REG_RF_PINS ||
+	     window == REG_MODE_RST || window == REG_POWER_STATE))
+		return 1;
 	return window == REG_W_IF || window == REG_W_IE ||
 		(window >= REG_RX_CNT && window <= REG_TX_STAT) ||
 		(window >= REG_US_COUNT_CNT && window <= REG_US_COUNT3) ||
@@ -333,6 +424,22 @@ static uint16_t classify_rx_frame(const struct dwifi_model *model,
 	return flags;
 }
 
+/* A duplicate command is not delivered to the guest: no RX header, no cursor
+ * movement and no RX-complete interrupt. The station still owes the host a
+ * reply for it, so that half is scheduled exactly as for a fresh command. */
+static int finish_duplicate_command(struct dwifi_model *model,
+	const uint8_t *frame, uint16_t frame_length)
+{
+	model->mp_reply_client_time = frame_length >= 26 ?
+		load16(frame, 12 + 24) : 0;
+	model->mp_reply_due_us = model->us_timestamp +
+		DWIFI_MP_REPLY_TURNAROUND_US;
+	model->mp_reply_due = 1;
+	model->mp_cmd_duplicate++;
+	model->rx_frame_count++;
+	return 1;
+}
+
 int dwifi_model_receive_frame(struct dwifi_model *model,
 	const uint8_t *frame, size_t length)
 {
@@ -402,6 +509,20 @@ int dwifi_model_receive_frame(struct dwifi_model *model,
 	 * must appear in W_IF even though transport delivery is atomic within one
 	 * DraStic event callback. */
 	uint16_t receive_flags = classify_rx_frame(model, frame, frame_length);
+	/* melonDS: a CMD frame repeating the previous sequence number is a
+	 * duplicate. The header is not written and RX-complete is not raised, so
+	 * the guest never sees it, but the station still owes the host a reply. */
+	int cmd_dupe = 0;
+	if ((receive_flags & UINT16_C(0x000f)) == UINT16_C(0x000c) &&
+	    frame_length >= 24) {
+		uint16_t seqno = load16(frame, 12 + 22);
+		if (model->mp_last_seqno_valid && seqno == model->mp_last_seqno)
+			cmd_dupe = 1;
+		model->mp_last_seqno = seqno;
+		model->mp_last_seqno_valid = 1;
+	}
+	if (cmd_dupe)
+		return finish_duplicate_command(model, frame, frame_length);
 	trace_receive(model, "classified", frame, length, address);
 	uint16_t first_offset = address & UINT16_C(0x1ffe);
 	store16(model->packet_ram, first_offset, receive_flags);
@@ -479,7 +600,17 @@ int dwifi_model_receive_frame(struct dwifi_model *model,
 		if (mac_equal(frame + 12 + 4, cmd_flow)) {
 			uint16_t client_time = frame_length >= 26 ?
 				load16(frame, 12 + 24) : 0;
-			send_mp_reply(model, client_time);
+			/* Do not answer from inside this call. Raising the receive
+			 * interrupt above only sets IF and pokes the emulator's
+			 * interrupt state; the guest has not executed an instruction
+			 * yet, so its reply slot is necessarily still empty. Schedule
+			 * the reply and let dwifi_model_advance_us() send it once the
+			 * guest has had a turn. */
+			model->mp_reply_client_time = client_time;
+			model->mp_reply_due_us = model->us_timestamp +
+				DWIFI_MP_REPLY_TURNAROUND_US;
+			model->mp_reply_due = 1;
+			model->mp_cmd_delivered++;
 		}
 		/* A reply clears its sender from the outstanding set. The link carries
 		 * one client, so the reply identifies itself by arriving; telling
@@ -567,7 +698,18 @@ static void send_mp_ack(struct dwifi_model *model)
  * end of the whole command transfer. */
 static void finish_mp_cmd(struct dwifi_model *model)
 {
+	trace_receive(model, "mp-reply-window-end",
+		model->packet_ram + model->mp_cmd_address, 0,
+		model->mp_cmd_address);
 	model->mp_cmd_active = 0;
+	/* Proceed on the last known reply rather than penalising a station whose
+	 * answer simply could not arrive in time. Without this the host declares
+	 * the client failed on almost every generation, because the emulated reply
+	 * window is far shorter than the link's round trip. */
+	if (model->mp_client_fail && model->mp_last_reply_us &&
+	    model->us_timestamp - model->mp_last_reply_us <
+		DWIFI_MP_REPLY_GRACE_US)
+		model->mp_client_fail = 0;
 
 	dwifi_model_raise_irq(model, WIFI_IRQ_TX_START);
 	set_rf_status(model, DWIFI_RF_REPLY_OR_ACK);
@@ -630,6 +772,8 @@ static void finish_mp_ack(struct dwifi_model *model)
 			(uint16_t)(reg16(model, model->mp_cmd_slot) & UINT16_C(0x7fff)));
 	set_rf_status(model, DWIFI_RF_IDLE);
 	dwifi_model_raise_irq(model, WIFI_IRQ_MP_END);
+	trace_receive(model, "mp-ack-complete",
+		model->packet_ram + address, 0, (uint16_t)address);
 }
 
 /* A command frame polls the clients named by the mask in its own body. */
@@ -658,11 +802,14 @@ static void start_mp_cmd(struct dwifi_model *model, uint32_t address,
 	model->mp_cmd_busy_bit = busy_bit;
 	model->mp_cmd_rate = rate;
 	model->mp_cmd_active = 1;
+	model->mp_cmd_started_us = model->us_timestamp;
 
 	set_rf_status(model, DWIFI_RF_AWAITING_REPLIES);
 	model->mp_reply_deadline_us = model->us_timestamp + transmit_airtime + 16 +
 		((10 + (uint64_t)reg16(model, REG_CMD_REPLY_TIME)) *
 			count_clients(mask));
+	trace_receive(model, "mp-cmd-start", model->packet_ram + address,
+		frame_length, (uint16_t)address);
 	/* A transfer with nobody to poll still has to terminate. */
 	if (!mask) {
 		finish_mp_cmd(model);
@@ -684,14 +831,26 @@ static void send_mp_reply(struct dwifi_model *model, uint16_t client_time)
 	if (previous & UINT16_C(0x8000)) {
 		uint32_t previous_address =
 			(uint32_t)(previous & UINT16_C(0x0fff)) << 1;
-		if (previous_address + 2 <= DWIFI_PACKET_RAM_SIZE)
+		if (previous_address + 2 <= DWIFI_PACKET_RAM_SIZE) {
 			store16(model->packet_ram, previous_address, UINT16_C(0x0001));
+			/* model->packet_ram is a shadow: a write reaches the guest only
+			 * through write_packet.  This mark — melonDS's "the packet has been
+			 * sent" store at offset 0 of the retired reply buffer — was the one
+			 * model-generated status write in this file that never made that
+			 * call, so the station staged replies into a slot whose previous
+			 * occupant it could never observe as transmitted. */
+			if (model->write_packet)
+				model->write_packet(model->packet_opaque,
+					(uint16_t)previous_address, UINT16_C(0x0001));
+		}
 	}
 	set_reg16(model, REG_TX_SLOT_REPLY2,
 		reg16(model, REG_TX_SLOT_REPLY1));
 	set_reg16(model, REG_TX_SLOT_REPLY1, 0);
 	uint16_t slot = reg16(model, REG_TX_SLOT_REPLY2);
 	uint16_t sent_length = 28;
+	uint16_t staged_length = 0;
+	uint16_t staged_address = 0;
 	int sent_populated = 0;
 	dwifi_model_raise_irq(model, WIFI_IRQ_TX_START);
 	set_rf_status(model, DWIFI_RF_REPLY_OR_ACK);
@@ -701,6 +860,8 @@ static void send_mp_reply(struct dwifi_model *model, uint16_t client_time)
 		uint16_t frame_length = load16(model->packet_ram,
 			(address + 10) & (DWIFI_PACKET_RAM_SIZE - 1)) &
 			UINT16_C(0x3fff);
+		staged_address = (uint16_t)address;
+		staged_length = frame_length;
 		uint32_t duration = 192 + (uint32_t)frame_length * 4;
 		if (duration <= client_time &&
 		    address + 12 + frame_length <= DWIFI_PACKET_RAM_SIZE) {
@@ -733,7 +894,7 @@ static void send_mp_reply(struct dwifi_model *model, uint16_t client_time)
 					load16(model->packet_ram, address + 4));
 		}
 	}
-	if (!sent_populated) {
+	if (!sent_populated && !model->suppress_default_reply) {
 		memset(mp_ack_frame, 0, sizeof(mp_ack_frame));
 		store16(mp_ack_frame, 10, 28);
 		mp_ack_frame[8] = 0x14;
@@ -750,6 +911,13 @@ static void send_mp_reply(struct dwifi_model *model, uint16_t client_time)
 		model->send_frame(model->send_opaque, mp_ack_frame, 12 + 28);
 		model->tx_frame_count++;
 	}
+	model->mp_replies_sent++;
+	if (sent_populated)
+		model->mp_replies_populated++;
+	trace_receive(model, sent_populated ? "mp-reply-populated" :
+		(model->suppress_default_reply ? "mp-reply-suppressed" :
+			"mp-reply-default"), model->packet_ram + staged_address,
+		staged_length, staged_address);
 	/* A station reply owns W_TXBusy bit 7 until its on-air transfer ends.  The
 	 * guest observes this around IRQ0, and melonDS only reports IRQ1 after that
 	 * interval rather than at transport submission time. */
@@ -758,6 +926,7 @@ static void send_mp_reply(struct dwifi_model *model, uint16_t client_time)
 	model->mp_reply_active = 1;
 	model->mp_reply_tx_deadline_us = model->us_timestamp + 192 +
 		(uint64_t)sent_length * 4;
+	occupy_medium(model, sent_length, UINT8_C(0x14));
 }
 
 static void finish_mp_reply(struct dwifi_model *model)
@@ -776,6 +945,14 @@ static void fire_tx(struct dwifi_model *model)
 {
 	if (!(reg16(model, REG_RX_CNT) & UINT16_C(0x8000)))
 		return;
+	/* The air is still occupied by a frame this station is transmitting. Leave
+	 * every slot armed and let dwifi_model_advance_us() retry once it clears:
+	 * hardware defers here, it does not discard. */
+	if (model->us_timestamp < model->medium_busy_until_us) {
+		model->tx_deferred = 1;
+		return;
+	}
+	model->tx_deferred = 0;
 	static const uint16_t slots[] = {
 		REG_TX_SLOT_LOC3, REG_TX_SLOT_LOC2, REG_TX_SLOT_CMD, REG_TX_SLOT_LOC1
 	};
@@ -807,6 +984,7 @@ static void fire_tx(struct dwifi_model *model)
 			dwifi_model_raise_irq(model, WIFI_IRQ_TX_START);
 			model->send_frame(model->send_opaque, tx_frame, length);
 			model->tx_frame_count++;
+			occupy_medium(model, frame_length, tx_frame[8]);
 			static const uint8_t mp_cmd_flow[6] =
 				{3, 9, 0xbf, 0, 0, 0};
 			uint16_t frame_control = frame_length >= 24 ?
@@ -853,6 +1031,110 @@ static void set_rf_status(struct dwifi_model *model, unsigned status)
 	set_reg16(model, REG_RF_PINS, pins[status]);
 }
 
+/* melonDS ComStatus: a transfer is on the air. The transceiver may signal that
+ * it is going down, but does not actually stop until the medium is quiet. */
+static int com_status(const struct dwifi_model *model)
+{
+	return model->rx_active || model->mp_cmd_active ||
+		model->mp_ack_active || model->mp_reply_active;
+}
+
+/* Port of melonDS Wifi::UpdatePowerStatus. 1 = power on, 0 = no change,
+ * -1 = power off.
+ *
+ * W_PowerForce overrides everything; clearing W_ModeReset bit 0 forces the
+ * transceiver off; otherwise power follows IRQ13/IRQ15 or W_PowerState
+ * according to the mode selected in W_ModeWEP, with W_PowerDownCtrl deciding
+ * how deep a regular power-down goes. */
+static void update_power_status(struct dwifi_model *model, int power)
+{
+	int current = 0;
+	if (reg16(model, REG_TRX_POWER) == 1)
+		current |= 1;
+	if (!(reg16(model, REG_POWER_STATE) & (1 << 9)))
+		current |= 2;
+	int requested = current;
+
+	if (reg16(model, REG_POWER_FORCE) & (1 << 15)) {
+		requested = (reg16(model, REG_POWER_FORCE) & 1) ? 0 : 3;
+	} else if (!(reg16(model, REG_MODE_RST) & 1)) {
+		requested = 0;
+	} else {
+		if (power == 0) {
+			if ((reg16(model, REG_POWER_STATE) & UINT16_C(0x0202)) ==
+				UINT16_C(0x0202))
+				power = 1;
+			else if ((reg16(model, REG_POWER_STATE) &
+				UINT16_C(0x0201)) == UINT16_C(0x0001))
+				power = -1;
+		}
+		/* W_PowerDownCtrl bit 0 inhibits a regular power-down; bit 1 forces at
+		 * least a partial wakeup. Partial states are not modelled, as in
+		 * melonDS. */
+		if (power == -1 && (reg16(model, REG_POWER_DOWN_CTRL) & 1))
+			power = 0;
+		if (power == 1)
+			requested = 3;
+		else if (power == -1)
+			requested = reg16(model, REG_POWER_DOWN_CTRL) ? 3 : 0;
+		else if (reg16(model, REG_POWER_DOWN_CTRL) & (1 << 1))
+			requested = 3;
+	}
+
+	if (requested == current)
+		return;
+
+	if (requested & 1) {
+		if (!(current & 1)) {
+			set_reg16(model, REG_TRX_POWER, 1);
+			set_rf_status(model, DWIFI_RF_IDLE);
+		}
+	} else {
+		/* Signals that the transceiver is about to go down. */
+		set_reg16(model, REG_TRX_POWER, 2);
+		if (!com_status(model)) {
+			set_reg16(model, REG_TRX_POWER, 0);
+			set_rf_status(model, DWIFI_RF_POWERED_DOWN);
+		}
+	}
+
+	if (requested & 2) {
+		set_reg16(model, REG_POWER_STATE,
+			(uint16_t)(reg16(model, REG_POWER_STATE) | (1 << 8)));
+		if (!(current & 2) && model->us_until_power_on == 0) {
+			/* The radio is not usable the instant it is asked for: hardware
+			 * takes about 2 ms to come up, and the guest is told with IRQ11. */
+			model->us_until_power_on = -2048;
+			dwifi_model_raise_irq(model, WIFI_IRQ_RF_WAKEUP);
+		}
+	} else {
+		set_reg16(model, REG_POWER_STATE,
+			(uint16_t)((reg16(model, REG_POWER_STATE) &
+				~UINT16_C(0x0101)) | (1 << 9)));
+		model->us_until_power_on = 0;
+	}
+}
+
+/* Pre-beacon. Auto wakeup works in every power-management mode, unlike auto
+ * sleep, so this is not gated on the mode in W_ModeWEP. */
+static void raise_pre_beacon_irq(struct dwifi_model *model)
+{
+	dwifi_model_raise_irq(model, WIFI_IRQ_PRE_BEACON);
+	if (reg16(model, REG_POWER_TX) & 1)
+		update_power_status(model, 1);
+}
+
+/* Post-beacon. Auto power-down happens only in automatic power-saving mode 0.
+ * In mode 2 the station does not service IRQ13/IRQ15 at all, so powering down
+ * there would strand the transceiver with nothing to wake it. */
+static void raise_post_beacon_irq(struct dwifi_model *model)
+{
+	dwifi_model_raise_irq(model, WIFI_IRQ_POST_BEACON);
+	if ((reg16(model, REG_MODE_WEP) & 7) == 0 &&
+	    !(reg16(model, REG_POWER_TX) & (1 << 1)))
+		update_power_status(model, -1);
+}
+
 /* Hardware stamps the outcome back into the transmit header once a frame has
  * gone out, and Nintendo's wireless library checks it. */
 static void complete_tx_header(struct dwifi_model *model, uint32_t address)
@@ -868,6 +1150,17 @@ static void complete_tx_header(struct dwifi_model *model, uint32_t address)
 		model->write_packet(model->packet_opaque, (uint16_t)(address + 4),
 			upper);
 	}
+}
+
+/* Airtime for a frame, from melonDS: a 192 us preamble plus four microseconds
+ * per byte at 2 Mbit/s, eight at 1 Mbit/s. The rate byte lives at offset 8 of
+ * the transmit header. */
+static void occupy_medium(struct dwifi_model *model, uint16_t frame_length,
+	uint8_t rate)
+{
+	uint64_t airtime = 192 + (uint64_t)frame_length *
+		(rate == UINT8_C(0x14) ? 4u : 8u);
+	model->medium_busy_until_us = model->us_timestamp + airtime;
 }
 
 static void fire_beacon(struct dwifi_model *model)
@@ -894,6 +1187,12 @@ static void fire_beacon(struct dwifi_model *model)
 		dwifi_model_raise_irq(model, WIFI_IRQ_TX_START);
 		model->send_frame(model->send_opaque, beacon_frame, length);
 		model->tx_frame_count++;
+		/* Deliberately not gated on medium_busy_until_us. The beacon is what
+		 * keeps a station associated, hardware reserves the medium for it at
+		 * the target beacon transmission time, and delaying it is the beacon
+		 * starvation this project has already measured at length. It occupies
+		 * the air like any other frame, but it never waits for it. */
+		occupy_medium(model, frame_length, beacon_frame[8]);
 		complete_tx_header(model, address);
 		set_rf_status(model, DWIFI_RF_IDLE);
 	}
@@ -964,7 +1263,7 @@ static void advance_ms(struct dwifi_model *model)
 		post_beacon = reg16(model, REG_BEACON_COUNT2);
 		set_reg16(model, REG_BEACON_COUNT2, --post_beacon);
 		if (!post_beacon)
-			dwifi_model_raise_irq(model, WIFI_IRQ_POST_BEACON);
+			raise_post_beacon_irq(model);
 	}
 }
 
@@ -976,17 +1275,54 @@ static void set_timer_halfword(uint64_t *target, uint32_t offset,
 	*target = (*target & ~mask) | ((uint64_t)value << shift);
 }
 
+void dwifi_model_advance_beacon_wall_us(struct dwifi_model *model,
+	uint64_t elapsed_us)
+{
+	if (!model)
+		return;
+	model->beacon_wall_remainder_us += elapsed_us;
+	while (model->beacon_wall_remainder_us >= 1000) {
+		model->beacon_wall_remainder_us -= 1000;
+		/* Only the beacon countdown, deliberately. The post-beacon listening
+		 * window is not advanced here: it is the guest's own accounting and it
+		 * calls back into this barrier, which would recurse. */
+		uint16_t beacon_count = reg16(model, REG_BEACON_COUNT1);
+		if (beacon_count) {
+			set_reg16(model, REG_BEACON_COUNT1, --beacon_count);
+			if (!beacon_count) {
+				model->beacon_wall_raises++;
+				raise_beacon_irq(model, DWIFI_BEACON_IRQ_BEACON_COUNT);
+			}
+		}
+		if (!reg16(model, REG_BEACON_COUNT1))
+			set_reg16(model, REG_BEACON_COUNT1,
+				reg16(model, REG_BEACON_INTERVAL));
+	}
+}
+
 void dwifi_model_advance_us(struct dwifi_model *model, uint64_t elapsed_us)
 {
 	if (!model)
 		return;
+	/* Serviced at the top of a later call rather than inside the tick loop
+	 * below.  The guest runs between two calls into the model, so this is the
+	 * earliest point at which a reactively staged reply slot can hold anything.
+	 * Deferring it into the loop would still read the slot before the guest had
+	 * run and would reproduce the inline behaviour this replaced. */
+	if (model->mp_reply_due &&
+	    model->us_timestamp >= model->mp_reply_due_us) {
+		model->mp_reply_due = 0;
+		send_mp_reply(model, model->mp_reply_client_time);
+	}
 	uint64_t ticks = elapsed_us / WIFI_TIMER_INTERVAL_US;
 	uint64_t remainder = elapsed_us % WIFI_TIMER_INTERVAL_US;
 	remainder += model->timer_remainder_us;
 	ticks += remainder / WIFI_TIMER_INTERVAL_US;
 	model->timer_remainder_us = (uint8_t)(remainder % WIFI_TIMER_INTERVAL_US);
 
+	model->advance_calls++;
 	while (ticks--) {
+		model->tick_count++;
 		model->us_timestamp += WIFI_TIMER_INTERVAL_US;
 		if (model->rx_active && model->rx_pending_ptr <
 		    model->rx_pending_stored_length &&
@@ -998,6 +1334,7 @@ void dwifi_model_advance_us(struct dwifi_model *model, uint64_t elapsed_us)
 				value |= (uint16_t)model->rx_pending[12 + ptr + 1] << 8;
 			uint16_t address =
 				(uint16_t)(reg16(model, REG_RX_TX_ADDR) << 1);
+			model->rx_halfword_writes++;
 			packet_store_ring(model, &address, value);
 			set_reg16(model, REG_RX_TX_ADDR, (uint16_t)(address >> 1));
 			model->rx_pending_ptr = (uint16_t)(ptr + 2);
@@ -1011,11 +1348,36 @@ void dwifi_model_advance_us(struct dwifi_model *model, uint64_t elapsed_us)
 				model->rx_pending_length);
 			model->rx_completing = 0;
 		}
+		if (model->us_until_power_on < 0) {
+			model->us_until_power_on += WIFI_TIMER_INTERVAL_US;
+			if (model->us_until_power_on >= 0) {
+				model->us_until_power_on = 0;
+				set_reg16(model, REG_POWER_STATE, 0);
+				set_rf_status(model, DWIFI_RF_IDLE);
+				update_power_status(model, 0);
+			}
+		}
 		if (load16(model->registers, REG_US_COUNT_CNT) & 1) {
 			model->us_counter += WIFI_TIMER_INTERVAL_US;
 			/* The compare is against the counter itself, so it is checked as
 			 * the counter moves rather than on the millisecond tick, which
 			 * drifts off the counter's 1024 us boundaries and would miss it. */
+			/* melonDS raises IRQ15 when the countdown to the next beacon
+			 * reaches W_PreBeacon. Both sides are masked to the 8 us timer
+			 * granularity, as there is no guarantee of an exact landing. */
+			if (load16(model->registers, REG_US_COMPARE_CNT)) {
+				uint32_t uspart = (uint32_t)(model->us_counter &
+					UINT64_C(0x3ff));
+				uint32_t beacon_us =
+					((uint32_t)reg16(model, REG_BEACON_COUNT1) << 10) |
+					(0x3ffu - uspart);
+				if ((beacon_us & ~7u) ==
+				    ((uint32_t)reg16(model, REG_PRE_BEACON) & ~7u))
+				{
+					model->pre_beacon_raises++;
+					raise_pre_beacon_irq(model);
+				}
+			}
 			if ((model->us_counter & UINT64_C(0x3f8)) == 0 &&
 			    (load16(model->registers, REG_US_COMPARE_CNT) & 1) &&
 			    (model->us_counter & ~UINT64_C(0x3ff)) == model->us_compare) {
@@ -1041,6 +1403,12 @@ void dwifi_model_advance_us(struct dwifi_model *model, uint64_t elapsed_us)
 		if (model->mp_reply_active &&
 		    model->us_timestamp >= model->mp_reply_tx_deadline_us)
 			finish_mp_reply(model);
+		/* A transmission deferred because the air was busy is retried here.
+		 * fire_tx() otherwise runs only from the guest's register writes, so
+		 * the frame would simply be dropped rather than delayed. */
+		if (model->tx_deferred &&
+		    model->us_timestamp >= model->medium_busy_until_us)
+			fire_tx(model);
 		model->ms_remainder_us += WIFI_TIMER_INTERVAL_US;
 		while (model->ms_remainder_us >= 1000) {
 			model->ms_remainder_us -= 1000;
@@ -1087,9 +1455,12 @@ uint16_t dwifi_model_read16(struct dwifi_model *model, uint32_t address)
 		return timer_halfword(model->us_compare, offset, REG_US_COMPARE0);
 	switch (offset) {
 	case REG_MODE_RST:
-		return 0;
+		return own_radio_registers ?
+			load16(model->registers, REG_MODE_RST) : 0;
 	case REG_POWER_STATE:
-		return UINT16_C(0x0200);
+		return own_radio_registers ?
+			load16(model->registers, REG_POWER_STATE) :
+			UINT16_C(0x0200);
 	case REG_BB_BUSY:
 	case REG_RF_BUSY:
 		return 0;
@@ -1122,6 +1493,80 @@ void dwifi_model_write16(struct dwifi_model *model, uint32_t address,
 	}
 
 	uint32_t offset = register_offset(address);
+	/* Transceiver power management, ported from melonDS. Auto power-down from
+	 * IRQ13 is deliberately not wired up: this model never raises IRQ15, so a
+	 * station that powered down on a beacon would have nothing to wake it. */
+	if (offset == REG_MODE_RST) {
+		uint16_t previous = reg16(model, REG_MODE_RST);
+		set_reg16(model, REG_MODE_RST, value & 1);
+		if ((previous & 1) != (value & 1))
+			update_power_status(model, 0);
+		return;
+	}
+	if (offset == REG_MODE_WEP) {
+		set_reg16(model, REG_MODE_WEP, value & UINT16_C(0x007f));
+		if (reg16(model, REG_POWER_TX) & (1 << 1)) {
+			if ((value & 7) == 1)
+				set_reg16(model, REG_POWER_DOWN_CTRL,
+					(uint16_t)(reg16(model, REG_POWER_DOWN_CTRL) |
+						(1 << 1)));
+			else if ((value & 7) == 2)
+				set_reg16(model, REG_POWER_DOWN_CTRL, 3);
+			if ((value & 7) != 3)
+				set_reg16(model, REG_POWER_STATE,
+					(uint16_t)(reg16(model, REG_POWER_STATE) &
+						UINT16_C(0x0300)));
+			update_power_status(model, 0);
+		}
+		return;
+	}
+	if (offset == REG_POWER_TX) {
+		set_reg16(model, REG_POWER_TX, value & UINT16_C(0x0003));
+		if (value & (1 << 1)) {
+			if ((reg16(model, REG_MODE_WEP) & 7) == 1)
+				set_reg16(model, REG_POWER_DOWN_CTRL,
+					(uint16_t)(reg16(model, REG_POWER_DOWN_CTRL) |
+						(1 << 1)));
+			else if ((reg16(model, REG_MODE_WEP) & 7) == 2)
+				set_reg16(model, REG_POWER_DOWN_CTRL, 3);
+			update_power_status(model, 0);
+		}
+		return;
+	}
+	if (offset == REG_POWER_STATE) {
+		/* Only writable in power-management mode 3. */
+		if ((reg16(model, REG_MODE_WEP) & 7) != 3)
+			return;
+		uint16_t next = (uint16_t)((reg16(model, REG_POWER_STATE) &
+			UINT16_C(0x0300)) | (value & UINT16_C(0x0003)));
+		if ((next & UINT16_C(0x0300)) == UINT16_C(0x0200))
+			next &= (uint16_t)~UINT16_C(0x0001);
+		else
+			next &= (uint16_t)~UINT16_C(0x0002);
+		if (!(next & (1 << 9)))
+			next &= (uint16_t)~UINT16_C(0x0100);
+		set_reg16(model, REG_POWER_STATE, next);
+		update_power_status(model, 0);
+		return;
+	}
+	if (offset == REG_POWER_FORCE) {
+		set_reg16(model, REG_POWER_FORCE, value & UINT16_C(0x8001));
+		update_power_status(model, 0);
+		return;
+	}
+	if (offset == REG_POWER_DOWN_CTRL) {
+		set_reg16(model, REG_POWER_DOWN_CTRL, value & UINT16_C(0x0003));
+		if (reg16(model, REG_POWER_TX) & (1 << 1)) {
+			if ((reg16(model, REG_MODE_WEP) & 7) == 1)
+				set_reg16(model, REG_POWER_DOWN_CTRL,
+					(uint16_t)(reg16(model, REG_POWER_DOWN_CTRL) |
+						(1 << 1)));
+			else if ((reg16(model, REG_MODE_WEP) & 7) == 2)
+				set_reg16(model, REG_POWER_DOWN_CTRL, 3);
+		}
+		update_power_status(model, 0);
+		return;
+	}
 	if (offset == REG_TX_SLOT_BEACON) {
 		set_reg16(model, offset, value);
 		return;
