@@ -1,6 +1,6 @@
-# minui-nintendo-dsperate-pak
+# DSP.pak (Netplay.pak's DSperate build)
 
-A MinUI Emu Pak for Nintendo DS, wrapping the standalone [DSperate](https://github.com/beebono/DSperate) emulator (version 1.15.1).
+A NextUI Emu Pak for Nintendo DS, wrapping the standalone [DSperate](https://github.com/beebono/DSperate) emulator (upstream main, pinned by commit in the `Makefile`). It started as [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) by josegonzalez; this copy lives in Netplay.pak, which installs it from Tools > Settings > Nintendo DS (DSperate) and starts it as a local-wireless host or guest when a Netplay session is armed. See [../docs/dsperate.md](../docs/dsperate.md) for the Netplay side.
 
 DSperate reimplements DraStic's JIT and NEON rendering techniques with an ARM to AArch64 recompiler, a threaded software rasteriser, save states, Action Replay cheats and RetroAchievements. Unlike DraStic it needs no BIOS dump to play games.
 
@@ -21,10 +21,11 @@ On `h700`, NextUI rc11 changed the button numbers SDL apps see. The pak detects 
 
 ## Installation
 
+Normally Netplay.pak installs it (and restores whatever was there before when the setting is turned off). By hand:
+
 1. Mount your MinUI SD card.
-2. Download the latest release from Github. It will be named `DSP.pak.zip`.
-3. Copy the zip file to `/Emus/$PLATFORM/DSP.pak.zip`.
-4. Extract the zip in place, then delete the zip file.
+2. Build it (`make dist` here, or `make cores-dsp` in Netplay.pak for one pak per platform).
+3. Copy `dist/DSP.pak` to `/Emus/$PLATFORM/DSP.pak`.
 5. Confirm that there is a `/Emus/$PLATFORM/DSP.pak/launch.sh` file on your SD card.
 6. Create a folder at `/Roms/Nintendo DS (DSP)` and place your roms in this directory.
 7. Unmount your SD Card and insert it into your MinUI device.
@@ -63,7 +64,7 @@ Delete `device.txt` to have the profile applied again. Your previous config is k
 
 MENU acts as the modifier for every chord.
 
-- MENU + A: Quit
+- MENU + A: Quit (as labelled on the device; the configs use SDL's positional names, so this is `mod+b` in the ini)
 - MENU + Y: Pause menu (save/load state, cheats, options, achievements)
 - MENU + Up / Down: Cycle screen layout
 - MENU + B: Screenshot
@@ -117,10 +118,14 @@ These lines in that log are worth knowing:
 
 See [TECHNICAL.md](TECHNICAL.md) for the build pipeline, the ABI floors, the toolchain workarounds and how to bump the upstream version.
 
+## Local wireless (Netplay)
+
+With a Netplay session armed, `launch.sh` adds `--lan-host Netplay` on the session's host and `--lan-join <host>` on the guest, boots fresh (`--no-autoload`) unless a slot was picked, and pins the `performance` CPU governor until the game exits. In the game's own wireless menu one player creates a group and the other joins. Without a session nothing changes.
+
 ## Credits
 
 - @beebono for DSperate
-- anyone else I'm missing
+- @josegonzalez for minui-nintendo-dsperate-pak, which this build and launcher come from
 
 ## License
 

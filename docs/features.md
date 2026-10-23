@@ -55,6 +55,16 @@ changes do not restart its Game Link socket. A live peer may remain in its menu
 without a fixed timeout; transport disconnect detection releases the other
 device if that peer actually disappears.
 
+### 2a. Nintendo DS local wireless — Implemented, experimental
+
+Each device runs its own DS in DSP.pak (DSperate), which Netplay installs on
+request and starts as the session's LAN host or guest; the DS radio travels in
+melonDS's LAN protocol. Mario Kart DS plays a full race between a Brick and an
+RG35XX H over ad hoc at about 50 fps (menus 60). Through an access point it
+runs at about a third of full speed. One device emulating both consoles was
+measured and rejected: each DS needs about two of the four A53 cores. See
+[dsperate.md](dsperate.md).
+
 ### 3. Continue solo — Partial
 
 When a peer is absent long enough to make progress impossible, present an

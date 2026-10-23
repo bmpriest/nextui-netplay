@@ -11,7 +11,7 @@ Upstream publishes prebuilt aarch64 tarballs, and neither can load on any device
 | `dsperate-vX-linux-aarch64-static.tar.gz` | `GLIBC_2.38` | Only libstdc++/libgcc are static; glibc is still dynamic |
 | `dsperate-vX-linux-aarch64.tar.gz` | `GLIBC_2.38` | Also needs `GLIBCXX_3.4.30`, i.e. a GCC 12 libstdc++ |
 
-Upstream CI builds on `ubuntu-24.04-arm`, glibc 2.39. The devices are at 2.33 (TrimUI SDK) and 2.35 (H700 stock), and NextUI's own cross toolchain targets 2.28. So the pak cross-compiles a pinned upstream tag in the LoveRetro toolchain images instead.
+Upstream CI builds on `ubuntu-24.04-arm`, glibc 2.39. The devices are at 2.33 (TrimUI SDK) and 2.35 (H700 stock), and NextUI's own cross toolchain targets 2.28. So the pak cross-compiles a pinned upstream commit in the LoveRetro toolchain images instead, pinned by digest to the same images `build-platforms` uses for the rest of Netplay.pak.
 
 ## Toolchains
 
@@ -29,7 +29,7 @@ Do not use upstream's `cmake/aarch64-linux-gnu.cmake` or the `aarch64-cross` pre
 
 ## Measured ABI
 
-`scripts/check-abi.sh` runs after `--strip-unneeded`, on the exact bytes that ship. Measured at v1.15.1:
+`scripts/check-abi.sh` runs after `--strip-unneeded`, on the exact bytes that ship. Measured at ddf2910 with the patch series applied:
 
 | Platform | Ceiling | Measured | NEEDED |
 | --- | --- | --- | --- |
@@ -53,23 +53,26 @@ Each produces a binary that builds, links, boots and plays, just wrongly.
 
 ## pthread
 
-DSperate uses `std::thread` but never links `Threads::Threads`. Upstream never notices because glibc 2.34 folded libpthread into libc; below that it is a real library.
+Older DSperate used `std::thread` without linking `Threads::Threads`, which glibc 2.34+ hides by folding libpthread into libc. Upstream main now links it (and `stdc++fs` on GCC < 9) for the SDL frontend, but not for `dsperate-headless` or the tests, so the pak still appends `-lpthread -lstdc++fs` itself.
 
 It is passed as `CMAKE_CXX_STANDARD_LIBRARIES`, **not** `CMAKE_EXE_LINKER_FLAGS`. Linker flags land ahead of the objects that reference `pthread_create`, where `--as-needed` drops the library again; standard libraries are appended at the very end of the link line, the one place it survives. `--push-state`/`--pop-state` keeps `--no-as-needed` from applying to everything else on the line. `tests/makefile.bats` asserts this, because simplifying it into the linker flags regresses silently and only on glibc < 2.34.
 
 ## Patches
 
-`patches/` is applied to every build by the `clone` rule. A patch that no longer applies is fatal, so a drifted patch cannot produce a green build with the workaround silently missing.
+`patches/` is a `git am` series applied by the `clone` rule onto `DSPERATE_REV`; `verify-pin` asserts the checkout is that commit plus exactly the series. A patch that no longer applies is fatal, so a drifted patch cannot produce a green build with the workaround silently missing. Regenerate them from a working clone with `git format-patch --zero-commit <rev>..HEAD`.
 
-Both current patches are **GCC 8 compiler bugs, not upstream bugs**. Drop them when the tg5040 and h700 toolchains move past GCC 8, not before.
+| Patch | Kind | Notes |
+| --- | --- | --- |
+| `0001-gcc8-neon-scale-row-grid-miscompile` | GCC 8 workaround | See below. Drop when the tg5040/h700 toolchains move past GCC 8 |
+| `0002-minui-integration` | launcher integration | Power button, slot thumbnails/markers, `emu.state_key`, screenshots, game-switcher hotkey (no state during a network session). Adds `minui.{h,cpp}` itself: the old overlay/ split is gone |
+| `0003-lan-join-retry` | upstreamable | Non-blocking `--lan-join` that keeps trying until the host answers |
+| `0004-input-open-every-controller` | upstreamable | Every mappable pad is opened; `pad.face_fix` is per pad |
+| `0005-lan-configurable-timeout` | upstreamable | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS`, wait statistics |
+| `0006-wifi-late-transport-begin` | upstreamable bug fix | A transport attached while the radio is on says `begin()`; `DS_LAN_LOG`; `lan pacing:` summary |
 
-**`0001-gcc8-constexpr-in-nested-lambda.patch`** — GCC 8 treats a `constexpr` local of an enclosing lambda, read in an `if constexpr` inside a nested lambda, as a capture, and rejects it: `lambda capture of 'NH' is not a constant expression`, 97 times in `render3d.cpp`. Fixed in GCC 9. Naming the type directly is the same value with no odr-use. Reported upstream as [beebono/DSperate#1](https://github.com/beebono/DSperate/issues/1).
+The upstream GCC 8 `constexpr`-in-nested-lambda workaround (formerly 0001) is no longer needed: the code it patched is gone.
 
-**`0003-minui-integration.patch`** is not a compiler workaround and does not go away: it is the
-launcher integration described below. It is the patch most likely to need a rebase on a tag bump,
-which is why the logic it wires in lives in `overlay/` rather than in the patch itself.
-
-**`0002-gcc8-neon-scale-row-grid-miscompile.patch`** — GCC 8 miscompiles the NEON `scale_row_grid` kernel. Bisected with `-mcpu` held constant so the compiler was the only variable:
+**`0001-gcc8-neon-scale-row-grid-miscompile.patch`** — GCC 8 miscompiles the NEON `scale_row_grid` kernel. Bisected with `-mcpu` held constant so the compiler was the only variable:
 
 | Compiler | `-mcpu` | `gpu` / `kernels` |
 | --- | --- | --- |
@@ -79,7 +82,9 @@ which is why the logic it wires in lives in `overlay/` rather than in the patch 
 
 Not an optimiser level: it reproduces at `-O3`, `-O2` and `-O1`, with and without LTO, and with `-fno-strict-aliasing`. The patch falls back to the portable reference on GCC 8 only; GCC 9 and later keep the NEON path, so tg5050 is unaffected. It costs performance only in the LCD-grid and chunky filters, which are off in the shipped default configuration.
 
-This is exactly what `ctest` is in the pipeline to catch, and it caught it on the first run.
+## Vulkan is off
+
+Upstream main builds a Vulkan dma-buf presenter and a GPU 3D rasteriser whenever it finds `vulkan/vulkan.h`. The NextUI sysroots have headers too old for it (no `VK_API_VERSION_1_2`, no DRM format modifiers), and none of the supported devices has a Vulkan driver, so `-DDSPERATE_VULKAN=OFF` is in `DSP_CMAKE_COMMON`.
 
 ## Tests
 
@@ -97,12 +102,13 @@ It runs once, with the tg5040 flag set. All three platforms build identical sour
 
 ## Bumping the upstream version
 
-Dependabot only covers Actions; `DSPERATE_TAG` is manual, and upstream ships tags often.
+`DSPERATE_REV` is a commit, not a tag: the LAN fixes Netplay relies on postdate the last tag, and upstream main moves faster than its tags.
 
-1. Set `DSPERATE_TAG` in the `Makefile`. `tests/makefile.bats` asserts it is a tag rather than a branch, and `make verify-pin` asserts the checkout matches.
-2. Read the upstream release notes for CMake option changes. A renamed switch fails open, because CMake ignores unknown `-D` cache args, and `assert-build.sh` is the only thing that would catch the consequence.
-3. `make clean build`. Both patches must still apply; if one does not, check whether upstream fixed it before rebasing.
-4. Re-measure the ABI table above if the toolchain images have moved.
+1. Set `DSPERATE_REV` in the `Makefile` (a full hash). `DSPERATE_REPO=~/dev/sbcs/cores/DSperate` builds from a local checkout.
+2. Read the upstream log for CMake option changes. A renamed switch fails open, because CMake ignores unknown `-D` cache args, and `assert-build.sh` is the only thing that would catch the consequence.
+3. Rebase the series: `git am` it onto the new commit in a scratch clone, fix what conflicts, `git format-patch --zero-commit` it back into `patches/`.
+4. `rm -rf src && make dist-tg5040 dist-tg5050 dist-h700`. Re-measure the ABI table above if the toolchain images have moved.
+5. Run `testing/devbridge/dsp-mkds.test` on two devices.
 
 ## The MinUI integration
 

@@ -235,3 +235,9 @@ established against every available build including Trimui's own. See
 a supported core should work; none has been run. FBN is the most likely to
 surprise, because arcade cores vary in how much state they keep outside the
 serialised block.
+
+## Outside NextUI's bundles
+
+| System | Emulator | Multiplayer? | Link Cable? | Implementation |
+|---|---|---|---|---|
+| NDS | DSperate (DSP.pak, installed by Netplay) | no | **yes** - DS local wireless emulated, melonDS LAN protocol | **local wireless** - one DS per device; Mario Kart DS proven over ad hoc. See [dsperate.md](dsperate.md) |

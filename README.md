@@ -40,6 +40,26 @@ available — no game files are sent between devices. So if you want to trade be
 isn't met, the game restarts automatically on the normal link-cable path and
 plays as it always did.
 
+### Nintendo DS Local Wireless (experimental)
+
+DS games that play over local wireless (Mario Kart DS, for one) can play
+between two devices. Each device runs its own DS with its own screens and save;
+the DS radio is carried over the Netplay session's network.
+
+Turn on **Nintendo DS (DSperate)** in Tools > Settings. That installs
+Netplay's bundled DSP.pak, a build of the [DSperate](https://github.com/beebono/DSperate)
+emulator, backing up any DSP.pak, saves and states that were already there;
+turning it off offers to restore them. Put your games in
+`Roms/Nintendo DS (DSP)`. No BIOS is needed.
+
+With a session armed, launch the same game on both devices (in either order)
+and use the game's own wireless menu: one player creates a group, the other
+joins it. Use the ad hoc network: through a router the games run at about a
+third of full speed. Mario Kart DS races run at about 50 fps on a Trimui Brick
+and an RG35XX H; menus run at full speed. DSP.pak is built for tg5040, tg5050 and h700.
+Save states are off while the two consoles are talking. Details and
+measurements: [docs/dsperate.md](docs/dsperate.md).
+
 ## Compatibility
 
 The .pak will check each installed core's build for shared-screen netplay. Matching builds = maximum compatibility. If the builds don't match, it can attempt to fall back on specially compiled "compatibility cores" that should work regardless.
@@ -66,6 +86,7 @@ I'm trying to make everything compatible, but I only have a Trimui Brick and Miy
 | mGBA | Game Boy Advance |
 | Gambatte | Game Boy Color |
 | Gambatte | Game Boy |
+| DSperate (DSP.pak) | Nintendo DS (local wireless, experimental) |
 
 ## Installation
 
@@ -160,4 +181,5 @@ This is an unofficial modification. Use at your own risk. Always backup your SD 
 
 - [NextUI](https://github.com/LoveRetro/NextUI) by LoveRetro
 - [mohammadsyuhada](https://github.com/mohammadsyuhada/nextui-netplay) for original netplay implementation
+- [DSperate](https://github.com/beebono/DSperate) by beebono, and [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) by josegonzalez, which DSP.pak's build and launcher come from
 - My son, who wanted to trade Pokemon with me

@@ -257,8 +257,14 @@ dsp_netplay_args() {
         ;;
     esac
     # How long one MP exchange may hold a frame before it is dropped. DSperate's
-    # default (25 ms) suits a wired LAN; the session may carry its own.
+    # default (25 ms) holds on Netplay's ad hoc network (3 ms round trips), but
+    # through an access point a quarter of round trips exceed it and Mario Kart
+    # gives up with a communication error; 100 ms stops that. The session may
+    # carry its own value.
     _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$DSP_NET_SESSION" | head -n 1)"
+    if [ -z "$_timeout" ] && ! grep -q '^adhoc_ssid=' "$DSP_NET_SESSION"; then
+        _timeout=100
+    fi
     case "$_timeout" in
     "" | *[!0-9]*) ;;
     *) export DS_LAN_TIMEOUT_MS="$_timeout" ;;
