@@ -3086,3 +3086,14 @@ Counting now happens in `process_incoming_packet()`, where a reply is actually
 ingested, on every path. The window arm above is therefore **not** a test of the
 window idea; it is a test of a broken implementation. Given the invariance
 result it is left off by default, and the idea remains untested.
+
+## 2026-10-23: superseded by DSperate's radio
+
+The hand-written model and transport described in this log are no longer the
+shipped library. drastic-wifi now carries DSperate's port of melonDS's Wi-Fi
+block and LAN transport, attached at the boundaries this log established (see
+`docs/drastic.md`). The fixed emulated-time budget above was the client's
+clock running free of the host's: melonDS locks the client to the host's
+timestamps and blocks it for each host frame, which the model never did. With
+the port, Mario Kart DS gets past CUT OFF and races, with DraStic as host and
+as guest.
