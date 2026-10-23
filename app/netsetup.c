@@ -412,6 +412,48 @@ bool NS_varnishInstalled(void) {
 	return access(path, X_OK) == 0;
 }
 
+bool NS_varnishBundled(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/varnish/%s/varnish", ns_pak, ns_platform);
+	return access(path, X_OK) == 0;
+}
+
+NS_VarnishState NS_varnishStatus(void) {
+	char cmd[1024], line[32] = "";
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/varnish-install.sh' status 2>/dev/null",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	FILE* f = popen(cmd, "r");
+	if (f) {
+		if (!fgets(line, sizeof(line), f)) line[0] = '\0';
+		pclose(f);
+	}
+	if (!strncmp(line, "current", 7))  return NS_VARNISH_CURRENT;
+	if (!strncmp(line, "outdated", 8)) return NS_VARNISH_OUTDATED;
+	if (!strncmp(line, "missing", 7))  return NS_VARNISH_MISSING;
+	/* No answer: trust what is on disk rather than offer an install. */
+	return NS_varnishInstalled() ? NS_VARNISH_CURRENT : NS_VARNISH_UNAVAILABLE;
+}
+
+bool NS_varnishInstall(char* err, int errlen) {
+	char cmd[1024], line[160] = "";
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/varnish-install.sh' install 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	FILE* f = popen(cmd, "r");
+	if (!f) { snprintf(err, errlen, "Could not run the Varnish installer."); return false; }
+	char buf[160];
+	while (fgets(buf, sizeof(buf), f)) snprintf(line, sizeof(line), "%s", buf);
+	int rc = pclose(f);
+	if (rc == 0) return true;
+	line[strcspn(line, "\n")] = '\0';
+	ns_log("varnish install failed (%d): %s\n", rc, line);
+	snprintf(err, errlen, "%s", line[0] ? line : "Varnish could not be installed.");
+	return false;
+}
+
 static const char* compatibility_arch(void) {
 	return !strcmp(ns_platform, "my282") ? "armv7" : "aarch64";
 }

@@ -21,6 +21,16 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+
+/* Older toolchains' kernel headers (my282's) predate these names. */
+#ifndef BTN_SOUTH
+#define BTN_SOUTH     0x130
+#define BTN_EAST      0x131
+#endif
+#ifndef BTN_DPAD_UP
+#define BTN_DPAD_UP   0x220
+#define BTN_DPAD_DOWN 0x221
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -50,7 +60,8 @@ static int fds[MAX_DEVICES];
 static int fd_count;
 static unsigned char key_held[KEY_CNT];
 static int hat_x, hat_y;
-static bool keyboard_layout;   /* my355 reports its buttons as keyboard keys */
+/* Which codes each platform's pad reports, as NextUI's platform.h maps them. */
+static enum { LAYOUT_GAMEPAD, LAYOUT_KEYBOARD, LAYOUT_H700 } layout;
 
 static void close_devices(void) {
 	for (int i = 0; i < fd_count; i++) close(fds[i]);
@@ -85,13 +96,23 @@ static bool any_held(void) {
 }
 
 static Button key_button(int code) {
-	if (keyboard_layout) {
+	if (layout == LAYOUT_KEYBOARD) {   /* my355: keyboard keys */
 		switch (code) {
 		case KEY_UP:        return QB_UP;
 		case KEY_DOWN:      return QB_DOWN;
 		case KEY_SPACE:     return QB_A;
 		case KEY_LEFTCTRL:  return QB_B;
 		case KEY_ENTER:     return QB_START;
+		default:            return QB_OTHER;
+		}
+	}
+	if (layout == LAYOUT_H700) {       /* south is A, the d-pad keyboard keys */
+		switch (code) {
+		case 304:           return QB_A;
+		case 305:           return QB_B;
+		case 311:           return QB_START;
+		case KEY_UP:        return QB_UP;
+		case KEY_DOWN:      return QB_DOWN;
 		default:            return QB_OTHER;
 		}
 	}
@@ -399,7 +420,8 @@ int main(void) {
 	signal(SIGPIPE, SIG_IGN);
 
 	NS_init();
-	keyboard_layout = !strcmp(NS_platform(), "my355");
+	layout = !strcmp(NS_platform(), "my355") ? LAYOUT_KEYBOARD
+	       : !strcmp(NS_platform(), "h700") ? LAYOUT_H700 : LAYOUT_GAMEPAD;
 	snprintf(pid_path, sizeof(pid_path), "%s/quick-menu.pid", NS_statePath());
 	write_pid(pid_path);
 	NS_setProgressCallback(on_progress);

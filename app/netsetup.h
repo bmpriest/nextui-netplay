@@ -186,6 +186,18 @@ typedef struct {
 
 NS_Settings* NS_settings(void);   /* live, mutable; call NS_settingsSave after */
 bool NS_varnishInstalled(void);   /* the overlay the status icon is drawn by */
+bool NS_varnishBundled(void);     /* Netplay carries a Varnish for this platform */
+
+typedef enum {
+	NS_VARNISH_CURRENT,       /* installed, at least the bundled version */
+	NS_VARNISH_OUTDATED,      /* installed, older than the bundled one */
+	NS_VARNISH_MISSING,       /* not installed; the bundled one can be */
+	NS_VARNISH_UNAVAILABLE,   /* not installed, and none bundled for here */
+} NS_VarnishState;
+NS_VarnishState NS_varnishStatus(void);
+/* Installs or updates the bundled Varnish and enables it. It starts drawing
+ * after the next reboot, when NextUI loads its hook. */
+bool NS_varnishInstall(char* err, int errlen);
 void NS_statusIconSync(void);     /* start/stop the icon watcher to match setting + session */
 void NS_quickMenuSync(void);      /* start/stop the START quick menu to match the setting */
 void NS_settingsLoad(void);

@@ -1,4 +1,4 @@
-.PHONY: dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help
+.PHONY: dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app varnish check-varnish test test-gambatte-dual clean help
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -19,6 +19,13 @@ PLATFORMS  := tg5040 tg5050 my282 my355 h700
 BUILDER_PATHS := $(abspath $(CURDIR)/../../build-platforms) $(abspath $(CURDIR)/../../../build-platforms)
 BUILDER    ?= $(firstword $(wildcard $(BUILDER_PATHS)) $(firstword $(BUILDER_PATHS)))
 
+# Varnish.pak, which draws the status icon and the quick menu, is bundled so the
+# app can install it when either is switched on. Found the same way as the
+# builder: a community-paks checkout beside my-paks.
+VARNISH_PATHS := $(abspath $(CURDIR)/../../community-paks/nextui-varnish-pak) $(abspath $(CURDIR)/../../../community-paks/nextui-varnish-pak)
+VARNISH    ?= $(firstword $(wildcard $(VARNISH_PATHS)) $(firstword $(VARNISH_PATHS)))
+VARNISH_PLATFORMS := tg5040 tg5050 my355 h700
+
 help:
 	@echo "make shim    cross-build the shim for $(PLATFORMS) (needs docker)"
 	@echo "make cores   build the patched gambatte + gpsp cores (needs docker)"
@@ -27,6 +34,7 @@ help:
 	@echo "make compatibility  build seven pinned cores for ARMv7 + AArch64"
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
+	@echo "make varnish build the bundled Varnish.pak for $(VARNISH_PLATFORMS) (needs docker)"
 	@echo "make test    run the host test suites"
 	@echo "make dist    create Netplay.pak.zip, compatibility-cores.zip and Netplay-Full.pak.zip"
 	@echo "make clean   remove dist/"
@@ -380,6 +388,7 @@ test:
 	@./testing/test-wifi-watchdog.sh
 	@./testing/test-status-icon.sh
 	@./testing/test-quick-menu.sh
+	@./testing/test-varnish-install.sh
 	@./launcher/test.sh
 	@PYTHONDONTWRITEBYTECODE=1 python3 tools/test-netplay-harness.py
 
@@ -402,7 +411,7 @@ test:
 # shipped and is the pak's whole UI.)
 ###########################################################
 
-BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores
+BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-varnish
 
 dist: dist-base dist-compatibility dist-full
 	@echo
@@ -417,8 +426,12 @@ dist-base: $(BASE_DIST_CHECKS)
 	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
 	    launcher/mount-common.sh launcher/state-path.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh launcher/mgba-manage.sh \
-	    launcher/wifi-platform.sh launcher/status-icon.sh launcher/quick-menu.sh \
+	    launcher/wifi-platform.sh launcher/status-icon.sh launcher/quick-menu.sh launcher/varnish-install.sh \
 	    "$(BASE_STAGE)/$(PAK)/launcher/"
+	@for p in $(VARNISH_PLATFORMS); do \
+		mkdir -p "$(BASE_STAGE)/$(PAK)/varnish"; \
+		cp -R dist/varnish/$$p "$(BASE_STAGE)/$(PAK)/varnish/$$p"; \
+	done
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/res"
 	@cp res/status@1x.png res/status@2x.png res/status@3x.png res/status@4x.png \
 	    "$(BASE_STAGE)/$(PAK)/res/"
@@ -481,6 +494,36 @@ check-netplay-cores:
 	@for p in $(MGBA_PLATFORMS); do \
 		test -f dist/cores/$$p/mgba_libretro.so || { echo "missing mGBA core $$p"; exit 1; }; \
 		test -f dist/cores-experimental/$$p/mgba_dual_libretro.so || { echo "missing mGBA dual core $$p"; exit 1; }; \
+	done
+
+# Varnish's overlay alone, without its ffmpeg: recording is Varnish's own
+# feature and the full Varnish.pak brings it. Built with the same pinned
+# toolchain images as everything else here.
+varnish:
+	@test -f "$(VARNISH)/ports/tg5040/Makefile" || { \
+		echo "Varnish source not found at $(VARNISH) - set VARNISH=/path/to/nextui-varnish-pak"; exit 1; }
+	@for p in $(VARNISH_PLATFORMS); do \
+		echo "== varnish $$p"; \
+		img=$$(bash -c '. "$(BUILDER)/platforms.conf" && platform_image "$$1"' _ $$p) || exit 1; \
+		tc=$$(echo $$p | tr a-z A-Z)_TOOLCHAIN; \
+		$(MAKE) -s -C "$(VARNISH)" $$p $$tc="$$img" >/dev/null || exit 1; \
+		out=dist/varnish/$$p; rm -rf $$out; mkdir -p $$out/include $$out/scripts; \
+		cp "$(VARNISH)/build/$$p/varnish" "$(VARNISH)/build/$$p/varnish_overlay.so" \
+		   "$(VARNISH)/launch.sh" "$(VARNISH)/pak.json" "$(VARNISH)/LICENSE" $$out/ && \
+		cp "$(VARNISH)/include/varnish.h" $$out/include/ && \
+		cp "$(VARNISH)/scripts/varnish.sh" $$out/scripts/ || exit 1; \
+	done
+	@ls -la dist/varnish/*/varnish | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
+
+# The quick menu is compiled against app/varnish.h, a copy of the bundled
+# Varnish's header: they must agree, or the menu speaks a protocol the
+# installed daemon does not.
+check-varnish:
+	@for p in $(VARNISH_PLATFORMS); do \
+		test -x dist/varnish/$$p/varnish || { \
+			echo "missing dist/varnish/$$p - run 'make varnish' first"; exit 1; }; \
+		[ "$$(sed 1,4d app/varnish.h)" = "$$(sed 1d dist/varnish/$$p/include/varnish.h)" ] || { \
+			echo "app/varnish.h differs from the bundled Varnish's header - update it from there"; exit 1; }; \
 	done
 
 check-shim-%:

@@ -32,6 +32,8 @@ typedef enum {
 	SCREEN_MGBA_MISMATCH,
 	SCREEN_MGBA_RESTORE,
 	SCREEN_POWERSAVE_CONFIRM,
+	SCREEN_VARNISH_CONFIRM,
+	SCREEN_VARNISH_REBOOT,
 	SCREEN_CHECKS,
 	SCREEN_JOINING,
 } Screen;
@@ -200,6 +202,24 @@ static const char* tool_label(int item) {
  * picker, shown as ">" so it reads as "there is more behind this". */
 static int settings_sel = 0;
 static int settings_top = 0;   /* first visible row once the list outgrows the screen */
+
+/* The status icon and quick menu are drawn by Varnish.pak. Switching either on
+ * offers to install (or update) the copy Netplay carries; the setting changes
+ * only once it is in place. */
+static int varnish_for;                 /* the setting waiting on it */
+static NS_VarnishState varnish_state;
+
+static bool needs_varnish(int setting) {
+	varnish_state = NS_varnishStatus();
+	if (varnish_state == NS_VARNISH_CURRENT) return false;
+	if (varnish_state == NS_VARNISH_UNAVAILABLE) {
+		snprintf(status, sizeof(status), "Needs Varnish.pak, which is not available here.");
+		return true;
+	}
+	varnish_for = setting;
+	screen = SCREEN_VARNISH_CONFIRM;
+	return true;
+}
 static int debug_sel = 0;
 static int inst_sel = 0;
 static bool inst_staged[NS_INST_CORES];
@@ -501,10 +521,12 @@ static void render(SDL_Surface* s) {
 			     ? (NS_settings()->status_icon == NS_ICON_PERSISTENT ? "N always at the bottom; lights up while armed."
 			       : NS_settings()->status_icon == NS_ICON_SESSION ? "N at the bottom while a session is armed."
 			       : "Persistent: always shown. Session: only while armed.")
+			     : NS_varnishBundled() ? "Turning this on installs Varnish.pak to draw it."
 			     : "Needs Varnish.pak, which draws the icon."; break;
 		case SET_QUICK_MENU:
 			hint = NS_varnishInstalled()
 			     ? "START in NextUI's menus opens a Netplay menu."
+			     : NS_varnishBundled() ? "Turning this on installs Varnish.pak to draw it."
 			     : "Needs Varnish.pak, which draws the menu."; break;
 		}
 		y = draw_line(s, hint, y, COLOR_GRAY, true);
@@ -588,6 +610,30 @@ static void render(SDL_Surface* s) {
 		y += SCALE1(5);
 		draw_line(s, "WiFi drops briefly. Lasts until the device reboots.", y, COLOR_GRAY, true);
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "CONTINUE", NULL}, 1, s, 1);
+		break;
+	}
+	case SCREEN_VARNISH_CONFIRM: {
+		bool update = varnish_state == NS_VARNISH_OUTDATED;
+		draw_title(s, update ? "Update Varnish?" : "Install Varnish?");
+		int y = SCALE1(PADDING + 44);
+		if (update) {
+			y = draw_line(s, "The status icon and quick menu need a newer", y, COLOR_WHITE, true);
+			y = draw_line(s, "Varnish.pak. Update it from Netplay now?", y, COLOR_WHITE, true);
+		} else {
+			y = draw_line(s, "The status icon and quick menu are drawn by", y, COLOR_WHITE, true);
+			y = draw_line(s, "Varnish.pak. Install it to Tools now?", y, COLOR_WHITE, true);
+		}
+		y += SCALE1(5);
+		draw_line(s, "It starts drawing after the next reboot.", y, COLOR_GRAY, true);
+		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", update ? "UPDATE" : "INSTALL", NULL}, 1, s, 1);
+		break;
+	}
+	case SCREEN_VARNISH_REBOOT: {
+		draw_title(s, "Varnish installed");
+		int y = SCALE1(PADDING + 44);
+		y = draw_line(s, "NextUI loads it when it starts, so it", y, COLOR_WHITE, true);
+		y = draw_line(s, "begins drawing after a reboot. Reboot now?", y, COLOR_WHITE, true);
+		GFX_blitButtonGroup((char*[]){"B", "LATER", "A", "REBOOT", NULL}, 1, s, 1);
 		break;
 	}
 	case SCREEN_MGBA_RESTORE: {
@@ -1010,11 +1056,15 @@ int main(int argc, char* argv[]) {
 					break;
 				case SET_GAMESWITCHER: c->add_gameswitcher = !c->add_gameswitcher; break;
 				case SET_STATUS_ICON:   /* No > Persistent > Session > No */
+					if (c->status_icon == NS_ICON_OFF && needs_varnish(SET_STATUS_ICON)) break;
 					c->status_icon = c->status_icon == NS_ICON_OFF ? NS_ICON_PERSISTENT
 					               : c->status_icon == NS_ICON_PERSISTENT ? NS_ICON_SESSION
 					               : NS_ICON_OFF;
 					break;
-				case SET_QUICK_MENU: c->quick_menu = !c->quick_menu; break;
+				case SET_QUICK_MENU:
+					if (!c->quick_menu && needs_varnish(SET_QUICK_MENU)) break;
+					c->quick_menu = !c->quick_menu;
+					break;
 				case SET_POWERSAVE:
 					/* Applies to an armed session now, not only from the next
 					 * game launch: Restore is a no-op when nothing was recorded. */
@@ -1121,6 +1171,43 @@ int main(int argc, char* argv[]) {
 						screen = SCREEN_SETTINGS;
 					} else screen = SCREEN_INSTANCED;
 				} else screen = SCREEN_INSTANCED;
+				dirty = 1;
+			}
+			break;
+
+		case SCREEN_VARNISH_CONFIRM:
+			if (PAD_justPressed(BTN_B)) { screen = SCREEN_SETTINGS; dirty = 1; }
+			if (PAD_justPressed(BTN_A)) {
+				set_progress(varnish_state == NS_VARNISH_OUTDATED ? "Updating Varnish" : "Installing Varnish",
+				             "Copying Varnish.pak to Tools.");
+				draw_progress("Installing", 1, 1);
+				status[0] = '\0';
+				screen = SCREEN_SETTINGS;
+				if (NS_varnishInstall(status, sizeof(status))) {
+					NS_Settings* c = NS_settings();
+					if (varnish_for == SET_STATUS_ICON) c->status_icon = NS_ICON_PERSISTENT;
+					else c->quick_menu = true;
+					NS_settingsSave();
+					screen = SCREEN_VARNISH_REBOOT;
+				}
+				dirty = 1;
+			}
+			break;
+
+		case SCREEN_VARNISH_REBOOT:
+			if (PAD_justPressed(BTN_B)) {
+				snprintf(status, sizeof(status), "Varnish starts after the next reboot.");
+				screen = SCREEN_SETTINGS;
+				dirty = 1;
+			}
+			if (PAD_justPressed(BTN_A)) {
+				/* NextUI's launcher reboots when a pak exits leaving this. */
+				FILE* f = fopen("/tmp/reboot", "w");
+				if (f) { fclose(f); sync(); quit = 1; }
+				else {
+					snprintf(status, sizeof(status), "Could not reboot - restart the device.");
+					screen = SCREEN_SETTINGS;
+				}
 				dirty = 1;
 			}
 			break;
