@@ -422,6 +422,7 @@ static NS_Settings ns_set = {
 	.simple_client = false,
 	.add_gameswitcher = false,
 	.disable_powersave = false,
+	.dsperate = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
 };
@@ -474,6 +475,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
+		else if (!strcmp(k, "dsperate")) ns_set.dsperate = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -508,6 +510,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
+	fprintf(f, "dsperate=%d\n", ns_set.dsperate ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -552,29 +555,41 @@ bool NS_coreInstalled(const char* core) {
 	return system(cmd) == 0;
 }
 
-static bool mgba_helper(const char* args, char* err, int errlen) {
+/* pak-manage.sh's kind argument, and how an error names the pak. */
+static const char* const PAK_KIND[NS_PAK_COUNT] = { "mgba", "dsp" };
+static const char* const PAK_DIR[NS_PAK_COUNT]  = { "MGBA.pak", "DSP.pak" };
+static const char* const PAK_NAME[NS_PAK_COUNT] = { "mGBA", "DSP" };
+
+bool NS_pakAvailable(NS_ManagedPak pak) {
+	if (pak < 0 || pak >= NS_PAK_COUNT) return false;
+	char p[640];
+	snprintf(p, sizeof(p), "%s/cores/%s/%s/%s/launch.sh", ns_pak, PAK_KIND[pak], ns_platform, PAK_DIR[pak]);
+	return file_exists(p);
+}
+
+static bool pak_helper(NS_ManagedPak pak, const char* args, char* err, int errlen) {
 	char cmd[1280];
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' NETPLAY_STATE='%s' "
-	         "sh '%s/launcher/mgba-manage.sh' %s >/tmp/netplay-mgba-result 2>&1",
-	         ns_sd, ns_platform, ns_pak, ns_state, ns_pak, args);
+	         "sh '%s/launcher/pak-manage.sh' %s %s >/tmp/netplay-pak-result 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_state, ns_pak, PAK_KIND[pak], args);
 	int rc = system(cmd);
 	if (rc == 0) return true;
 	if (err && errlen) {
-		FILE* f = fopen("/tmp/netplay-mgba-result", "r");
+		FILE* f = fopen("/tmp/netplay-pak-result", "r");
 		if (f && fgets(err, errlen, f)) {
 			char* nl = strpbrk(err, "\r\n"); if (nl) *nl = '\0';
-		} else snprintf(err, errlen, "mGBA file operation failed.");
+		} else snprintf(err, errlen, "%s file operation failed.", PAK_NAME[pak]);
 		if (f) fclose(f);
 	}
 	return false;
 }
 
-bool NS_mgbaStatus(NS_MgbaStatus* out) {
+bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
 	if (!out) return false;
 	memset(out, 0, sizeof(*out));
-	if (!mgba_helper("status", NULL, 0)) return false;
-	FILE* f = fopen("/tmp/netplay-mgba-result", "r");
+	if (!pak_helper(pak, "status", NULL, 0)) return false;
+	FILE* f = fopen("/tmp/netplay-pak-result", "r");
 	if (!f) return false;
 	char line[160];
 	while (fgets(line, sizeof(line), f)) {
@@ -592,12 +607,12 @@ bool NS_mgbaStatus(NS_MgbaStatus* out) {
 	return true;
 }
 
-bool NS_mgbaInstall(char* err, int errlen) { return mgba_helper("install", err, errlen); }
-bool NS_mgbaIgnoreMismatch(char* err, int errlen) { return mgba_helper("ignore", err, errlen); }
-bool NS_mgbaRestore(bool pak, bool saves, bool states, char* err, int errlen) {
+bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "install", err, errlen); }
+bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "ignore", err, errlen); }
+bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen) {
 	char args[64];
-	snprintf(args, sizeof(args), "restore %d %d %d", pak ? 1 : 0, saves ? 1 : 0, states ? 1 : 0);
-	return mgba_helper(args, err, errlen);
+	snprintf(args, sizeof(args), "restore %d %d %d", restore_pak ? 1 : 0, saves ? 1 : 0, states ? 1 : 0);
+	return pak_helper(pak, args, err, errlen);
 }
 
 //////////////////////////////////////////////////////////////////////////////

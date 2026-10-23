@@ -1,4 +1,4 @@
-.PHONY: dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help
+.PHONY: cores-dsp check-dsp dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -27,6 +27,7 @@ help:
 	@echo "make compatibility  build seven pinned cores for ARMv7 + AArch64"
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
+	@echo "make cores-dsp  build DSP.pak (DSperate, NDS local wireless) for $(DSP_PLATFORMS)"
 	@echo "make test    run the host test suites"
 	@echo "make dist    create Netplay.pak.zip, compatibility-cores.zip and Netplay-Full.pak.zip"
 	@echo "make clean   remove dist/"
@@ -356,6 +357,31 @@ NEXTUI ?= ../../NextUI
 
 # NEXTUI=/opt/nextui-src is where build-platforms mounts the pinned tree for the
 # platform being built - not a path on this machine.
+# DSperate (DSP.pak) - a standalone NDS emulator, not a libretro core. Its own
+# build lives in dsperate/ (toolchain images, patches, launcher); this stages
+# one DSP.pak per platform, holding only that platform's binaries, the way
+# MGBA.pak is shipped. launcher/pak-manage.sh installs it on request.
+DSP_PLATFORMS := tg5040 tg5050 h700
+DSP_STAGE     := dist/dsp
+DSPERATE_REPO ?= https://github.com/beebono/DSperate
+
+cores-dsp:
+	@for p in $(DSP_PLATFORMS); do \
+		echo "== dsp $$p"; \
+		$(MAKE) -s -C dsperate dist-$$p DSPERATE_REPO="$(DSPERATE_REPO)" >/dev/null || exit 1; \
+		rm -rf "$(DSP_STAGE)/$$p/DSP.pak"; mkdir -p "$(DSP_STAGE)/$$p/DSP.pak"; \
+		( cd dsperate/dist/DSP.pak && for f in *; do \
+			case " $(DSP_PLATFORMS) " in *" $$f "*) [ "$$f" = "$$p" ] || continue ;; esac; \
+			cp -R "$$f" "$(CURDIR)/$(DSP_STAGE)/$$p/DSP.pak/"; \
+		done ); \
+		printf "   %-7s %s\n" "$$p" "$$(du -sh $(DSP_STAGE)/$$p/DSP.pak | cut -f1)"; \
+	done
+
+check-dsp:
+	@for p in $(DSP_PLATFORMS); do \
+		test -x "$(DSP_STAGE)/$$p/DSP.pak/$$p/dsperate" || { echo "missing DSP.pak $$p - run 'make cores-dsp' first"; exit 1; }; \
+	done
+
 app:
 	@for p in $(PLATFORMS); do \
 		echo "== app $$p"; \
@@ -374,6 +400,7 @@ test:
 	@./cores/tests/mgbadual.sh
 	@./testing/test-mgba-launch.sh
 	@./testing/test-mgba-manage.sh
+	@./testing/test-dsp-manage.sh
 	@./testing/test-instanced-ui.sh
 	@./testing/test-wifi-platform.sh
 	@./testing/test-log-rotation.sh
@@ -400,7 +427,7 @@ test:
 # shipped and is the pak's whole UI.)
 ###########################################################
 
-BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores
+BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-dsp
 
 dist: dist-base dist-compatibility dist-full
 	@echo
@@ -415,7 +442,7 @@ dist-base: $(BASE_DIST_CHECKS)
 	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
 	    launcher/mount-common.sh launcher/state-path.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh launcher/mgba-manage.sh \
-	    launcher/wifi-platform.sh \
+	    launcher/pak-manage.sh launcher/wifi-platform.sh \
 	    "$(BASE_STAGE)/$(PAK)/launcher/"
 	@cp launcher/session.conf.example "$(BASE_STAGE)/$(PAK)/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override"
@@ -435,6 +462,11 @@ dist-base: $(BASE_DIST_CHECKS)
 		   "$(BASE_STAGE)/$(PAK)/cores/mgba/$$p/MGBA.pak/"; \
 		cp dist/cores-experimental/$$p/mgba_dual_libretro.so \
 		   "$(BASE_STAGE)/$(PAK)/cores/override/$$p/"; \
+	done
+	@for p in $(DSP_PLATFORMS); do \
+		case " $(PLATFORMS) " in *" $$p "*) ;; *) continue ;; esac; \
+		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/dsp/$$p"; \
+		cp -R "$(DSP_STAGE)/$$p/DSP.pak" "$(BASE_STAGE)/$(PAK)/cores/dsp/$$p/"; \
 	done
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/bin/$$p"; \

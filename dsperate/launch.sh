@@ -274,6 +274,32 @@ dsp_netplay_args() {
     echo "netplay: $_role session, DSperate args: $DSP_NET_ARGS $DSP_RESUME_ARGS"
 }
 
+# Local wireless blocks the emulation thread on every MP exchange, and a
+# utilisation-driven governor (schedutil on both TrimUI and H700) reads those
+# waits as idle and clocks down: measured on Mario Kart DS over ad hoc, ~60%
+# speed on schedutil and full speed on performance, on both devices. So a
+# session pins performance and puts back what was there on the way out. The
+# record survives a crash; the next launch restores it before anything else.
+DSP_CPU_RECORD=/tmp/dsp-cpu-restore
+
+dsp_cpu_restore() {
+    [ -f "$DSP_CPU_RECORD" ] || return 0
+    while read -r _gov_file _gov; do
+        case "$_gov_file" in */scaling_governor) ;; *) continue ;; esac
+        [ -n "$_gov" ] && echo "$_gov" >"$_gov_file" 2>/dev/null
+    done <"$DSP_CPU_RECORD"
+    rm -f "$DSP_CPU_RECORD"
+}
+
+dsp_cpu_pin() {
+    dsp_cpu_restore
+    for _gov_file in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+        [ -w "$_gov_file" ] || continue
+        echo "$_gov_file $(cat "$_gov_file")" >>"$DSP_CPU_RECORD"
+        echo performance >"$_gov_file" 2>/dev/null || :
+    done
+}
+
 # NextUI truncates this pak's log on every launch, so with Netplay's verbose
 # logs on, keep a copy per process the way Netplay.pak's minarch wrapper does:
 # logs/netplay-games/<game>/<session id>/<time>-<role>-<pid>.log.
@@ -299,6 +325,7 @@ cleanup() {
     sleep 2
     killall -q -9 dsperate 2>/dev/null || true
 
+    dsp_cpu_restore
     dsp_archive_netplay_log
     sync
 }
@@ -357,7 +384,9 @@ main() {
     fi
 
     dsp_resume_args
+    dsp_cpu_restore
     dsp_netplay_args
+    [ -n "$DSP_NET_ARGS" ] && dsp_cpu_pin
 
     # No --config: the seeded file is already at the default path DSperate
     # computes from XDG_CONFIG_HOME. No layout or performance flags either --

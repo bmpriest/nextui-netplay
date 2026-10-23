@@ -28,9 +28,9 @@ typedef enum {
 	SCREEN_SETTINGS,
 	SCREEN_DEBUG,
 	SCREEN_INSTANCED,
-	SCREEN_MGBA_INSTALL,
-	SCREEN_MGBA_MISMATCH,
-	SCREEN_MGBA_RESTORE,
+	SCREEN_PAK_INSTALL,     /* the three managed-pak screens serve pak_kind */
+	SCREEN_PAK_MISMATCH,
+	SCREEN_PAK_RESTORE,
 	SCREEN_POWERSAVE_CONFIRM,
 	SCREEN_CHECKS,
 	SCREEN_JOINING,
@@ -161,7 +161,7 @@ enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
 /* "Use simple client" (NS_Settings.simple_client) is hidden: it was planned
  * but never implemented, so the row only toggled a stored value. The setting
  * is still read and written, so restoring the row is all it takes. */
-enum { SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
+enum { SET_COMPAT, SET_INSTANCED, SET_DSPERATE, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
 
 static const char* menu_label(int item) {
@@ -209,7 +209,24 @@ static int prompt_sel = 0;
 static int restore_sel = 0;
 static bool restore_choice[3] = { true, true, true };
 static bool restore_then_off = false;
-static NS_MgbaStatus mgba_status;
+static NS_PakStatus pak_status;
+/* Which managed pak the install, mismatch and restore screens are about. */
+static NS_ManagedPak pak_kind = NS_PAK_MGBA;
+static const struct {
+	const char* name;      /* in sentences */
+	const char* pak;       /* the Emus/<p>/<pak>.pak directory */
+	const char* binary;    /* the file whose build is compared */
+	const char* install_title;
+	const char* needs;
+} PAK_UI[NS_PAK_COUNT] = {
+	{ "mGBA", "MGBA", "mgba_libretro.so", "Install instanced mGBA?", "Instanced MGBA requires installation." },
+	{ "DSperate", "DSP", "dsperate", "Install DSperate?", "DS local wireless needs DSP.pak (DSperate)." },
+};
+
+/* mGBA is reached from the instanced-core picker, DSperate from Settings. */
+static Screen pak_back_screen(void) {
+	return pak_kind == NS_PAK_MGBA ? SCREEN_INSTANCED : SCREEN_SETTINGS;
+}
 
 static void commit_instanced(void) {
 	NS_Settings* c = NS_settings();
@@ -259,6 +276,10 @@ static void setting_row(char* out, int len, int item) {
 		  if (c->instanced == NS_INST_SELECTED)
 			for (int i = 0; i < NS_INST_CORES; i++) if (c->inst_core[i]) n++;
 		  snprintf(out, len, "Use instanced cores:  %d  >", n); }
+		break;
+	case SET_DSPERATE:
+		snprintf(out, len, "Nintendo DS (DSperate):  %s",
+		         !NS_pakAvailable(NS_PAK_DSP) ? "Not available" : c->dsperate ? "Yes" : "No");
 		break;
 	case SET_GAMESWITCHER:
 		snprintf(out, len, "Add Netplay to GameSwitcher:  %s", c->add_gameswitcher ? "Yes" : "No");
@@ -348,6 +369,41 @@ static void turn_off_now(void) {
 	hosting_hotspot = 0;
 	snprintf(status, sizeof(status), "Netplay off. Launches are stock again.");
 	screen = SCREEN_MENU;
+}
+
+/* Turning Netplay off offers each managed pak's restore in turn, from `from`
+ * on, then turns off. A status that cannot be read stops the chain rather than
+ * guessing, as the mGBA-only version did. */
+static void turn_off_from(NS_ManagedPak from) {
+	for (int k = from; k < NS_PAK_COUNT; k++) {
+		if (!NS_pakAvailable((NS_ManagedPak)k)) continue;
+		if (!NS_pakStatus((NS_ManagedPak)k, &pak_status)) {
+			snprintf(status, sizeof(status), "Could not check %s status - try again.", PAK_UI[k].name);
+			screen = SCREEN_TOOLS;
+			return;
+		}
+		if (!pak_status.managed) continue;
+		pak_kind = (NS_ManagedPak)k;
+		restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
+		restore_sel = 0;
+		restore_then_off = true;
+		screen = SCREEN_PAK_RESTORE;
+		return;
+	}
+	turn_off_now();
+}
+
+/* After a restore screen is done with: the setting it governs follows the pak. */
+static void pak_restore_done(bool pak_restored) {
+	if (pak_kind == NS_PAK_MGBA) {
+		if (!restore_then_off) { inst_staged[1] = false; commit_instanced(); }
+		else if (pak_restored) disable_mgba_setting();
+	} else if (pak_kind == NS_PAK_DSP && (!restore_then_off || pak_restored)) {
+		NS_settings()->dsperate = false;
+		NS_settingsSave();
+	}
+	if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
+	else screen = SCREEN_SETTINGS;
 }
 
 static void draw_progress(const char* stage, int step, int steps) {
@@ -469,6 +525,8 @@ static void render(SDL_Surface* s) {
 			hint = "While armed, the switcher contains only Netplay."; break;
 		case SET_INSTANCED:
 			hint = "Both devices, and both carts on each. Else link cable."; break;
+		case SET_DSPERATE:
+			hint = "Installs DSP.pak. Each device runs its own DS."; break;
 		case SET_POWERSAVE:
 			hint = "Lower latency while armed. Uses more battery."; break;
 		}
@@ -517,15 +575,18 @@ static void render(SDL_Surface* s) {
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
-	case SCREEN_MGBA_INSTALL: {
-		draw_title(s, "Install instanced mGBA?");
+	case SCREEN_PAK_INSTALL: {
+		draw_title(s, PAK_UI[pak_kind].install_title);
 		int y = SCALE1(PADDING + 44);
-		y = draw_line(s, "Instanced MGBA requires installation.", y, COLOR_WHITE, true);
-		if (mgba_status.installed) {
-			y = draw_line(s, "Your current MGBA.pak, saves and savestates", y, COLOR_WHITE, true);
+		char line[128];
+		y = draw_line(s, PAK_UI[pak_kind].needs, y, COLOR_WHITE, true);
+		if (pak_status.installed) {
+			snprintf(line, sizeof(line), "Your current %s.pak, saves and savestates", PAK_UI[pak_kind].pak);
+			y = draw_line(s, line, y, COLOR_WHITE, true);
 			y = draw_line(s, "will be backed up.", y, COLOR_WHITE, true);
 		}
-		y = draw_line(s, "MGBA will be installed for every platform", y, COLOR_WHITE, true);
+		snprintf(line, sizeof(line), "%s will be installed for every platform", PAK_UI[pak_kind].pak);
+		y = draw_line(s, line, y, COLOR_WHITE, true);
 		y = draw_line(s, "on your device. Continue?", y, COLOR_WHITE, true);
 		y += SCALE1(5);
 		y = draw_row(s, "Continue", y, prompt_sel == 0);
@@ -533,12 +594,16 @@ static void render(SDL_Surface* s) {
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
-	case SCREEN_MGBA_MISMATCH: {
-		draw_title(s, "mGBA build changed");
+	case SCREEN_PAK_MISMATCH: {
+		char line[128];
+		snprintf(line, sizeof(line), "%s build changed", PAK_UI[pak_kind].name);
+		draw_title(s, line);
 		int y = SCALE1(PADDING + 44);
-		y = draw_line(s, "The installed mgba_libretro.so does not match", y, COLOR_WHITE, true);
-		y = draw_line(s, "the paired build supplied by Netplay.", y, COLOR_WHITE, true);
-		y = draw_line(s, "Reinstall instanced MGBA?", y, COLOR_WHITE, true);
+		snprintf(line, sizeof(line), "The installed %s does not match", PAK_UI[pak_kind].binary);
+		y = draw_line(s, line, y, COLOR_WHITE, true);
+		y = draw_line(s, "the build supplied by Netplay.", y, COLOR_WHITE, true);
+		snprintf(line, sizeof(line), "Reinstall %s?", PAK_UI[pak_kind].pak);
+		y = draw_line(s, line, y, COLOR_WHITE, true);
 		y += SCALE1(5);
 		y = draw_row(s, "Reinstall", y, prompt_sel == 0);
 		draw_row(s, "Ignore this build", y, prompt_sel == 1);
@@ -555,20 +620,24 @@ static void render(SDL_Surface* s) {
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "CONTINUE", NULL}, 1, s, 1);
 		break;
 	}
-	case SCREEN_MGBA_RESTORE: {
-		draw_title(s, "Restore mGBA backup?");
-		int y = SCALE1(PADDING + 42);
+	case SCREEN_PAK_RESTORE: {
 		char line[128];
+		snprintf(line, sizeof(line), "Restore %s backup?", PAK_UI[pak_kind].name);
+		draw_title(s, line);
+		int y = SCALE1(PADDING + 42);
 		snprintf(line, sizeof(line), "Backup created: %s",
-		         mgba_status.backup_date[0] ? mgba_status.backup_date : "unknown date");
+		         pak_status.backup_date[0] ? pak_status.backup_date : "unknown date");
 		y = draw_line(s, line, y, COLOR_GRAY, true);
-		const char* names[3] = { "Restore MGBA from backup?", "Restore saves from backup?", "Restore save states from backup?" };
+		char pak_q[64];
+		snprintf(pak_q, sizeof(pak_q), "Restore %s from backup?", PAK_UI[pak_kind].pak);
+		const char* names[3] = { pak_q, "Restore saves from backup?", "Restore save states from backup?" };
 		for (int i = 0; i < 3; i++) {
 			snprintf(line, sizeof(line), "%s  %s", names[i], restore_choice[i] ? "Yes" : "No");
 			y = draw_row(s, line, y, restore_sel == i);
 		}
 		y = draw_row(s, "Apply", y, restore_sel == 3);
-		y = draw_row(s, "Keep installed MGBA", y, restore_sel == 4);
+		snprintf(line, sizeof(line), "Keep installed %s", PAK_UI[pak_kind].pak);
+		y = draw_row(s, line, y, restore_sel == 4);
 		y = draw_line(s, "Restoring saves/save states may overwrite progress.", y + SCALE1(3), COLOR_GRAY, true);
 		draw_line(s, "Overwritten files move to .userdata/shared/Netplay.", y, COLOR_GRAY, true);
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
@@ -782,11 +851,18 @@ int main(int argc, char* argv[]) {
 	 * both hashes, so it stays quiet only until either binary changes. */
 	NS_Settings* startup_settings = NS_settings();
 	bool startup_mgba = mgba_instanced_enabled(startup_settings);
-	if (startup_mgba && NS_mgbaStatus(&mgba_status) &&
-	    mgba_status.mismatch && !mgba_status.mismatch_ignored) {
+	if (startup_mgba && NS_pakStatus(NS_PAK_MGBA, &pak_status) &&
+	    pak_status.mismatch && !pak_status.mismatch_ignored) {
 		stage_instanced();
+		pak_kind = NS_PAK_MGBA;
 		prompt_sel = 0;
-		screen = SCREEN_MGBA_MISMATCH;
+		screen = SCREEN_PAK_MISMATCH;
+	} else if (startup_settings->dsperate && NS_pakAvailable(NS_PAK_DSP) &&
+	           NS_pakStatus(NS_PAK_DSP, &pak_status) &&
+	           pak_status.mismatch && !pak_status.mismatch_ignored) {
+		pak_kind = NS_PAK_DSP;
+		prompt_sel = 0;
+		screen = SCREEN_PAK_MISMATCH;
 	}
 
 	int dirty = 1;
@@ -945,14 +1021,7 @@ int main(int argc, char* argv[]) {
 					break;
 
 				case TOOL_OFF:
-					if (!NS_mgbaStatus(&mgba_status)) {
-						snprintf(status, sizeof(status), "Could not check mGBA status - try again.");
-					} else if (mgba_status.managed) {
-						restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
-						restore_sel = 0;
-						restore_then_off = true;
-						screen = SCREEN_MGBA_RESTORE;
-					} else turn_off_now();
+					turn_off_from(NS_PAK_MGBA);
 					break;
 				}
 				dirty = 1;
@@ -996,13 +1065,33 @@ int main(int argc, char* argv[]) {
 					inst_sel = 0;
 					screen = SCREEN_INSTANCED;
 					if (inst_staged[1]) {
-						if (!NS_mgbaStatus(&mgba_status)) {
+						pak_kind = NS_PAK_MGBA;
+						if (!NS_pakStatus(NS_PAK_MGBA, &pak_status)) {
 							snprintf(status, sizeof(status), "Could not check mGBA status - try again.");
-						} else if (mgba_status.mismatch && !mgba_status.mismatch_ignored) {
+						} else if (pak_status.mismatch && !pak_status.mismatch_ignored) {
 							prompt_sel = 0;
-							screen = SCREEN_MGBA_MISMATCH;
+							screen = SCREEN_PAK_MISMATCH;
 						}
 					}
+					break;
+				case SET_DSPERATE:
+					if (!NS_pakAvailable(NS_PAK_DSP)) {
+						snprintf(status, sizeof(status), "DSperate is not built for this device.");
+						break;
+					}
+					pak_kind = NS_PAK_DSP;
+					if (!NS_pakStatus(NS_PAK_DSP, &pak_status)) {
+						snprintf(status, sizeof(status), "Could not check DSP.pak status - try again.");
+					} else if (!c->dsperate) {
+						if (!pak_status.managed || pak_status.missing || pak_status.mismatch) {
+							prompt_sel = 0;
+							screen = SCREEN_PAK_INSTALL;
+						} else c->dsperate = true;
+					} else if (pak_status.managed) {
+						restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
+						restore_sel = 0; restore_then_off = false;
+						screen = SCREEN_PAK_RESTORE;
+					} else c->dsperate = false;
 					break;
 				}
 				if (settings_sel != SET_INSTANCED) NS_settingsSave();
@@ -1049,15 +1138,16 @@ int main(int argc, char* argv[]) {
 					snprintf(status, sizeof(status), "%s is not installed.", NS_INST_CORE[inst_sel]);
 				} else {
 					bool old_mgba = mgba_instanced_enabled(NS_settings());
-					if (!NS_mgbaStatus(&mgba_status)) {
+					pak_kind = NS_PAK_MGBA;
+					if (!NS_pakStatus(NS_PAK_MGBA, &pak_status)) {
 						snprintf(status, sizeof(status), "Could not check mGBA status - try again.");
 					} else if (!old_mgba && inst_staged[1] &&
-					    (!mgba_status.managed || mgba_status.missing || mgba_status.mismatch)) {
-						prompt_sel = 0; screen = SCREEN_MGBA_INSTALL;
-					} else if (old_mgba && !inst_staged[1] && mgba_status.managed) {
+					    (!pak_status.managed || pak_status.missing || pak_status.mismatch)) {
+						prompt_sel = 0; screen = SCREEN_PAK_INSTALL;
+					} else if (old_mgba && !inst_staged[1] && pak_status.managed) {
 						restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
 						restore_sel = 0; restore_then_off = false;
-						screen = SCREEN_MGBA_RESTORE;
+						screen = SCREEN_PAK_RESTORE;
 					} else {
 						commit_instanced(); screen = SCREEN_SETTINGS;
 					}
@@ -1067,17 +1157,26 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 
-		case SCREEN_MGBA_INSTALL:
+		case SCREEN_PAK_INSTALL:
 			if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { prompt_sel = !prompt_sel; dirty = 1; }
-			if (PAD_justPressed(BTN_B)) { screen = SCREEN_INSTANCED; dirty = 1; }
+			if (PAD_justPressed(BTN_B)) { screen = pak_back_screen(); dirty = 1; }
 			if (PAD_justPressed(BTN_A)) {
 				if (prompt_sel == 0) {
-					set_progress("Installing mGBA", "Backing up files and verifying cores.");
-					if (NS_mgbaInstall(status, sizeof(status))) {
-						commit_instanced(); snprintf(status, sizeof(status), "Instanced mGBA installed.");
+					char title[48];
+					snprintf(title, sizeof(title), "Installing %s", PAK_UI[pak_kind].name);
+					set_progress(title, "Backing up files and verifying builds.");
+					if (NS_pakInstall(pak_kind, status, sizeof(status))) {
+						if (pak_kind == NS_PAK_MGBA) {
+							commit_instanced();
+							snprintf(status, sizeof(status), "Instanced mGBA installed.");
+						} else {
+							NS_settings()->dsperate = true;
+							NS_settingsSave();
+							snprintf(status, sizeof(status), "DSperate installed.");
+						}
 						screen = SCREEN_SETTINGS;
-					} else screen = SCREEN_INSTANCED;
-				} else screen = SCREEN_INSTANCED;
+					} else screen = pak_back_screen();
+				} else screen = pak_back_screen();
 				dirty = 1;
 			}
 			break;
@@ -1105,39 +1204,43 @@ int main(int argc, char* argv[]) {
 			}
 			break;
 
-		case SCREEN_MGBA_MISMATCH:
+		case SCREEN_PAK_MISMATCH:
 			if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { prompt_sel = !prompt_sel; dirty = 1; }
 			if (PAD_justPressed(BTN_B)) {
-				NS_mgbaIgnoreMismatch(status, sizeof(status)); screen = SCREEN_INSTANCED; dirty = 1;
+				NS_pakIgnoreMismatch(pak_kind, status, sizeof(status)); screen = pak_back_screen(); dirty = 1;
 			}
 			if (PAD_justPressed(BTN_A)) {
 				if (prompt_sel == 0) {
-					set_progress("Reinstalling mGBA", "Preserving your original backup.");
-					if (!NS_mgbaInstall(status, sizeof(status))) screen = SCREEN_INSTANCED;
-					else { snprintf(status, sizeof(status), "Instanced mGBA reinstalled."); screen = SCREEN_INSTANCED; }
-				} else { NS_mgbaIgnoreMismatch(status, sizeof(status)); screen = SCREEN_INSTANCED; }
+					char title[48];
+					snprintf(title, sizeof(title), "Reinstalling %s", PAK_UI[pak_kind].name);
+					set_progress(title, "Preserving your original backup.");
+					if (NS_pakInstall(pak_kind, status, sizeof(status)))
+						snprintf(status, sizeof(status), "%s reinstalled.", PAK_UI[pak_kind].name);
+				} else NS_pakIgnoreMismatch(pak_kind, status, sizeof(status));
+				screen = pak_back_screen();
 				dirty = 1;
 			}
 			break;
 
-		case SCREEN_MGBA_RESTORE:
+		case SCREEN_PAK_RESTORE:
 			if (PAD_justPressed(BTN_UP))   { restore_sel = (restore_sel + 4) % 5; dirty = 1; }
 			if (PAD_justPressed(BTN_DOWN)) { restore_sel = (restore_sel + 1) % 5; dirty = 1; }
 			if (PAD_justPressed(BTN_B)) {
-				if (restore_then_off) turn_off_now(); else screen = SCREEN_INSTANCED;
+				if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
+				else screen = pak_back_screen();
 				dirty = 1;
 			}
 			if (PAD_justPressed(BTN_A)) {
 				if (restore_sel < 3) restore_choice[restore_sel] = !restore_choice[restore_sel];
 				else if (restore_sel == 3) {
-					set_progress("Restoring mGBA", "Preserving files that would be overwritten.");
-					if (NS_mgbaRestore(restore_choice[0], restore_choice[1], restore_choice[2], status, sizeof(status))) {
-						if (!restore_then_off) { inst_staged[1] = false; commit_instanced(); screen = SCREEN_SETTINGS; }
-						else { if (restore_choice[0]) disable_mgba_setting(); turn_off_now(); }
-					} else screen = SCREEN_MGBA_RESTORE;
+					char title[48];
+					snprintf(title, sizeof(title), "Restoring %s", PAK_UI[pak_kind].name);
+					set_progress(title, "Preserving files that would be overwritten.");
+					if (NS_pakRestore(pak_kind, restore_choice[0], restore_choice[1], restore_choice[2], status, sizeof(status)))
+						pak_restore_done(restore_choice[0]);
+					else screen = SCREEN_PAK_RESTORE;
 				} else {
-					if (!restore_then_off) { inst_staged[1] = false; commit_instanced(); screen = SCREEN_SETTINGS; }
-					else turn_off_now();
+					pak_restore_done(false);
 				}
 				dirty = 1;
 			}

@@ -170,6 +170,7 @@ typedef struct {
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
 	bool        disable_powersave; /* radio power save off while a session is armed */
+	bool        dsperate;      /* DSP.pak installed by this pak for DS local wireless */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
@@ -182,6 +183,14 @@ void NS_settingsSave(void);
  * instanced-core choice rather than offer something that cannot run. */
 bool NS_coreInstalled(const char* core);
 
+/* Emulator paks this pak ships and installs on request, backing up whatever
+ * was there (launcher/pak-manage.sh does the file work). */
+typedef enum {
+	NS_PAK_MGBA = 0,   /* MGBA.pak, paired with the instanced mGBA core */
+	NS_PAK_DSP,        /* DSP.pak (DSperate), Nintendo DS local wireless */
+	NS_PAK_COUNT
+} NS_ManagedPak;
+
 typedef struct {
 	bool installed;
 	bool managed;
@@ -189,12 +198,14 @@ typedef struct {
 	bool mismatch;
 	bool mismatch_ignored;
 	char backup_date[32];
-} NS_MgbaStatus;
+} NS_PakStatus;
 
-bool NS_mgbaStatus(NS_MgbaStatus* out);
-bool NS_mgbaInstall(char* err, int errlen);
-bool NS_mgbaIgnoreMismatch(char* err, int errlen);
-bool NS_mgbaRestore(bool pak, bool saves, bool states, char* err, int errlen);
+/* Whether this pak carries a build of it for the running platform. */
+bool NS_pakAvailable(NS_ManagedPak pak);
+bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out);
+bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen);
+bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen);
+bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen);
 
 /* --- core manifest ------------------------------------------------------
  *
