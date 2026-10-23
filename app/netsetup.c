@@ -424,6 +424,8 @@ static NS_Settings ns_set = {
 	.disable_powersave = false,
 	.dsperate = false,
 	.drastic = false,
+	.status_icon   = NS_ICON_OFF,
+	.quick_menu    = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
 };
@@ -431,6 +433,75 @@ static bool ns_set_loaded = false;
 
 static void settings_path(char* out, int len) {
 	snprintf(out, len, "%s/settings", ns_state);
+}
+
+/* The status icon watcher follows the setting and the session file on its own
+ * once running; this starts it, or stops it and hides the icon, right away. */
+void NS_statusIconSync(void) {
+	char cmd[1200];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/status-icon.sh' sync >/dev/null 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	system(cmd);
+}
+
+/* The quick menu runs for as long as the setting is on, armed or not. */
+void NS_quickMenuSync(void) {
+	char cmd[1200];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/quick-menu.sh' sync >/dev/null 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	system(cmd);
+}
+
+bool NS_varnishInstalled(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/Tools/%s/Varnish.pak/varnish", ns_sd, ns_platform);
+	return access(path, X_OK) == 0;
+}
+
+bool NS_varnishBundled(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/varnish/%s/varnish", ns_pak, ns_platform);
+	return access(path, X_OK) == 0;
+}
+
+NS_VarnishState NS_varnishStatus(void) {
+	char cmd[1024], line[32] = "";
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/varnish-install.sh' status 2>/dev/null",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	FILE* f = popen(cmd, "r");
+	if (f) {
+		if (!fgets(line, sizeof(line), f)) line[0] = '\0';
+		pclose(f);
+	}
+	if (!strncmp(line, "current", 7))  return NS_VARNISH_CURRENT;
+	if (!strncmp(line, "outdated", 8)) return NS_VARNISH_OUTDATED;
+	if (!strncmp(line, "missing", 7))  return NS_VARNISH_MISSING;
+	/* No answer: trust what is on disk rather than offer an install. */
+	return NS_varnishInstalled() ? NS_VARNISH_CURRENT : NS_VARNISH_UNAVAILABLE;
+}
+
+bool NS_varnishInstall(char* err, int errlen) {
+	char cmd[1024], line[160] = "";
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/varnish-install.sh' install 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	FILE* f = popen(cmd, "r");
+	if (!f) { snprintf(err, errlen, "Could not run the Varnish installer."); return false; }
+	char buf[160];
+	while (fgets(buf, sizeof(buf), f)) snprintf(line, sizeof(line), "%s", buf);
+	int rc = pclose(f);
+	if (rc == 0) return true;
+	line[strcspn(line, "\n")] = '\0';
+	ns_log("varnish install failed (%d): %s\n", rc, line);
+	snprintf(err, errlen, "%s", line[0] ? line : "Varnish could not be installed.");
+	return false;
 }
 
 static const char* compatibility_arch(void) {
@@ -478,6 +549,9 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
 		else if (!strcmp(k, "dsperate")) ns_set.dsperate = v != 0;
 		else if (!strcmp(k, "drastic")) ns_set.drastic = v != 0;
+		else if (!strcmp(k, "status_icon"))
+			ns_set.status_icon = (v < 0 || v > NS_ICON_PERSISTENT) ? NS_ICON_OFF : (NS_IconMode)v;
+		else if (!strcmp(k, "quick_menu")) ns_set.quick_menu = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -514,6 +588,8 @@ void NS_settingsSave(void) {
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
 	fprintf(f, "dsperate=%d\n", ns_set.dsperate ? 1 : 0);
 	fprintf(f, "drastic=%d\n", ns_set.drastic ? 1 : 0);
+	fprintf(f, "status_icon=%d\n", (int)ns_set.status_icon);
+	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -529,6 +605,8 @@ void NS_settingsSave(void) {
 	         ns_sd, ns_platform, ns_pak, ns_pak,
 	         ns_set.add_gameswitcher ? (NS_isArmed() ? "active" : "enable") : "disable");
 	system(cmd);
+	NS_statusIconSync();
+	NS_quickMenuSync();
 }
 
 /* Three places a core can legitimately live: the platform's own directory, the
@@ -1755,6 +1833,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		         ns_sd, ns_platform, ns_pak, ns_pak);
 		system(cmd);
 	}
+	NS_statusIconSync();
 	return true;
 }
 
@@ -1780,6 +1859,7 @@ void NS_disarm(void) {
 	         "sh '%s/launcher/gameswitcher.sh' idle >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_pak, ns_pak);
 	system(cmd);
+	NS_statusIconSync();
 
 	NS_hotspotStop();
 	NS_wifiPowerSaveRestore();
@@ -1807,6 +1887,7 @@ void NS_endSession(void) {
 	         "sh '%s/launcher/gameswitcher.sh' idle >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_pak, ns_pak);
 	system(cmd);
+	NS_statusIconSync();
 
 	/* A session is a network arrangement as much as a file. Remember the role
 	 * before removing that file: a guest must restore its station interface,

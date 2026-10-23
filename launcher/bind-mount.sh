@@ -204,6 +204,13 @@ do_down() {
 do_boot() {
 	[ ! -x "$NP/launcher/session-cleanup.sh" ] || \
 		"$NP/launcher/session-cleanup.sh" >/dev/null 2>&1 || :
+	[ ! -f "$NP/launcher/quick-menu.sh" ] || \
+		SDCARD_PATH="$SDCARD_PATH" PLATFORM="$PLATFORM" NETPLAY_PAK="$NP" \
+		sh "$NP/launcher/quick-menu.sh" sync >/dev/null 2>&1 || :
+	# A persistent status icon shows from boot, before any session.
+	[ ! -f "$NP/launcher/status-icon.sh" ] || \
+		SDCARD_PATH="$SDCARD_PATH" PLATFORM="$PLATFORM" NETPLAY_PAK="$NP" \
+		sh "$NP/launcher/status-icon.sh" sync >/dev/null 2>&1 || :
 	[ -d "$STAGE" ] || exit 0
 	do_up >/dev/null 2>&1
 	exit 0

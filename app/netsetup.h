@@ -162,6 +162,14 @@ typedef enum {
 	NS_INST_SELECTED,    /* only the ones ticked below */
 } NS_InstMode;
 
+/* Values are what the settings file stores; 1 was the old "on", which showed
+ * the icon only while armed, so it keeps meaning that. */
+typedef enum {
+	NS_ICON_OFF = 0,        /* never */
+	NS_ICON_SESSION = 1,    /* only while a session is armed */
+	NS_ICON_PERSISTENT = 2, /* always, dimmed when no session is armed */
+} NS_IconMode;
+
 typedef struct {
 	bool        share_cores;    /* frozen: retained so the setting can return later */
 	bool        compatibility_cores; /* fall back to the pak's matched core set */
@@ -172,11 +180,28 @@ typedef struct {
 	bool        disable_powersave; /* radio power save off while a session is armed */
 	bool        dsperate;      /* DSP.pak installed by this pak for DS local wireless */
 	bool        drastic;       /* local wireless added to the user's NDS.pak (DraStic) */
+	NS_IconMode status_icon;    /* Varnish.pak overlay icon: dim, half lit hosting, lit connected */
+	bool        quick_menu;     /* START in NextUI's menus opens a Varnish-drawn menu */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
 
 NS_Settings* NS_settings(void);   /* live, mutable; call NS_settingsSave after */
+bool NS_varnishInstalled(void);   /* the overlay the status icon is drawn by */
+bool NS_varnishBundled(void);     /* Netplay carries a Varnish for this platform */
+
+typedef enum {
+	NS_VARNISH_CURRENT,       /* installed, at least the bundled version */
+	NS_VARNISH_OUTDATED,      /* installed, older than the bundled one */
+	NS_VARNISH_MISSING,       /* not installed; the bundled one can be */
+	NS_VARNISH_UNAVAILABLE,   /* not installed, and none bundled for here */
+} NS_VarnishState;
+NS_VarnishState NS_varnishStatus(void);
+/* Installs or updates the bundled Varnish and enables it. It starts drawing
+ * after the next reboot, when NextUI loads its hook. */
+bool NS_varnishInstall(char* err, int errlen);
+void NS_statusIconSync(void);     /* start/stop the icon watcher to match setting + session */
+void NS_quickMenuSync(void);      /* start/stop the START quick menu to match the setting */
 void NS_settingsLoad(void);
 void NS_settingsSave(void);
 
