@@ -2,7 +2,7 @@
 
 ## Features
 
-### Scared-Screen Netplay (LAN)
+### Shared-Screen Netplay (LAN)
 Local network multiplayer with shared screen and synchronized inputs. Both devices display the same game state—-think of it as playing on the same console, but over WiFi. Works similarly to RetroArch Netplay, but with frame delay.
 
 - Supports 2 players (host + client)
@@ -108,6 +108,17 @@ An empty host remains available for guests to leave and rejoin. If the device
 reboots without ending the session, Netplay discards that previous-boot session
 on the next boot, game launch, or opening of the setup app; installed launcher
 bindings remain as inactive passthroughs.
+
+### Disable Wi-Fi Power Saving (experimental)
+
+`Tools > Settings > Disable Wi-Fi Power Saving` is off by default. When it is
+on, the radio's power saving is turned off while a session is armed and put
+back when the session ends. Power saving makes the radio sleep between beacons,
+which adds latency to the small per-frame packets netplay sends.
+
+On H700 devices the driver has to be reloaded to change it, which drops WiFi
+for several seconds, so the setting asks before applying. The change lasts
+until the next reboot; after one, Netplay shows the setting as off again.
 
 ### Game Switcher shortcut (experimental)
 

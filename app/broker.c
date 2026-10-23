@@ -99,7 +99,9 @@ int main(void) {
 		if (!NS_isArmed()) break;
 		NS_announceTick();
 		NS_compatServeTick();
-		if (status_tick++ % 10 == 0) publish_status(status_path, &session);
+		/* Read only when someone opens Netplay.pak mid-session, so a few
+		 * seconds stale is fine; each refresh shells out to iw/pidof. */
+		if (status_tick++ % 50 == 0) publish_status(status_path, &session);
 		usleep(100 * 1000);
 	}
 

@@ -35,6 +35,10 @@ ROLE=$(sed -n 's/^role=//p' "$SESSION" | head -1)
 SSID=$(sed -n 's/^adhoc_ssid=//p' "$SESSION" | head -1)
 PSK=$(sed -n 's/^adhoc_psk=//p' "$SESSION" | head -1)
 [ -n "$SSID" ] || exit 0
+# The app only writes names it generated; refuse anything else before it
+# reaches a supplicant config or a command line.
+case "$SSID" in nextui-*[!A-Za-z0-9]*|nextui-) exit 0 ;; nextui-*) ;; *) exit 0 ;; esac
+case "$PSK" in *[!A-Za-z0-9]*|"") exit 0 ;; esac
 
 say() { echo "[netplay-adhoc] $*" >&2; }
 

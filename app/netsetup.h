@@ -285,10 +285,11 @@ int NS_compatSync(const char* host_ip, char* err, int errlen);
 #define NS_JOIN_DHCP_S   6
 
 /* Frames of input lag traded for tolerance of a late peer. Written into both
- * session files from here rather than left to the shim's default, because the
- * two devices must use the same number: each side substitutes neutral input for
- * its own first input_delay frames, so a mismatch diverges during priming and
- * never recovers.
+ * session files from here as a transport-specific floor, alongside
+ * input_delay_auto=1: the shim may raise it from the measured round trip, and
+ * the two devices then adopt the higher of their proposals. They must end up on
+ * the same number - each side substitutes neutral input for its own first
+ * input_delay frames, so a mismatch diverges during priming and never recovers.
  *
  * Two values, because the two transports are not remotely comparable and a
  * single constant tuned for one is unusable on the other. Measured RTT:
@@ -340,6 +341,12 @@ void NS_setProgressCallback(NS_ProgressFn fn);
 
 void NS_announceStart(NS_Mode mode);
 void NS_announceHotspot(const char* ssid, const char* psk);
+
+/* True for the network names and passphrases Netplay generates ("nextui-" plus
+ * letters and digits; an alphanumeric passphrase of 8+ characters). Scan
+ * results, announcements and session values that fail are ignored. */
+bool NS_validAdhocSsid(const char* ssid);
+bool NS_validAdhocPsk(const char* psk);
 void NS_announceTick(void);
 void NS_announceStop(void);
 

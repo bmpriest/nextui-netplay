@@ -192,8 +192,10 @@ That shape is deliberate. Credentials used to be generated *and advertised over
 the existing network*, which coupled ad hoc to discovery having worked first -
 the chicken-and-egg the feature exists to avoid. A known prefix plus a visible
 code decouples them completely: the client scans for `nextui-*`, lists what it
-finds, and the user matches the code shown on the host. Nothing is exchanged
-beforehand, and several pairs can operate in one room.
+finds, and the user matches the code shown on the host. Nothing has to be
+exchanged beforehand, and several pairs can operate in one room. The host's LAN
+announcements still carry the SSID and passphrase, every 500 ms, so a client on
+the same network sees the host there too; the Join list merges the two.
 
 ## How the client joins
 
@@ -443,10 +445,10 @@ survive the ssh session dropping (anything that touches `wlan0`), use
 
 ```
 Netplay          Host                        Tools                         Settings
-  Host      ->     Create ad hoc network       Settings              ->     Use simple client: No
-  Join             Host over WiFi              Debug                 ->     Use compatibility cores: Yes
-  Tools                                       Restore WiFi                  Use instanced cores: No / Yes / >
-                                              Turn off Netplay               Add Netplay to GameSwitcher: No
+  Host      ->     Create ad hoc network       Settings              ->     Use compatibility cores: Yes
+  Join             Host over WiFi              Debug                 ->     Use instanced cores: N  >
+  Tools                                       Restore WiFi                  Add Netplay to GameSwitcher: No
+                                              Turn off Netplay               Disable Wi-Fi Power Saving: No
                                               (Remove Bindings)
 
                                                                          Debug

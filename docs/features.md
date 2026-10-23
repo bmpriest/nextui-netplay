@@ -73,8 +73,21 @@ The shared-screen shim now times out an unavailable or input-silent peer and
 offers Wait/retry, Continue solo, and Exit game from its failure overlay. Left
 and Right select, A confirms, and B is a direct Wait/retry shortcut. Exiting the
 game deliberately leaves the durable session armed: the shim cannot safely
-restore an ad-hoc radio or remove mounts owned by the setup process. Equivalent
-link-mode UX and an explicit end-session action remain planned.
+restore an ad-hoc radio or remove mounts owned by the setup process. Link mode
+shows the same overlay when one call into the core blocks for longer than
+`LINK_STARVE_TIMEOUT_MS` (5 s) while the peer is connected, and instanced
+sessions use it for every network failure. An explicit end-session action
+remains planned.
+
+A peer whose frontend is in MinArch's menu reports it with `CMD_PAUSE`, and
+every mode (shared-screen, link and instanced) waits for it without a deadline,
+showing "Waiting for other player (menu open)...". After `PEER_WAIT_TIMEOUT_MS`
+(30 s) of pause the waiting device offers "Connected device may be stalled"
+with Keep waiting, Continue solo and Exit game; Keep waiting (or B) keeps the
+connection and restarts the clock. A peer whose device suspends or crashes goes silent
+rather than paused, drops the connection, and reaches the failure overlay
+above. The menu-side transport no longer times out while it holds incoming
+data back during a long menu.
 
 ## Setup, discovery, and platform support
 
@@ -93,6 +106,15 @@ original WiFi is back; persistent host/hot-seat sessions remain armed. A reopene
 and the broker reconstruct the active AP interface and SSID from durable session
 metadata and hostapd configuration. Static guest addressing may eventually
 remove the `udhcpd` dependency.
+
+### 4a. Wi-Fi power save — Implemented, off by default
+
+**Disable Wi-Fi Power Saving** turns the radio's power save off while a session
+is armed and records the prior value so ending the session restores it.
+`pre-launch.sh` re-applies it on each game launch, because reassociation turns
+it back on. On H700 the 8821cs driver ignores the nl80211 request, so the
+setting reloads the driver after a confirmation; that lasts until reboot, and
+the app clears the setting when it finds power save back on.
 
 ### 5. Persistent hosting/session broker — Partial
 
@@ -154,8 +176,9 @@ installed builds differ and no common fallback is selected (including when the
 setting is disabled), both devices retain their installed build and display
 `Core builds differ. Desyncs may occur...` instead.
 
-Negotiation still needs non-blocking accepted sockets, continuous broker
-ownership, and broader cross-platform determinism testing—especially
+The broker owns negotiation for the whole armed session, and its accepted
+sockets carry send/receive deadlines (`CORE_SERVE_IO_MS`, 8 s). Broader
+cross-platform determinism testing is still needed, especially for
 pcsx_rearmed. Unresolved installed-build differences deliberately launch with
 the visible desync-risk warning rather than failing closed.
 
@@ -187,9 +210,10 @@ The Netplay.pak UI can present an offer itself. Receiving/offering from the
 NextUI menu requires a narrow frontend IPC/modal and local-launch hook; the
 current `queueNext()` mechanism is internal to NextUI.
 
-### 8. Simple client — Needs decision
+### 8. Simple client — Needs decision (setting hidden)
 
-The existing setting and UI copy describe an appliance-like guest that stays in
+The setting is hidden from the Settings screen because nothing reads it; the
+value is still stored in the settings file. The design it was meant for describes an appliance-like guest that stays in
 Netplay.pak while the other device chooses a game. That UX is compatible with
 the broker and open-game invitation: the guest owns a matching local ROM and
 core, accepts the offer, and launches without browsing its library manually.
@@ -263,7 +287,7 @@ barrier. The host remains authoritative; this is not host migration.
 
 ## Local multi-instance mode
 
-### 14. Instanced cores — Partial; Gambatte and mGBA implemented
+### 13. Instanced cores — Partial; Gambatte and mGBA implemented
 
 For Gambatte, each handheld runs a paired core (`gambatte_dual_libretro.so`)
 holding both logical consoles and the cable between them. One core call per
@@ -292,11 +316,11 @@ core and leaves the abandoned console on neutral input.
 
 mGBA uses the same mirrored-replica protocol and dual ABI, but its paired core
 drives two GBA `mCore`s cooperatively through mGBA's own cycle-based SIO
-lockstep coordinator. Builds cover tg5040, my282 and h700; paired hardware play
-is validated on tg5040. Testing found that my282 cannot sustain the current
-same-thread dual implementation, and h700 remains compile-tested only. Two
-Bricks completed Mario Kart: Super Circuit races with
-audio over both ad hoc and ordinary Wi-Fi. Phase profiling shows roughly 5ms of
+lockstep coordinator. Builds cover tg5040, my282 and h700. Testing found that
+my282 cannot sustain the current same-thread dual implementation. Two Bricks
+completed Mario Kart: Super Circuit races with audio over both ad hoc and
+ordinary Wi-Fi, and a Brick host with an H700 guest completed one in the
+scripted `testing/devbridge/mkart.test` run. Phase profiling shows roughly 5ms of
 real frame headroom; the enclosing 16.2ms call includes presentation pacing. gpSP stays
 on its existing Wi-Fi link implementation: its multiplayer protocols are
 latency-tolerant enough that duplicating the core locally has no useful payoff.

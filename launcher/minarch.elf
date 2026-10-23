@@ -311,14 +311,27 @@ run_minarch() {
 	"$REAL_MINARCH" "$SHIM_AS" "$@"
 }
 
-# Nothing to demote from and nothing to capture: hand the process straight over,
-# exactly as before. Anything else needs this shell to outlive minarch.
-if [ "$NETPLAY_DUAL_CORE" != "1" ] && [ "$VERBOSE_LOGS" != "1" ] && [ "$GS_WRAP" != "1" ]; then
-	exec "$REAL_MINARCH" "$SHIM_AS" "$@"
-fi
+# The shim pins the CPU governor for the session and records what it replaced
+# in this file. A clean exit restores it and removes the file; after a crash
+# the file is still here, and this is the only thing left to put it back.
+# That is why an armed session never execs minarch: this shell outlives it.
+CPU_RECORD=/tmp/netplay-cpu-restore
+cpu_restore_after_crash() {
+	[ -f "$CPU_RECORD" ] || return 0
+	while read -r dir gov min; do
+		case "$dir" in */cpufreq) ;; *) continue ;; esac
+		[ -n "$gov" ] && echo "$gov" > "$dir/scaling_governor" 2>/dev/null
+		[ -n "$min" ] && echo "$min" > "$dir/scaling_min_freq" 2>/dev/null
+	done < "$CPU_RECORD"
+	rm -f "$CPU_RECORD"
+	echo "[netplay] restored CPU scaling after an unclean exit" >&2
+}
+rm -f "$CPU_RECORD"
+
 if [ "$NETPLAY_DUAL_CORE" != "1" ]; then
 	run_minarch "$@"
 	rc=$?
+	cpu_restore_after_crash
 	gameswitcher_cleanup "$1"
 	exit "$rc"
 fi
@@ -349,5 +362,6 @@ if [ -f "$SERIAL_FALLBACK_MARKER" ]; then
 	run_minarch "$@"
 	rc=$?
 fi
+cpu_restore_after_crash
 gameswitcher_cleanup "$1"
 exit "$rc"

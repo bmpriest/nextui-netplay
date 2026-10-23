@@ -43,6 +43,10 @@ still carry serial traffic over Wi-Fi, not a redesign.
 | 3 | Bounded starvation instead of open-ended blocking | network serial | Medium | Turns an indefinite freeze into a reported, recoverable stall | **done** |
 | 4 | Negotiated input delay from measured RTT | instanced link, shared screen | Medium | 1–3 frames (17–50 ms) of input lag on ad hoc | **done** |
 
+All four are implemented. The "What is there now" sections below describe the
+code before these changes, and their `shim/shim.c` line numbers refer to that
+version, not the current file.
+
 Do them in that order. Item 2 is the cheapest and makes the rest arguable
 instead of speculative; it is listed second only because item 1 is the one worth
 doing regardless.

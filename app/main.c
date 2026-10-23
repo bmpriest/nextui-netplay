@@ -158,7 +158,10 @@ static int draw_row(SDL_Surface* screen_s, const char* text, int y, bool selecte
 enum { MENU_HOST, MENU_JOIN, MENU_TOOLS, MENU_COUNT };
 enum { HOST_ADHOC, HOST_WIFI, HOST_COUNT };
 enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
-enum { SET_SIMPLE, SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
+/* "Use simple client" (NS_Settings.simple_client) is hidden: it was planned
+ * but never implemented, so the row only toggled a stored value. The setting
+ * is still read and written, so restoring the row is all it takes. */
+enum { SET_COMPAT, SET_INSTANCED, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
 
 static const char* menu_label(int item) {
@@ -248,9 +251,6 @@ static bool mgba_instanced_enabled(const NS_Settings* c) {
 static void setting_row(char* out, int len, int item) {
 	NS_Settings* c = NS_settings();
 	switch (item) {
-	case SET_SIMPLE:
-		snprintf(out, len, "Use simple client:  %s", c->simple_client ? "Yes" : "No");
-		break;
 	case SET_COMPAT:
 		snprintf(out, len, "Use compatibility cores:  %s", c->compatibility_cores ? "Yes" : "No");
 		break;
@@ -463,8 +463,6 @@ static void render(SDL_Surface* s) {
 		y += SCALE1(6);
 		const char* hint = "";
 		switch (settings_sel) {
-		case SET_SIMPLE:
-			hint = "Planned: accept invitations for matching local games."; break;
 		case SET_COMPAT:
 			hint = "Use pak cores only when installed builds differ."; break;
 		case SET_GAMESWITCHER:
@@ -969,7 +967,6 @@ int main(int argc, char* argv[]) {
 			if (PAD_justPressed(BTN_A)) {
 				status[0] = '\0';
 				switch (settings_sel) {
-				case SET_SIMPLE: c->simple_client = !c->simple_client; break;
 				case SET_COMPAT:
 					c->compatibility_cores = !c->compatibility_cores;
 					if (!c->compatibility_cores) c->force_compatibility = false;

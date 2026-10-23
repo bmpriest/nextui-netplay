@@ -244,7 +244,7 @@ against the 39-54 Mbit/s these links negotiate for unicast), are never
 acknowledged so there is no retransmit, and are buffered by the AP until the
 DTIM beacon - typically 100-300 ms. That is larger than the entire input-delay
 budget. Broadcast is correct for discovery, which is where the pak already uses
-it (UDP on 55438, once a second); it is wrong for input.
+it (UDP on 55438, every 500 ms); it is wrong for input.
 
 **UDP would not lower per-packet latency.** `TCP_NODELAY` is already set, so
 nothing is held for coalescing. An input packet is 13 bytes (5-byte header +
@@ -274,7 +274,7 @@ wrong unit of change:
 | `CMD_INPUT` | frame N's buttons before frame N runs | **better** - redundancy beats retransmit |
 | `CMD_HASH` | diagnostic only | fine - already matched by frame |
 | `CMD_PING` | liveness | fine - loss is itself the signal |
-| `CMD_PAUSE` / `CMD_RESUME` | edge-triggered, must arrive | **worse** - a lost RESUME strands the peer until the 30 s `MAX_PAUSE_MS` fallback |
+| `CMD_PAUSE` / `CMD_RESUME` | edge-triggered, must arrive | **worse** - a lost RESUME strands the peer indefinitely; the old 30 s forced resume was removed because it broke two-menu resume |
 | `CMD_DATA` | link-cable core traffic, ordered, every byte | **much worse** |
 | `CMD_STATE` | 678 KB, complete | **much worse** |
 | `CMD_HELLO` | handshake | worse |

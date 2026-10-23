@@ -51,9 +51,6 @@
 /* Long enough not to trip on a frame hitch, short enough that a menu does not
  * overrun the peer's queue first. A frame is ~16ms. */
 #define STALL_MS       250
-/* A peer can pause indefinitely and legitimately - a long menu. But if it stops
- * responding without closing the socket, resuming beats hanging forever. */
-#define MAX_PAUSE_MS   30000
 
 enum {
 	CMD_HELLO = 0x00,
@@ -174,7 +171,6 @@ static struct {
 	struct timeval rtt_last_probe;
 
 	struct timeval last_run;      /* last retro_run, per NetLink_markFrame */
-	struct timeval peer_paused_at;
 	bool           told_peer_paused;
 	bool           core_running;
 	bool           peer_paused;
@@ -659,6 +655,10 @@ static void* worker(void* arg) {
 		unsigned queued = (nl.q_tail - nl.q_head + QUEUE_SIZE) % QUEUE_SIZE;
 		pthread_mutex_unlock(&nl.lock);
 		if (queued >= QUEUE_HIGH_WATER) {
+			/* POLLIN says the peer is still sending; we are the side not reading.
+			 * Without this the silence timeout above dropped a healthy
+			 * connection whenever a long menu filled the queue. */
+			gettimeofday(&nl.last_rx, NULL);
 			if (!nl.backpressure) {
 				nl.backpressure = true;
 				nl_log("queue at %u/%u - applying backpressure\n", queued, QUEUE_SIZE);
@@ -693,7 +693,6 @@ static void* worker(void* arg) {
 		if (hdr.cmd == CMD_PAUSE || hdr.cmd == CMD_RESUME) {
 			pthread_mutex_lock(&nl.lock);
 			nl.peer_paused = (hdr.cmd == CMD_PAUSE);
-			if (nl.peer_paused) gettimeofday(&nl.peer_paused_at, NULL);
 			pthread_mutex_unlock(&nl.lock);
 			if (hdr.cmd == CMD_PAUSE) {
 				const char* why = (size && buf[0] == NETLINK_PAUSE_FRONTEND)
@@ -813,38 +812,6 @@ static void* worker(void* arg) {
 			nl.link_verdict_ready = true;
 			pthread_mutex_unlock(&nl.lock);
 		}
-
-#if 0 /* Frozen executable transfer path. */
-		if (hdr.cmd == CMD_CORE && size > 8) {
-			uint32_t total = ntohl(*(uint32_t*)buf);
-			uint32_t off   = ntohl(*(uint32_t*)(buf + 4));
-			size_t   n     = size - 8;
-
-			/* Same bounds discipline as CMD_STATE: a hostile or corrupt total
-			 * must not become a huge malloc, and off/n must not wrap. */
-			if (total == 0 || total > NETLINK_MAX_CORE || off > total || n > total - off) {
-				nl_log("bad core chunk (total=%u off=%u n=%zu) - ignoring\n", total, off, n);
-			} else {
-				pthread_mutex_lock(&nl.lock);
-				if (!nl.core_buf || nl.core_len != total) {
-					free(nl.core_buf);
-					nl.core_buf = malloc(total);
-					nl.core_len = total;
-					nl.core_have = 0;
-					nl.core_ready = false;
-				}
-				if (nl.core_buf) {
-					memcpy(nl.core_buf + off, buf + 8, n);
-					nl.core_have += n;
-					if (nl.core_have >= total) {
-						nl.core_ready = true;
-						nl_log("core received (%u bytes)\n", total);
-					}
-				}
-				pthread_mutex_unlock(&nl.lock);
-			}
-		}
-#endif
 
 		if (hdr.cmd == CMD_HASH && size == 8) {
 			pthread_mutex_lock(&nl.lock);
@@ -1137,55 +1104,6 @@ bool NetLink_takeLinkVerdict(bool* can_pair, uint32_t* reason) {
 	pthread_mutex_unlock(&nl.lock);
 	return ok;
 }
-
-#if 0 /* Frozen executable-sharing API. */
-void NetLink_setCoreId(const NetLinkCoreId* id) {
-	pthread_mutex_lock(&nl.lock);
-	nl.core_id = *id;
-	pthread_mutex_unlock(&nl.lock);
-}
-
-bool NetLink_peerCoreId(NetLinkCoreId* out) {
-	pthread_mutex_lock(&nl.lock);
-	bool known = nl.peer_core_known;
-	if (known && out) *out = nl.peer_core_id;
-	pthread_mutex_unlock(&nl.lock);
-	return known;
-}
-
-bool NetLink_sendCore(const void* data, size_t len) {
-	if (!len || len > NETLINK_MAX_CORE) return false;
-	const uint8_t* p = data;
-	for (size_t off = 0; off < len; off += STATE_CHUNK) {
-		size_t n = len - off;
-		if (n > STATE_CHUNK) n = STATE_CHUNK;
-
-		uint8_t pkt[8 + STATE_CHUNK];
-		uint32_t hdr[2] = { htonl((uint32_t)len), htonl((uint32_t)off) };
-		memcpy(pkt, hdr, 8);
-		memcpy(pkt + 8, p + off, n);
-
-		pthread_mutex_lock(&nl.lock);
-		bool ok = nl.connected && send_framed(CMD_CORE, pkt, n + 8, NetLink_localClientId());
-		pthread_mutex_unlock(&nl.lock);
-		if (!ok) return false;
-	}
-	return true;
-}
-
-bool NetLink_takeCore(void** data, size_t* len) {
-	pthread_mutex_lock(&nl.lock);
-	if (!nl.core_ready) { pthread_mutex_unlock(&nl.lock); return false; }
-	*data = nl.core_buf;
-	*len  = nl.core_len;
-	nl.core_buf = NULL;
-	nl.core_len = 0;
-	nl.core_have = 0;
-	nl.core_ready = false;
-	pthread_mutex_unlock(&nl.lock);
-	return true;
-}
-#endif
 
 /* Kinds keep the two bootstrap transfers apart even if they arrive back to
  * back: a payload of the wrong kind stays queued rather than being handed to a

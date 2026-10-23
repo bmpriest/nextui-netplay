@@ -24,9 +24,12 @@ merge against a moving `minarch`. Two features:
 forwards all 25 libretro entry points and intercepts only what multiplayer
 needs. With no session armed it is a pure passthrough.
 
-**The pak ships two cores**, for reasons that are build-flag deep rather than
-source deep: NextUI compiles gambatte without `HAVE_NETWORK` (Game Link compiled
-out entirely), and its gpsp lacks the original pak's two RFU fixes.
+**The pak ships two link cores**, for reasons that are build-flag deep rather
+than source deep: NextUI compiles gambatte without `HAVE_NETWORK` (Game Link
+compiled out entirely), and its gpsp lacks the original pak's two RFU fixes.
+It also ships the paired cores for instanced link play
+(`gambatte_dual_libretro.so`, `mgba_dual_libretro.so`), an optional `MGBA.pak`,
+and, in `Netplay-Full.pak.zip`, the shared-screen compatibility cores.
 
 ### Working on hardware
 
@@ -93,8 +96,12 @@ artifact backups likewise move from the old platform-specific userdata path.
 - **WiFi recovery.** Proven by artificial network drops: the watchdog arms on
   join, detects the loss, counts three failures over ~60s, restores the client
   stack and clears the dead session pointer.
-- **Wi-Fi power save** is disabled while a session is armed and restored on
-  disarm.
+- **Wi-Fi power save**, when the opt-in *Disable Wi-Fi Power Saving* setting is
+  on, is disabled while a session is armed and restored on disarm. On H700 this
+  takes a driver reload and lasts until reboot.
+- **H700 on hardware.** Shared-screen (Streets of Rage 2), instanced GB
+  (Tetris) and instanced GBA (Mario Kart: Super Circuit) sessions against a
+  Brick, in the scripted runs under `testing/devbridge/`.
 - **SFC across all five platforms.** Compatibility fallback now loads pinned
   Supafaust on both architecture families. Its encoded state, round trip, and
   frame hashes matched between A30 and Brick in a Kirby Super Star probe.
@@ -107,7 +114,8 @@ artifact backups likewise move from the old platform-specific userdata path.
 ### Untested
 
 - `tg5050` - builds, no hardware.
-- `my355`, `h700` - **build** (app, shim, and the gambatte/gpsp overrides), never run on hardware. Both are separate NextUI forks with their own pinned
+- `my355` - **builds** (app, shim, and the gambatte/gpsp overrides), never run
+  on hardware. It and `h700` are separate NextUI forks with their own pinned
   source trees, so they are built through `build-platforms`, which owns the
   image-digest-to-source-commit pairing.
 - Hosting from a device with no AP-capable interface. The UI omits the option
@@ -540,8 +548,12 @@ no save for a game that has one.
 Implemented. One instance per device, same game, inputs synced.
 
 - **Input delay**, not rollback. Each side sends input for frame `F + delay`
-  so the peer's has arrived when needed. Default 6 (~100ms); tunable per session
-  via `input_delay=N`. Missing input stalls rather than running ahead.
+  so the peer's has arrived when needed. Missing input stalls rather than
+  running ahead. The app writes a transport floor into the session (3 frames
+  ad hoc, 10 over an access point) with `input_delay_auto=1`; the shim may
+  raise it from the measured round trip, and both sides adopt the higher of the
+  two proposals. A session file with only `input_delay=N` pins it. The shim's
+  own default of 6 applies only when the session gives no value.
 - **State handshake**: the host serialises and ships its state (chunked); the
   client adopts it. Without this the two differ from frame one.
 - **Divergence detection**: FNV-1a state hash every 300 frames, compared and
@@ -574,9 +586,10 @@ The shape, and how each part differs from the original design:
   on, read at runtime. A hardcoded channel is rejected by the driver.
 - **The SSID does not depend on announcements.** It is `nextui-XXXX`, shown on
   the armed main screen, with a fixed passphrase; the client scans for the
-  `nextui-` prefix and the user matches the code. Nothing is broadcast, and the
-  bootstrap problem is gone - a host that has already moved can still be found,
-  which an announcement-only scheme cannot do.
+  `nextui-` prefix and the user matches the code. Joining does not depend on
+  the LAN announcements (which still carry the SSID and passphrase for clients
+  on the same network), so the bootstrap problem is gone - a host that has
+  already moved can still be found, which an announcement-only scheme cannot do.
 - **No manual switch step.** The host raises its AP and stays reachable
   throughout.
 - **Recovery is not physical.** Four routes back: the watchdog armed on join,
@@ -612,8 +625,8 @@ concurrent case cannot pick a clear channel at all - it inherits `wlan0`'s - so
 some of the win is the direct path after all.
 
 WiFi power save on the Brick cost 25× average latency (307ms → 12ms) and reverts
-on reboot. The pak now disables it while a session is armed and restores the
-prior value on disarm. It is a real win on average but not a fix: measured A/B
+on reboot. With *Disable Wi-Fi Power Saving* on, the pak disables it while a
+session is armed and restores the prior value on disarm. It is a real win on average but not a fix: measured A/B
 over ad hoc, `off` averaged 26.3ms against `on` at 33.9ms, and neither brings the
 worst case inside the input-delay window.
 
@@ -656,8 +669,9 @@ replicas rather than carrying individual SIO transfers. Host tests exercise raw
 multiplayer SIO, and a two-Brick Mario Kart: Super Circuit race completed with
 audio over both ad hoc and ordinary Wi-Fi. The enclosing paired call measures
 16.25-16.29 ms because it includes presentation pacing; direct phase profiling
-shows about 5 ms of actual headroom on Brick. It remains experimental because
-game coverage is narrow and my282/h700 paired hardware validation is incomplete.
+shows about 5 ms of actual headroom on Brick. A Brick/H700 pair has also
+completed a race. It remains experimental because game coverage is narrow and
+my282 cannot sustain the paired core.
 
 ## Dual instance
 
@@ -704,9 +718,11 @@ the same two consoles.
 
 Linked cartridges may differ when both devices own both of them; no ROM crosses
 the network, so a pairing that cannot be hosted locally relaunches once on the
-network-serial core. Still open: process rejoin and periodic paired-state
-agreement checks. Device testing is still required to establish the real latency
-win and local serial reliability.
+network-serial core. Both devices hash the paired state every 300 frames and
+compare; a mismatch, or a lost connection, offers the Wait / Continue solo /
+Exit overlay, and a reconnect re-pairs from scratch rather than resuming the
+old timeline. On hardware it completed a Pokémon trade across 13,500 frames
+with no desync, and the scripted Tetris run in `testing/devbridge/`.
 
 ## Durability: when does a frozen pak stop working?
 
@@ -730,7 +746,7 @@ minarch through PATH.
 |---|---|---|
 | Rebuild trigger | **every NextUI release** | core source or toolchain change |
 | Binaries per release | 6 + merge conflicts | 0 |
-| Cores we own | 0 | gambatte, gpsp |
+| Cores we own | 0 | gambatte, gpsp, paired gambatte and mGBA, compatibility set |
 | Coupling to NextUI internals | deep (`minarch`, `api.h`) | none - libretro ABI only |
 
 ## Upstreaming would shrink this further
@@ -761,9 +777,6 @@ minarch through PATH.
 - **Hosting still requires `udhcpd`**, which the A30 lacks. Removable: the
   client already knows the host is at `10.0.0.1`, so a static `10.0.0.2` would
   drop the dependency and widen hosting to any device that can raise an AP.
-- The watchdog still uses a blocking `udhcpc -t 8`. Harmless - it runs detached,
-  where ~24s costs nothing - but it is the same call the app had to bound.
-
 ## Suggested order
 
 1. **Static addressing** to drop `udhcpd`, so hosting is not gated on a binary
@@ -774,4 +787,3 @@ minarch through PATH.
    cheapest to bundle (pure C, ~3MB).
 4. Authentication/signing before reconsidering core sharing; redesign guest
    mode around packaged compatibility cores in the meantime.
-5. Dual instance for GB link, if the latency ceiling proves annoying enough.

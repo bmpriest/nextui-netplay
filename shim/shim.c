@@ -278,6 +278,9 @@ static long peer_wait_timeout_ms(void);
 static void recovery_fail(const char* why);
 static bool failure_input_tick(void);
 static void failure_overlay_message(char* out, size_t len);
+static bool peer_pause_tick(unsigned frame);
+static void present_paused_frame(unsigned frame_counter, const char* msg);
+static void present_paused_audio(void);
 
 static bool read_whole_file(const char* path, void** out, size_t* out_len) {
 	FILE* f = fopen(path, "rb");
@@ -433,6 +436,26 @@ static const char* cpufreq_root(void) {
 	return root && root[0] ? root : "/sys/devices/system/cpu";
 }
 
+/* The saved settings, also on disk. cpu_restore() only runs on a clean
+ * retro_deinit; if minarch crashes, the launcher wrapper replays this file
+ * after the process exits so the device is not left pinned. */
+static const char* cpu_record_path(void) {
+	const char* path = getenv("NETPLAY_CPU_RECORD");
+	return path && path[0] ? path : "/tmp/netplay-cpu-restore";
+}
+
+static void cpu_write_record(void) {
+	char tmp[256];
+	snprintf(tmp, sizeof(tmp), "%s.tmp", cpu_record_path());
+	FILE* f = fopen(tmp, "w");
+	if (!f) return;
+	for (int i = 0; i < cpu_saved_count && i < CPU_MAX_POLICIES; i++)
+		fprintf(f, "%s %s %s\n", cpu_saved[i].path, cpu_saved[i].governor,
+		        cpu_saved[i].min_freq);
+	if (fclose(f) == 0) rename(tmp, cpu_record_path());
+	else remove(tmp);
+}
+
 static bool cpu_policy_path(char* out, size_t out_size,
                             const char* policy, const char* leaf) {
 	size_t base_len = strnlen(policy, sizeof(cpu_saved[0].path));
@@ -513,6 +536,7 @@ static void cpu_pin_performance(void) {
 			         cpufreq_root());
 			return;
 		}
+		cpu_write_record();
 		char now[32] = "?";
 		char path[192];
 		snprintf(path, sizeof(path), "%s/scaling_governor", cpu_saved[0].path);
@@ -537,8 +561,10 @@ static void cpu_restore(void) {
 				write_line_file(path, cpu_saved[i].min_freq);
 		}
 	}
-	if (restore_count)
+	if (restore_count) {
 		shim_log("restored CPU scaling to '%s'\n", cpu_saved[0].governor);
+		remove(cpu_record_path());
+	}
 	cpu_saved_count = 0;
 }
 
@@ -877,8 +903,6 @@ static void apply_required_options(void) {
 	}
 }
 
-// Both peers must agree on the delay, so it is written by the app into both
-// session files rather than negotiated.
 /* input_delay=N pins the value; input_delay=auto (or an absent line) leaves it
  * to be derived from the measured round trip during the handshake. A pinned
  * value is still only this device's proposal - see delay negotiation below,
@@ -1044,323 +1068,6 @@ static const char* resolve_core(Core* target) {
 // a zeroed retro_system_info would segfault minarch, which strcpys
 // valid_extensions unchecked. Stock minarch exits when a core won't load; we
 // match that so the log says what happened.
-/* Frozen executable-sharing implementation. The setting remains visible, but
- * unauthenticated peer binaries must not reach dlopen. Compatibility selection
- * is now performed by the setup app using local, packaged core manifests. */
-#if 0
-/* CRC32 of a file, plus its ELF machine type. Enough to say whether two builds
- * are the same and whether the other one could even load here.
- *
- * Deliberately a file hash rather than library_name/library_version: the core
- * has to be identified *before* dlopen, because the whole point is to decide
- * which file to open. */
-static bool fingerprint_core(const char* path, NetLinkCoreId* out) {
-	FILE* f = fopen(path, "rb");
-	if (!f) return false;
-
-	static uint32_t table[256];
-	static int table_built = 0;
-	if (!table_built) {
-		for (uint32_t i = 0; i < 256; i++) {
-			uint32_t c = i;
-			for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-			table[i] = c;
-		}
-		table_built = 1;
-	}
-
-	uint32_t crc = 0xFFFFFFFFu;
-	size_t total = 0;
-	unsigned char buf[16384];
-	size_t n;
-	uint16_t machine = 0;
-	while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-		if (total == 0 && n >= 20 && !memcmp(buf, "\177ELF", 4))
-			machine = (uint16_t)(buf[18] | (buf[19] << 8));
-		for (size_t i = 0; i < n; i++) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
-		total += n;
-	}
-	fclose(f);
-
-	out->crc = crc ^ 0xFFFFFFFFu;
-	out->size = (uint32_t)total;
-	out->machine = machine;
-	out->can_send = 0;
-	return total > 0;
-}
-
-/* Highest GLIBC_x.y a file requires, as major*1000+minor.
- *
- * Scans for the literal strings rather than walking the version-needs section:
- * they live in .dynstr either way, and a byte scan cannot be fooled by a
- * malformed section header. Verified against readelf on real builds - tg5050
- * cores come back 2.33, every other platform 2.17. */
-static uint32_t glibc_floor(const char* path) {
-	FILE* f = fopen(path, "rb");
-	if (!f) return 0;
-
-	uint32_t best = 0;
-	char win[512];
-	size_t fill = 0;
-	size_t n;
-	/* Overlapping window, so a match spanning two reads is not missed. */
-	while ((n = fread(win + fill, 1, sizeof(win) - fill - 1, f)) > 0) {
-		size_t have = fill + n;
-		win[have] = '\0';
-		for (size_t i = 0; i + 10 < have; i++) {
-			if (memcmp(win + i, "GLIBC_", 6)) continue;
-			unsigned maj = 0, min = 0;
-			if (sscanf(win + i + 6, "%u.%u", &maj, &min) == 2) {
-				uint32_t v = maj * 1000 + min;
-				if (v > best) best = v;
-			}
-		}
-		if (have > 32) {
-			memmove(win, win + have - 32, 32);
-			fill = 32;
-		} else fill = have;
-	}
-	fclose(f);
-	return best;
-}
-
-/* What this device provides. gnu_get_libc_version is glibc-specific, which is
- * fine - these platforms are all glibc. */
-static uint32_t runtime_glibc(void) {
-	const char* v = gnu_get_libc_version();
-	unsigned maj = 0, min = 0;
-	if (v && sscanf(v, "%u.%u", &maj, &min) == 2) return maj * 1000 + min;
-	return 0;
-}
-
-/* library_version without loading a ROM: retro_get_system_info is callable
- * before retro_init, so a core can be identified for a few milliseconds of
- * dlopen rather than a full launch. */
-static void probe_core_version(const char* path, char* out, int len) {
-	out[0] = '\0';
-	void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-	if (!h) return;
-	void (*gsi)(struct retro_system_info*) = dlsym(h, "retro_get_system_info");
-	if (gsi) {
-		struct retro_system_info i;
-		memset(&i, 0, sizeof(i));
-		gsi(&i);
-		if (i.library_version) snprintf(out, len, "%s", i.library_version);
-	}
-	dlclose(h);
-}
-
-/* Does the session permit handing our core to a peer? Written by the app from
- * its settings; absent means the default, which is on. */
-static int session_share_cores(const char* path) {
-	FILE* f = fopen(path, "r");
-	if (!f) return 1;
-	char line[256];
-	int v = 1;
-	while (fgets(line, sizeof(line), f)) {
-		int n;
-		if (sscanf(line, " share_cores = %d", &n) == 1) v = n;
-	}
-	fclose(f);
-	return v;
-}
-
-/* Production waits long enough for a peer coming up over WiFi. Host tests that
- * deliberately run one side can shorten this without baking test timing into
- * the protocol. Values outside a useful range are ignored. */
-static int negotiate_timeout_ms(void) {
-	const char* value = getenv("NETPLAY_NEGOTIATE_TIMEOUT_MS");
-	if (!value || !value[0]) return 15000;
-	char* end = NULL;
-	long ms = strtol(value, &end, 10);
-	return end && *end == '\0' && ms >= 50 && ms <= 60000 ? (int)ms : 15000;
-}
-
-/* Where an adopted core is written. /tmp is RAM on these devices, which is the
- * right place: it is fast, and a borrowed core must not outlive the session or
- * quietly become what this device runs from then on. */
-#define ADOPTED_CORE_PATH "/tmp/netplay_adopted_core.so"
-
-/* Wait for the handshake, compare builds, and if they differ take the host's.
- *
- * Bounded, and every failure falls back to our own core rather than refusing to
- * start: a session that plays with a desync risk is more use than one that will
- * not launch. Returns the path to dlopen.
- */
-/* A core the app already staged for this session, if any.
- *
- * This is the fast path the negotiation exists to avoid needing: when the app
- * has exchanged manifests at arm time and fetched the peer's build while the
- * user was still browsing, the launch has nothing to wait for. Named for the
- * core we were asked to wrap, so one staged directory serves every system. */
-static const char* staged_core(const char* path) {
-	const char* base = strrchr(path, '/');
-	base = base ? base + 1 : path;
-
-	const char* pak = getenv("NETPLAY_PAK");
-	if (!pak || !pak[0]) return NULL;
-
-	static char staged[512];
-	snprintf(staged, sizeof(staged), "%s/cores/staged/%s", pak, base);
-
-	struct stat st;
-	if (stat(staged, &st) != 0 || st.st_size <= 0) return NULL;
-
-	void* probe = dlopen(staged, RTLD_NOW | RTLD_LOCAL);
-	if (!probe) {
-		shim_log("staged core will not load (%s) - ignoring it\n", dlerror());
-		return NULL;
-	}
-	dlclose(probe);
-	shim_log("using the core staged for this session: %s\n", staged);
-	return staged;
-}
-
-static const char* negotiate_core(const char* path, const char* session) {
-	/* Checked before anything is exchanged: if the app already settled this,
-	 * there is nothing to negotiate and no reason to wait for a handshake. */
-	const char* pre = staged_core(path);
-	if (pre) {
-		NetLink_start();
-		return pre;
-	}
-
-	NetLinkCoreId mine;
-	if (!fingerprint_core(path, &mine)) return path;
-	mine.can_send = session_share_cores(session) ? 1 : 0;
-	mine.core_glibc = glibc_floor(path);
-	mine.runtime_glibc = runtime_glibc();
-	probe_core_version(path, mine.version, sizeof(mine.version));
-	NetLink_setCoreId(&mine);
-
-	if (!NetLink_start()) return path;
-
-	/* The handshake runs on the netlink thread. Bounded wait - this is on the
-	 * path to the first frame, so it must not be able to hang a launch. */
-	NetLinkCoreId theirs;
-	int waited = 0;
-	int negotiate_ms = negotiate_timeout_ms();
-	while (!NetLink_peerCoreId(&theirs) && waited < negotiate_ms) {
-		usleep(100 * 1000);
-		waited += 100;
-	}
-	if (!NetLink_peerCoreId(&theirs)) {
-		shim_log("peer core identity never arrived - using ours\n");
-		return path;
-	}
-
-	if (theirs.crc == mine.crc && theirs.size == mine.size) {
-		shim_log("core builds match (crc=%08x)\n", mine.crc);
-		return path;
-	}
-
-	/* Same source revision is enough. Different platforms build the same commit
-	 * into different files, and those emulate identically - transferring
-	 * between them would be megabytes spent to arrive back where we started. */
-	if (mine.version[0] && !strcmp(mine.version, theirs.version)) {
-		shim_log("different build, same revision '%s' - no transfer needed\n", mine.version);
-		return path;
-	}
-
-	shim_log("core mismatch: ours crc=%08x '%s', theirs crc=%08x '%s'\n",
-	         mine.crc, mine.version, theirs.crc, theirs.version);
-
-	/* Architecture is the one difference no transfer can bridge. */
-	if (theirs.machine != mine.machine) {
-		shim_log("peer is a different architecture (%u vs %u) - cannot share cores; "
-		         "shared screen will desync unless the builds happen to agree\n",
-		         theirs.machine, mine.machine);
-		return path;
-	}
-
-	/* Who donates is a loadability question before it is an authority question.
-	 * A tg5050-built core needs glibc 2.33 where every other platform provides
-	 * 2.17, so host-wins would hand over a file the peer cannot open. */
-	bool we_could_load_theirs   = theirs.core_glibc <= mine.runtime_glibc;
-	bool they_could_load_ours   = mine.core_glibc <= theirs.runtime_glibc;
-
-	if (!we_could_load_theirs && !they_could_load_ours) {
-		shim_log("neither core is loadable on the other device "
-		         "(theirs needs %u.%u, we have %u.%u; ours needs %u.%u, they have %u.%u)\n",
-		         theirs.core_glibc / 1000, theirs.core_glibc % 1000,
-		         mine.runtime_glibc / 1000, mine.runtime_glibc % 1000,
-		         mine.core_glibc / 1000, mine.core_glibc % 1000,
-		         theirs.runtime_glibc / 1000, theirs.runtime_glibc % 1000);
-		return path;
-	}
-
-	/* Default is host-donates, overridden only when loadability says otherwise. */
-	bool we_donate = (NetLink_getRole() == NETLINK_ROLE_HOST);
-	if (!we_could_load_theirs && they_could_load_ours) {
-		if (!we_donate) shim_log("we cannot load the host's core - offering ours instead\n");
-		we_donate = true;
-	} else if (!they_could_load_ours && we_could_load_theirs) {
-		if (we_donate) shim_log("peer cannot load our core - taking theirs instead\n");
-		we_donate = false;
-	}
-
-	if (we_donate) {
-		if (!mine.can_send) {
-			shim_log("core sharing disabled here - peer keeps its own build\n");
-			return path;
-		}
-		FILE* f = fopen(path, "rb");
-		if (!f) return path;
-		void* buf = malloc(mine.size);
-		if (!buf) { fclose(f); return path; }
-		size_t got = fread(buf, 1, mine.size, f);
-		fclose(f);
-		if (got == mine.size && NetLink_sendCore(buf, got))
-			shim_log("sent our core to the peer (%zu bytes)\n", got);
-		else
-			shim_log("could not send our core\n");
-		free(buf);
-		return path;
-	}
-
-	if (!theirs.can_send) {
-		shim_log("peer is not sharing its core - keeping ours\n");
-		return path;
-	}
-
-	void* data = NULL;
-	size_t len = 0;
-	waited = 0;
-	while (!NetLink_takeCore(&data, &len) && waited < 60000) {
-		usleep(100 * 1000);
-		waited += 100;
-	}
-	if (!data) {
-		shim_log("peer's core never arrived - using ours\n");
-		return path;
-	}
-
-	FILE* out = fopen(ADOPTED_CORE_PATH, "wb");
-	if (!out) { free(data); return path; }
-	size_t wrote = fwrite(data, 1, len, out);
-	fclose(out);
-	free(data);
-	if (wrote != len) {
-		shim_log("could not write the adopted core (%zu of %zu) - using ours\n", wrote, len);
-		remove(ADOPTED_CORE_PATH);
-		return path;
-	}
-
-	/* Prove it loads before committing. A core that fails dlopen here would
-	 * otherwise take the whole launch down, and our own core still works. */
-	void* probe = dlopen(ADOPTED_CORE_PATH, RTLD_NOW | RTLD_LOCAL);
-	if (!probe) {
-		shim_log("adopted core will not load (%s) - using ours\n", dlerror());
-		remove(ADOPTED_CORE_PATH);
-		return path;
-	}
-	dlclose(probe);
-
-	shim_log("adopted the peer's core (%zu bytes)\n", len);
-	return ADOPTED_CORE_PATH;
-}
-#endif
-
 static void ensure_loaded(void) {
 	if (core.handle) return;
 
@@ -1883,7 +1590,7 @@ static bool run_shadow_pair(void) {
 // and every synced input afterwards is meaningless.
 // Identify the emulator, not the game. Two devices can run the same ROM under
 // genuinely different cores.
-static uint32_t core_identity(void) {
+static uint32_t core_identity_logged(bool log) {
 	struct retro_system_info info;
 	memset(&info, 0, sizeof(info));
 	core.get_system_info(&info);
@@ -1911,13 +1618,16 @@ static uint32_t core_identity(void) {
 	 * disagree but not which field disagrees - and "same version string, still
 	 * a mismatch" is exactly the case worth telling apart, because a differing
 	 * serialize_size means the two sides cannot exchange state at all, while a
-	 * differing version is only a build to line up. */
-	shim_log("core identity: name='%s' version='%s' %s=%zu -> %08x\n",
+	 * differing version is only a build to line up. Handshakes log it; the
+	 * host's checkpoint, written every few seconds, does not. */
+	if (log) shim_log("core identity: name='%s' version='%s' %s=%zu -> %08x\n",
 	         info.library_name ? info.library_name : "?",
 	         info.library_version ? info.library_version : "?",
 	         dual_link_mode ? "paired_abi" : "serialize_size", sz, h);
 	return h;
 }
+
+static uint32_t core_identity(void) { return core_identity_logged(true); }
 
 #define AUTHORITATIVE_MAGIC 0x4E505356u /* NPSV */
 #define AUTHORITATIVE_VERSION 1u
@@ -2133,7 +1843,7 @@ static bool promote_checkpoint(void) {
 	if (fd < 0) return false;
 	CheckpointHeader h = {
 		.magic = CHECKPOINT_MAGIC, .version = 2,
-		.core_identity = core_identity(),
+		.core_identity = core_identity_logged(false),
 		.state_size = (uint32_t)checkpoint_candidate_len,
 		.frame = checkpoint_candidate_frame,
 		.state_hash = checkpoint_candidate_hash,
@@ -2418,8 +2128,9 @@ static void retry_failed_session(void) {
 	else shim_log("user chose to wait and retry the peer connection\n");
 }
 
-static bool failure_input_tick(void) {
-	if (exit_requested) return false;
+/* Left/Right move the highlight, A confirms it, B picks Wait. Returns true and
+ * sets *out when a choice was made this frame. */
+static bool failure_choice_input(FailureChoice* out) {
 	uint32_t buttons = fe_input_state
 	                 ? (uint16_t)fe_input_state(0, RETRO_DEVICE_JOYPAD, 0,
 	                                            RETRO_DEVICE_ID_JOYPAD_MASK)
@@ -2439,17 +2150,18 @@ static bool failure_input_tick(void) {
 
 	/* B is the quick, conservative action: keep waiting. A confirms the
 	 * highlighted choice. */
-	FailureChoice choice = (pressed & b) ? FAILURE_WAIT : failure_choice;
-	if (choice == FAILURE_WAIT) {
-		retry_failed_session();
-		return true;
-	}
+	*out = (pressed & b) ? FAILURE_WAIT : failure_choice;
+	return true;
+}
+
+/* Exit and Solo mean the same thing from every overlay; only Wait differs. */
+static void failure_choose_exit_or_solo(FailureChoice choice) {
 	if (choice == FAILURE_EXIT) {
 		NetLink_stop();
 		exit_requested = 1;
 		shim_log("user requested exit from the netplay failure overlay\n");
 		if (fe_environment) fe_environment(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
-		return true;
+		return;
 	}
 
 	NetLink_stop();
@@ -2459,6 +2171,14 @@ static bool failure_input_tick(void) {
 	recovery_error[0] = '\0';
 	recovery_phase = RECOVERY_IDLE;
 	shim_log("user continued this game solo; durable session remains armed\n");
+}
+
+static bool failure_input_tick(void) {
+	if (exit_requested) return false;
+	FailureChoice choice;
+	if (!failure_choice_input(&choice)) return false;
+	if (choice == FAILURE_WAIT) retry_failed_session();
+	else failure_choose_exit_or_solo(choice);
 	return true;
 }
 
@@ -2472,6 +2192,72 @@ static void failure_overlay_message(char* out, size_t len) {
 	                   : "Continue solo";
 	snprintf(out, len, "%s Choice: %s. Left Right, A select. B waits.",
 	         recovery_error[0] ? recovery_error : "Synchronization failed.", choice);
+}
+
+/* The peer's frontend has stopped calling its core: MinArch's menu is open, or
+ * the frontend is stuck. Its network thread still heartbeats and has told us so
+ * with CMD_PAUSE; a device that sleeps or dies goes silent instead and is
+ * handled as a disconnect. A menu is a normal thing to sit in, so there is no
+ * deadline - but after PEER_WAIT_TIMEOUT_MS this side is offered the failure
+ * overlay's choices. Wait keeps the connection and restarts the clock; nothing
+ * is torn down unless the player picks Solo or Exit. Sessions are in person,
+ * so the two players can simply talk about which it should be.
+ *
+ * Returns true while the peer is paused, with the frame presented. */
+static struct timeval peer_paused_since;
+static bool peer_pause_prompt;
+
+static bool peer_pause_tick(unsigned frame) {
+	if (!NetLink_isPeerPaused()) {
+		peer_paused_since.tv_sec = peer_paused_since.tv_usec = 0;
+		peer_pause_prompt = false;
+		return false;
+	}
+	/* Input is polled only from inside core.run(); skip it without this and
+	 * no button - including MENU - is ever seen on this side either. */
+	if (fe_input_poll) fe_input_poll();
+	/* Waiting on a paused peer is not an input stall. */
+	input_stall_since.tv_sec = input_stall_since.tv_usec = 0;
+	if (!peer_paused_since.tv_sec) gettimeofday(&peer_paused_since, NULL);
+
+	if (!peer_pause_prompt && elapsed_ms(&peer_paused_since) > peer_wait_timeout_ms()) {
+		peer_pause_prompt = true;
+		failure_choice = FAILURE_WAIT;
+		/* A button already held must not pick something the moment it appears. */
+		failure_buttons_previous = ~0u;
+		shim_log("peer paused for %ldms - offering wait/solo/exit\n",
+		         elapsed_ms(&peer_paused_since));
+	}
+	if (!peer_pause_prompt) {
+		present_paused_frame(frame, "Waiting for other player (menu open)...");
+		present_paused_audio();
+		return true;
+	}
+
+	FailureChoice choice;
+	if (!exit_requested && failure_choice_input(&choice)) {
+		if (choice == FAILURE_WAIT) {
+			gettimeofday(&peer_paused_since, NULL);
+			peer_pause_prompt = false;
+			shim_log("user chose to keep waiting for the paused peer\n");
+		} else {
+			failure_choose_exit_or_solo(choice);
+		}
+	}
+	char message[224];
+	if (exit_requested) {
+		snprintf(message, sizeof(message), "Exiting game...");
+	} else {
+		const char* label = failure_choice == FAILURE_WAIT ? "Keep waiting"
+		                  : failure_choice == FAILURE_EXIT ? "Exit game"
+		                  : "Continue solo";
+		snprintf(message, sizeof(message),
+		         "Connected device may be stalled. Choice: %s. "
+		         "Left Right, A select. B waits.", label);
+	}
+	present_paused_frame(frame, message);
+	present_paused_audio();
+	return true;
 }
 
 /* Advance an authoritative-state recovery transaction at a frame boundary.
@@ -3456,6 +3242,9 @@ static bool dual_rebuild_content(const char* peer_rom) {
 	own.data = dual_own_rom;
 	own.size = dual_own_rom_len;
 
+	/* Whether this console holds the player's cartridge again after the reload,
+	 * whichever path put it there. */
+	bool own_loaded = false;
 	if (ok) {
 		core.unload_game();
 		ok = core.dual_set_visible_console(dual_local_console);
@@ -3473,28 +3262,37 @@ static bool dual_rebuild_content(const char* peer_rom) {
 		} else if (ok) {
 			ok = core.load_game(&own);
 		}
+		own_loaded = ok;
 		if (!ok) {
 			/* Put the player's own game back rather than leaving the frontend
 			 * attached to a core with no content. The session is finished either
 			 * way, but a visible game beats a black screen. */
 			core.dual_set_visible_console(dual_local_console);
-			if (!core.load_game(&own))
+			own_loaded = core.load_game(&own);
+			if (!own_loaded)
 				shim_log("could not restore the local cartridge after a failed pair rebuild\n");
 		}
 	}
 
-	/* Restore after the reload: the core reallocates both consoles' memory. */
-	if (ok && sram_size) {
+	/* Restore after the reload: the core reallocates both consoles' memory.
+	 * This runs on the fallback reload too. minarch writes the visible console's
+	 * SRAM to the player's .sav on quit, so a reloaded cartridge left blank
+	 * would overwrite the real save. */
+	bool restored = own_loaded;
+	if (restored && sram_size) {
 		void* p = core.dual_get_memory_data(dual_local_console, RETRO_MEMORY_SAVE_RAM);
 		uint32_t now_size = 0, now_rtc = 0;
 		if (p && dual_memory_sizes(dual_local_console, &now_size, &now_rtc) &&
 		    now_size == sram_size) memcpy(p, sram, sram_size);
-		else ok = false;
+		else restored = false;
 	}
-	if (ok && rtc_size) {
+	if (restored && rtc_size) {
 		void* p = core.dual_get_memory_data(dual_local_console, RETRO_MEMORY_RTC);
-		if (p) memcpy(p, rtc, rtc_size); else ok = false;
+		if (p) memcpy(p, rtc, rtc_size); else restored = false;
 	}
+	if (own_loaded && !restored)
+		shim_log("could not carry the local save across the pair rebuild\n");
+	ok = ok && restored;
 
 	free(sram);
 	free(rtc);
@@ -3938,12 +3736,7 @@ static bool dual_link_tick(void) {
 		present_paused_audio();
 		return true;
 	}
-	if (NetLink_isPeerPaused()) {
-		if (fe_input_poll) fe_input_poll();
-		present_paused_frame(dual_frame, "Waiting for other player (menu open)...");
-		present_paused_audio();
-		return true;
-	}
+	if (peer_pause_tick(dual_frame)) return true;
 	if (!dual_bootstrap_tick()) {
 		if (fe_input_poll) fe_input_poll();
 		present_paused_frame(dual_frame,
@@ -4071,6 +3864,10 @@ void retro_run(void) {
 			return;
 		}
 
+		// The peer is in its menu. Without this the missing input below would
+		// time out as "Peer stopped sending input" after 30 seconds.
+		if (peer_pause_tick(netplay_frame)) return;
+
 		if (!netplay_synced) {
 			// Nothing to show yet and nothing to run; keep the frontend alive.
 			if (fe_input_poll) fe_input_poll();
@@ -4168,19 +3965,8 @@ void retro_run(void) {
 		// Peer's frontend is blocked - a menu, a sleep. Running ahead would only
 		// fill a queue it is not draining, so skip the frame. This is a legal
 		// dupe frame; the frontend loop keeps polling input and stays responsive.
-		if (NetLink_isPeerPaused()) {
-			link_paused_frames++;
-			// Input is polled only from inside core.run(). Skip that without
-			// doing this and PAD_poll never runs, so no button - including
-			// MENU - is ever seen and the frontend is frozen, not merely
-			// paused. minarch does the same at each of its own frame skips.
-			if (fe_input_poll) fe_input_poll();
-
-			static unsigned paused_frames;
-			present_paused_frame(paused_frames++, "Waiting for other player (menu open)...");
-			present_paused_audio();
-			return;
-		}
+		if (NetLink_isPeerPaused()) link_paused_frames++;
+		if (peer_pause_tick(link_frames)) return;
 	}
 
 	// TODO(netplay): gate frame advance on the peer for input-lockstep netplay.
@@ -4206,10 +3992,11 @@ void retro_run(void) {
 
 size_t retro_serialize_size(void) {
 	if (!core.handle) return 0;
-	/* Save states are deliberately unavailable for every armed session. Returning
-	 * zero is the libretro capability signal minarch uses to omit its save/load
-	 * actions. Protocol synchronization calls core.serialize_* directly and is
-	 * unaffected; battery-backed SRAM remains normal. */
+	/* Save states are deliberately unavailable for every armed session. Stock
+	 * minarch still draws its Save and Load rows, so returning zero here and
+	 * failing the calls below is what makes them fail closed. Protocol
+	 * synchronization calls core.serialize_* directly and is unaffected;
+	 * battery-backed SRAM remains normal. */
 	if (session_active) return 0;
 	return core.serialize_size();
 }
