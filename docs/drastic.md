@@ -81,7 +81,9 @@ launches are DraStic as it was.
 ## Why this works where the hand-written model did not
 
 `docs/drastic-brick-devbridge-progress.md` records the earlier model in
-detail. Its last finding (2026-09-04) was that the lobby always died after
+detail. It held an Asphalt Urban GT 2 lobby but sent the guest to
+"Communication error" when the host started; with the port that start
+transition goes through to a race. Its last finding (2026-09-04) was that the lobby always died after
 1.5 to 2.5 s of the host's emulated time, whatever the transport did. The
 host ran at 0.1x real time (blocked on replies) and the client at 0.9x.
 
@@ -105,6 +107,7 @@ frontend on a PC, joining over the house Wi-Fi (`drastic-wifi/devbridge/peer/`):
 | host | DSperate, joins | UDP through the house AP, 22 ms mean RTT, 90 ms spikes | room found, lobby 2/8, CUT OFF, VS, race; 35-49 fps |
 | guest | DSperate hosts | UDP over an SSH TCP tunnel | CUT OFF fails at 25 ms waits; with 100 ms: race, 24-37 fps |
 | host, real Netplay session (Host over WiFi) | DSperate, joins | house AP | race; `check.sh dsp mariokart`: PASS, 37.9 fps average |
+| host, Asphalt: Urban GT 2, real session | DSperate, joins | house AP | HOST GAME, both listed, start, vehicle select, race; 25-29 fps |
 
 DraStic itself used 15% of the Brick's CPU during these races; the rest was
 waiting on the link. At those round trips DSperate itself only managed about
