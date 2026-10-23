@@ -57,8 +57,19 @@ and use the game's own wireless menu: one player creates a group, the other
 joins it. Use the ad hoc network: through a router the games run at about a
 third of full speed. On a Trimui Brick and an RG35XX H, Mario Kart DS races
 run at about 50 fps (menus at full speed) and Asphalt: Urban GT 2 at about 57. DSP.pak is built for tg5040, tg5050 and h700.
+
+If you already use NDS.pak (DraStic), turn on **Nintendo DS (DraStic)**
+instead, or as well. Netplay doesn't ship DraStic: it adds local wireless to the
+NDS.pak already on your card (the DraStic 2.5.2.0 build that
+minui-nintendo-ds-pak ships) and leaves your DraStic settings alone. Turning it
+off gives NDS.pak its own launcher back. Games stay in `Roms/Nintendo DS (NDS)`.
+On a Trimui Brick and an RG35XX H, both on DraStic, Mario Kart DS races run at
+55-58 fps over ad hoc. DraStic and DSperate speak the same protocol, so each
+device can use either; a mixed pair runs at DSperate's pace. The DraStic overlay
+is built for tg5040, tg5050 and h700.
+
 Save states are off while the two consoles are talking. Details and
-measurements: [docs/dsperate.md](docs/dsperate.md).
+measurements: [docs/dsperate.md](docs/dsperate.md) and [docs/drastic.md](docs/drastic.md).
 
 ## Compatibility
 
@@ -75,18 +86,20 @@ I'm trying to make everything compatible, but I only have a Trimui Brick and Miy
 
 ## Supported Systems
 
-| Core | Platform |
-|------|----------|
-| FCEUmm | NES / Famicom |
-| Snes9x | SNES / Super Famicom |
-| Supafaust | SNES / Super Famicom |
-| PicoDrive | Sega Genesis / Mega Drive, Sega CD, 32X |
-| PCSX | PlayStation |
-| gpSP | Game Boy Advance |
-| mGBA | Game Boy Advance |
-| Gambatte | Game Boy Color |
-| Gambatte | Game Boy |
-| DSperate (DSP.pak) | Nintendo DS (local wireless, experimental) |
+| Core | Platform | Mode |
+|------|----------|------|
+| FCEUmm | NES / Famicom (Famicom Disk System untested) | Shared screen |
+| Snes9x | SNES / Super Famicom | Shared screen |
+| Snes9x 2005 | SNES / Super Famicom (Miyoo A30) | Shared screen; pairs with other devices through Supafaust |
+| Supafaust | SNES / Super Famicom | Shared screen; also the SNES compatibility core |
+| PicoDrive | Sega Genesis / Mega Drive (Master System, Game Gear, SG-1000, Sega CD and 32X untested) | Shared screen |
+| PCSX ReARMed | PlayStation | Shared screen, experimental: the A30 cannot stay in sync with the other devices |
+| gpSP | Game Boy Advance | Link (Wireless Adapter) |
+| mGBA | Game Boy Advance | Instanced link (experimental) |
+| Gambatte | Game Boy / Game Boy Color | Link cable, or instanced link (experimental) |
+| DSperate (DSP.pak) | Nintendo DS | Local wireless (experimental) |
+| DraStic (NDS.pak) | Nintendo DS | Local wireless (experimental) |
+| FBNeo | Arcade | Shared screen, untested |
 
 ## Installation
 
