@@ -155,8 +155,9 @@ dsp_seed_config() {
     fi
 
     # Bumped when the templates change in a way an existing config must pick
-    # up: 2 made the pad mappings positional and turned face_fix off.
-    _seed="$PROFILE_INI@2"
+    # up: 2 made the pad mappings positional and turned face_fix off; 3 moved
+    # the face-button hotkeys to match, so MENU+A (as labelled) still quits.
+    _seed="$PROFILE_INI@3"
     if [ -f "$DSP_DEVICE_FILE" ] && [ "$(cat "$DSP_DEVICE_FILE")" = "$_seed" ]; then
         return 0
     fi

@@ -6,7 +6,10 @@
 # once by hand (the first boot asks for a nickname and emblem).
 #
 # MULTIPLAYER -> host CREATE GROUP (Normal) -> guest joins the room -> lobby
-# shows 2/8 on both and holds -> host CUT OFF -> VS -> characters -> karts.
+# shows 2/8 on both and holds -> host CUT OFF -> VS -> characters -> karts ->
+# settings -> Figure-8 Circuit -> a minute of racing -> both logs checked.
+# Run over Netplay's ad hoc network: through an access point the MP round
+# trips leave the race at a third of full speed.
 #
 # Run with run.sh (host first). References are per platform and role; the
 # committed set is a Brick (tg5040) hosting and an RG35XXH (h700) joining.
@@ -65,9 +68,26 @@ WAIT 3000
 host:VERIFY_WAIT {host_refs}/dsp-mk-kart-host.png 8000
 guest:VERIFY_WAIT {guest_refs}/dsp-mk-kart-guest.png 8000
 
-# Karts confirmed: the course and cc selection follow on the host.
+# Karts confirmed: GAME SETTINGS, which only the host can change.
 all:TRM sh {helpers}/keys.sh --bg a:0.2:0
 WAIT 6000
-all:SCREEN dsp-mk-after-kart
-WAIT 6000
-all:SCREEN dsp-mk-after-kart-2
+host:VERIFY_WAIT {host_refs}/dsp-mk-settings-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-settings-guest.png 10000
+
+# Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK. The guest follows.
+host:TRM sh {helpers}/keys.sh down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.8 a:0.2:4 a:0.2:3 a:0.2:3 a:0.2:0
+WAIT 15000
+all:SCREEN dsp-mk-race-start
+
+# A minute of racing on both, then both quit (MENU+A) so DSP.pak archives the
+# verbose log, which check.sh reads: both radios in the session, and the
+# session's average speed across menus and race.
+all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
+WAIT 30000
+all:SCREEN dsp-mk-race-30s
+WAIT 32000
+all:SCREEN dsp-mk-race-60s
+all:TRM sh {helpers}/keys.sh menu+a:0.4:0
+all:WAIT_FOR devbridge 30000
+host:TRM sh {helpers}/check.sh dsp mariokart 50
+guest:TRM sh {helpers}/check.sh dsp mariokart 50

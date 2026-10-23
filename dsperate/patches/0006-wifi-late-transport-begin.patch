@@ -14,14 +14,14 @@ the game's MP commands all failed until it reported a communication error.
 
 Wifi::set_transport now ends the old transport and begins the new one when
 the radio is already on. DS_LAN_LOG logs the session's radio on/off traffic
-(without DS_WIFI_LOG's per-frame Wi-Fi trace), and the DS_VERBOSE wait
-summary includes the radio mask.
+(without DS_WIFI_LOG's per-frame Wi-Fi trace), and the DS_VERBOSE summary
+becomes "lan pacing: 600 frames in Nms (F fps), ..." with the radio mask.
 ---
  src/core/io/wifi.h        | 11 ++++++++++-
- src/frontend/sdl/main.cpp |  6 +++---
+ src/frontend/sdl/main.cpp | 14 ++++++++++----
  src/net/lan_mp.cpp        | 12 +++++++-----
  src/net/lan_mp.h          |  1 +
- 4 files changed, 21 insertions(+), 9 deletions(-)
+ 4 files changed, 28 insertions(+), 10 deletions(-)
 
 diff --git a/src/core/io/wifi.h b/src/core/io/wifi.h
 index 7ddcdc2..6b5abac 100644
@@ -46,10 +46,10 @@ index 7ddcdc2..6b5abac 100644
    // Frames actually put on the air, not just radio power-on. Diagnostic
    // only; not in save state.
 diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
-index 64c40b0..4577852 100644
+index 64c40b0..a41621b 100644
 --- a/src/frontend/sdl/main.cpp
 +++ b/src/frontend/sdl/main.cpp
-@@ -3721,12 +3721,12 @@ sdl_ready:
+@@ -3721,12 +3721,18 @@ sdl_ready:
      const Uint64 t0 = SDL_GetPerformanceCounter();
  #if DSPERATE_NET
      if (lan) lan->process();   // ENet and discovery, once per frame, on this thread
@@ -57,11 +57,18 @@ index 64c40b0..4577852 100644
 +    // Under DS_VERBOSE, the MP waits every 600 frames of a live session: the
      // first thing to look at when a game reports a communication error.
      if (lan && lan->active() && verbose() && nds.frame_count % 600 == 0) {
-       static unsigned last_n = 0, last_to = 0; static double last_ms = 0;
+-      static unsigned last_n = 0, last_to = 0; static double last_ms = 0;
 -      VLOG("lan: last 10 s: %u waits, %.1f ms waiting, %u timeouts (max %.1f ms so far)\n",
 -           lan->wait_count() - last_n, lan->wait_total_ms() - last_ms, lan->wait_timeouts() - last_to, lan->wait_max_ms());
-+      VLOG("lan: last 600 frames: %u waits, %.1f ms waiting, %u timeouts (max %.1f ms so far), radios %04x\n",
-+           lan->wait_count() - last_n, lan->wait_total_ms() - last_ms, lan->wait_timeouts() - last_to, lan->wait_max_ms(), lan->connected_mask());
++      static unsigned last_n = 0, last_to = 0; static double last_ms = 0; static Uint32 last_tick = 0;
++      const Uint32 now_tick = SDL_GetTicks();
++      if (last_tick) {
++        const Uint32 wall = now_tick - last_tick;
++        VLOG("lan pacing: 600 frames in %ums (%.1f fps), %u waits, %.1f ms waiting, %u timeouts (max %.1f ms so far), radios %04x\n",
++             wall, wall ? 600000.0 / wall : 0.0, lan->wait_count() - last_n, lan->wait_total_ms() - last_ms,
++             lan->wait_timeouts() - last_to, lan->wait_max_ms(), lan->connected_mask());
++      }
++      last_tick = now_tick;
        last_n = lan->wait_count(); last_ms = lan->wait_total_ms(); last_to = lan->wait_timeouts();
      }
      if (slirp) slirp->process();
