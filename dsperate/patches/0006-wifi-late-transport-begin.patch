@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bmpriest <benjamin.m.priest@gmail.com>
+Date: Fri, 23 Oct 2026 04:04:25 -0600
+Subject: [PATCH] wifi: a transport attached while the radio is on says begin()
+
+MpTransport::begin() -- which tells the other consoles this one's radio is
+on, and which the host needs before it will wait for that console's MP
+replies -- was only called from the power-on edge. A session that comes up
+after the game has powered its radio (a --lan-join guest still waiting for
+its host, or the guest scan that runs once the game is on the air) attached
+its transport too late and never announced itself. The host's connected
+mask then lacked the guest, recv_replies returned at once with nothing, and
+the game's MP commands all failed until it reported a communication error.
+
+Wifi::set_transport now ends the old transport and begins the new one when
+the radio is already on. DS_LAN_LOG logs the session's radio on/off traffic
+(without DS_WIFI_LOG's per-frame Wi-Fi trace), and the DS_VERBOSE wait
+summary includes the radio mask.
+---
+ src/core/io/wifi.h        | 11 ++++++++++-
+ src/frontend/sdl/main.cpp |  6 +++---
+ src/net/lan_mp.cpp        | 12 +++++++-----
+ src/net/lan_mp.h          |  1 +
+ 4 files changed, 21 insertions(+), 9 deletions(-)
+
+diff --git a/src/core/io/wifi.h b/src/core/io/wifi.h
+index 7ddcdc2..6b5abac 100644
+--- a/src/core/io/wifi.h
++++ b/src/core/io/wifi.h
+@@ -34,7 +34,16 @@ public:
+   void us_timer();
+ 
+   // Outside world. Null means nobody is listening.
+-  void set_transport(MpTransport* mp) { mp_ = mp; }
++  // A transport attached while the radio is already on joins the conversation
++  // now: begin() is otherwise only said at power-on, and a session that comes
++  // up later (a guest joining once the game is on the air) would never tell
++  // its peers it is listening, so the host would never wait for its replies.
++  void set_transport(MpTransport* mp) {
++    if (mp == mp_) return;
++    if (mp_ && on_) mp_->end();
++    mp_ = mp;
++    if (mp_ && on_) mp_->begin();
++  }
+   void set_net_driver(NetDriver* net) { net_ = net; }
+   // Frames actually put on the air, not just radio power-on. Diagnostic
+   // only; not in save state.
+diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
+index 64c40b0..4577852 100644
+--- a/src/frontend/sdl/main.cpp
++++ b/src/frontend/sdl/main.cpp
+@@ -3721,12 +3721,12 @@ sdl_ready:
+     const Uint64 t0 = SDL_GetPerformanceCounter();
+ #if DSPERATE_NET
+     if (lan) lan->process();   // ENet and discovery, once per frame, on this thread
+-    // Under DS_VERBOSE, the MP waits every ten seconds of a live session: the
++    // Under DS_VERBOSE, the MP waits every 600 frames of a live session: the
+     // first thing to look at when a game reports a communication error.
+     if (lan && lan->active() && verbose() && nds.frame_count % 600 == 0) {
+       static unsigned last_n = 0, last_to = 0; static double last_ms = 0;
+-      VLOG("lan: last 10 s: %u waits, %.1f ms waiting, %u timeouts (max %.1f ms so far)\n",
+-           lan->wait_count() - last_n, lan->wait_total_ms() - last_ms, lan->wait_timeouts() - last_to, lan->wait_max_ms());
++      VLOG("lan: last 600 frames: %u waits, %.1f ms waiting, %u timeouts (max %.1f ms so far), radios %04x\n",
++           lan->wait_count() - last_n, lan->wait_total_ms() - last_ms, lan->wait_timeouts() - last_to, lan->wait_max_ms(), lan->connected_mask());
+       last_n = lan->wait_count(); last_ms = lan->wait_total_ms(); last_to = lan->wait_timeouts();
+     }
+     if (slirp) slirp->process();
+diff --git a/src/net/lan_mp.cpp b/src/net/lan_mp.cpp
+index b6f30bb..47845b1 100644
+--- a/src/net/lan_mp.cpp
++++ b/src/net/lan_mp.cpp
+@@ -47,7 +47,7 @@ u32 ms_now() {
+   using namespace std::chrono;
+   return static_cast<u32>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+ }
+-bool lan_log() { static const bool on = std::getenv("DS_WIFI_LOG") != nullptr; return on; }
++bool lan_log() { static const bool on = std::getenv("DS_WIFI_LOG") != nullptr || std::getenv("DS_LAN_LOG") != nullptr; return on; }
+ #define LAN_LOG(...) do { if (lan_log()) std::fprintf(stderr, "[lan] " __VA_ARGS__); } while (0)
+ void put32(u8* p, u32 v) { p[0] = u8(v); p[1] = u8(v >> 8); p[2] = u8(v >> 16); p[3] = u8(v >> 24); }
+ u32 get32(const u8* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (u32(p[3]) << 24); }
+@@ -348,8 +348,8 @@ void LanMp::process_host_event(ENetEvent& ev) {
+       if (connected_mask_ & (1 << me_.id)) { const u8 c = Cmd_PlayerConnect; enet_peer_send(ev.peer, Chan_Cmd, enet_packet_create(&c, 1, ENET_PACKET_FLAG_RELIABLE)); }
+       break;
+     }
+-    case Cmd_PlayerConnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) connected_mask_ |= static_cast<u16>(1 << p->id); break;
+-    case Cmd_PlayerDisconnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) connected_mask_ &= static_cast<u16>(~(1 << p->id)); break;
++    case Cmd_PlayerConnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) { connected_mask_ |= static_cast<u16>(1 << p->id); LAN_LOG("player %d radio on (mask %04x)\n", p->id, connected_mask_); } break;
++    case Cmd_PlayerDisconnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) { connected_mask_ &= static_cast<u16>(~(1 << p->id)); LAN_LOG("player %d radio off (mask %04x)\n", p->id, connected_mask_); } break;
+     default: break;
+     }
+     enet_packet_destroy(ev.packet);
+@@ -401,8 +401,8 @@ void LanMp::process_client_event(ENetEvent& ev) {
+       }
+       break;
+     }
+-    case Cmd_PlayerConnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) connected_mask_ |= static_cast<u16>(1 << p->id); break;
+-    case Cmd_PlayerDisconnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) connected_mask_ &= static_cast<u16>(~(1 << p->id)); break;
++    case Cmd_PlayerConnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) { connected_mask_ |= static_cast<u16>(1 << p->id); LAN_LOG("player %d radio on (mask %04x)\n", p->id, connected_mask_); } break;
++    case Cmd_PlayerDisconnect: if (ev.packet->dataLength == 1) if (Player* p = static_cast<Player*>(ev.peer->data)) { connected_mask_ &= static_cast<u16>(~(1 << p->id)); LAN_LOG("player %d radio off (mask %04x)\n", p->id, connected_mask_); } break;
+     default: break;
+     }
+     enet_packet_destroy(ev.packet);
+@@ -500,6 +500,7 @@ void LanMp::process() {
+ void LanMp::begin() {
+   if (!host_) return;
+   connected_mask_ |= static_cast<u16>(1 << me_.id);
++  LAN_LOG("radio on: telling the session (mask %04x)\n", connected_mask_);
+   last_host_id_ = -1; last_host_peer_ = nullptr;
+   const u8 cmd = Cmd_PlayerConnect;
+   enet_host_broadcast(host_, Chan_Cmd, enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE));
+@@ -507,6 +508,7 @@ void LanMp::begin() {
+ void LanMp::end() {
+   if (!host_) return;
+   connected_mask_ &= static_cast<u16>(~(1 << me_.id));
++  LAN_LOG("radio off: telling the session (mask %04x)\n", connected_mask_);
+   const u8 cmd = Cmd_PlayerDisconnect;
+   enet_host_broadcast(host_, Chan_Cmd, enet_packet_create(&cmd, 1, ENET_PACKET_FLAG_RELIABLE));
+ }
+diff --git a/src/net/lan_mp.h b/src/net/lan_mp.h
+index de8c934..e48c439 100644
+--- a/src/net/lan_mp.h
++++ b/src/net/lan_mp.h
+@@ -91,6 +91,7 @@ public:
+   static constexpr int kDefaultRecvTimeoutMs = 25;
+   void set_recv_timeout_ms(int ms);
+   int recv_timeout_ms() const { return recv_timeout_ms_; }
++  u16 connected_mask() const { return connected_mask_; }   // players whose radio is on, by id
+ 
+   // MpTransport
+   void begin() override;

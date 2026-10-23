@@ -255,6 +255,19 @@ dsp_netplay_args() {
         return 0
         ;;
     esac
+    # How long one MP exchange may hold a frame before it is dropped. DSperate's
+    # default (25 ms) suits a wired LAN; the session may carry its own.
+    _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$DSP_NET_SESSION" | head -n 1)"
+    case "$_timeout" in
+    "" | *[!0-9]*) ;;
+    *) export DS_LAN_TIMEOUT_MS="$_timeout" ;;
+    esac
+    # Netplay's verbose logs turn on DSperate's own, which include the MP wait
+    # statistics a communication error has to be diagnosed from.
+    if grep -q '^verbose_logs=1$' "$DSP_NET_SESSION" 2>/dev/null; then
+        export DS_VERBOSE=1 DS_LAN_LOG=1
+    fi
+
     # The auto state is where this console was when it last quit, not where the
     # other one is: a session boots fresh unless the player picked a slot.
     [ -n "$DSP_RESUME_ARGS" ] || DSP_RESUME_ARGS="--no-autoload"

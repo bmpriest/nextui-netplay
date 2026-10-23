@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bmpriest <benjamin.m.priest@gmail.com>
+Date: Fri, 23 Oct 2026 03:54:25 -0600
+Subject: [PATCH] net: make the LAN MP wait configurable, and report it under
+ DS_VERBOSE
+
+A reply or host-packet wait could block the emulation thread for at most
+25 ms, then the exchange was dropped. That suits a wired LAN, but a Wi-Fi
+access point's jitter exceeds it often (a quarter of pings between two
+handhelds on one AP, measured), and a game that loses enough exchanges
+gives up with a communication error.
+
+net.lan_timeout_ms (DS_LAN_TIMEOUT_MS wins) sets the bound, 5..250, default
+25 as before. Under DS_VERBOSE the frontend logs the waits, their total time
+and timeouts every ten seconds of a live session.
+---
+ src/frontend/sdl/main.cpp | 21 +++++++++++++++++++--
+ src/net/lan_mp.cpp        |  6 ++++--
+ src/net/lan_mp.h          |  9 ++++++++-
+ 3 files changed, 31 insertions(+), 5 deletions(-)
+
+diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
+index 8c9d84d..64c40b0 100644
+--- a/src/frontend/sdl/main.cpp
++++ b/src/frontend/sdl/main.cpp
+@@ -2781,6 +2781,15 @@ sdl_ready:
+     t.frames = frames;
+     toast_queue.push_back(std::move(t));
+   };
++  // net.lan_timeout_ms (DS_LAN_TIMEOUT_MS wins): how long one MP wait may
++  // hold the frame. Over a Wi-Fi access point, raise it before the games give up.
++  auto make_lan = [&] {
++    auto l = std::make_unique<ds::net::LanMp>();
++    const char* env = std::getenv("DS_LAN_TIMEOUT_MS");
++    l->set_recv_timeout_ms(env ? std::atoi(env) : static_cast<int>(cfg.num("net.lan_timeout_ms", ds::net::LanMp::kDefaultRecvTimeoutMs)));
++    if (l->recv_timeout_ms() != ds::net::LanMp::kDefaultRecvTimeoutMs) VLOG("lan: MP waits bounded at %d ms\n", l->recv_timeout_ms());
++    return l;
++  };
+   set_net_mode = [&](const std::string& mode) {
+     // Down first: a guest says goodbye rather than going silent.
+     join_pending = false;
+@@ -2815,7 +2824,7 @@ sdl_ready:
+         VLOG("internet: up, DNS %s\n", where.c_str());
+       }
+     } else if (mode == "auto" || mode == "guest" || mode == "host" || mode == "join") {
+-      lan = std::make_unique<ds::net::LanMp>();
++      lan = make_lan();
+       bool up = lan->ok();
+       if (up && (mode == "auto" || mode == "guest")) {
+         // Same scan either way; auto may fall back to hosting, guest may not.
+@@ -2867,7 +2876,7 @@ sdl_ready:
+   constexpr Uint32 kScanMs = 2500;   // as start_auto: a host beacons once a second
+   auto begin_guest_scan = [&] {
+     guest_retry_armed = false;
+-    if (!lan) lan = std::make_unique<ds::net::LanMp>();
++    if (!lan) lan = make_lan();
+     if (!lan->ok() || !lan->start_discovery()) {
+       std::fprintf(stderr, "lan: %s\n", lan->error().c_str());
+       lan.reset();
+@@ -3712,6 +3721,14 @@ sdl_ready:
+     const Uint64 t0 = SDL_GetPerformanceCounter();
+ #if DSPERATE_NET
+     if (lan) lan->process();   // ENet and discovery, once per frame, on this thread
++    // Under DS_VERBOSE, the MP waits every ten seconds of a live session: the
++    // first thing to look at when a game reports a communication error.
++    if (lan && lan->active() && verbose() && nds.frame_count % 600 == 0) {
++      static unsigned last_n = 0, last_to = 0; static double last_ms = 0;
++      VLOG("lan: last 10 s: %u waits, %.1f ms waiting, %u timeouts (max %.1f ms so far)\n",
++           lan->wait_count() - last_n, lan->wait_total_ms() - last_ms, lan->wait_timeouts() - last_to, lan->wait_max_ms());
++      last_n = lan->wait_count(); last_ms = lan->wait_total_ms(); last_to = lan->wait_timeouts();
++    }
+     if (slirp) slirp->process();
+     // Edge-triggered: the game switching its radio on is when we look too.
+     {
+diff --git a/src/net/lan_mp.cpp b/src/net/lan_mp.cpp
+index 3d76853..b6f30bb 100644
+--- a/src/net/lan_mp.cpp
++++ b/src/net/lan_mp.cpp
+@@ -57,6 +57,8 @@ LanMp::LanMp() {
+   if (enet_initialize() != 0) { err_ = "enet_initialize failed"; return; }
+   inited_ = true;
+ }
++void LanMp::set_recv_timeout_ms(int ms) { recv_timeout_ms_ = std::clamp(ms, 5, 250); }
++
+ LanMp::~LanMp() {
+   cancel_join();
+   end_session();
+@@ -414,7 +416,7 @@ void LanMp::process_lan(int type) {
+   if (!host_) return;
+   struct WaitClock {
+     LanMp& l; int type; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+-    ~WaitClock() { if (type != 2) return; const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); l.wait_count_++; l.wait_total_ms_ += ms; if (ms > l.wait_max_ms_) l.wait_max_ms_ = ms; if (ms >= RECV_TIMEOUT_MS - 1) l.wait_timeouts_++; }
++    ~WaitClock() { if (type != 2) return; const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); l.wait_count_++; l.wait_total_ms_ += ms; if (ms > l.wait_max_ms_) l.wait_max_ms_ = ms; if (ms >= l.recv_timeout_ms_ - 1) l.wait_timeouts_++; }
+   } wait_clock{*this, type};
+   u32 time_last = ms_now();
+   while (!rx_.empty()) {
+@@ -430,7 +432,7 @@ void LanMp::process_lan(int type) {
+     }
+     break;
+   }
+-  int timeout = type == 2 ? RECV_TIMEOUT_MS : 0;
++  int timeout = type == 2 ? recv_timeout_ms_ : 0;
+   time_last = ms_now();
+   ENetEvent ev;
+   while (enet_host_service(host_, &ev, static_cast<u32>(timeout)) > 0) {
+diff --git a/src/net/lan_mp.h b/src/net/lan_mp.h
+index 9aba536..de8c934 100644
+--- a/src/net/lan_mp.h
++++ b/src/net/lan_mp.h
+@@ -87,6 +87,10 @@ public:
+   double wait_total_ms() const { return wait_total_ms_; }
+   double wait_max_ms() const { return wait_max_ms_; }
+   unsigned wait_timeouts() const { return wait_timeouts_; }   // waits that ran the whole recv timeout
++  // The bound on one reply/host-packet wait, in milliseconds (clamped to 5..250).
++  static constexpr int kDefaultRecvTimeoutMs = 25;
++  void set_recv_timeout_ms(int ms);
++  int recv_timeout_ms() const { return recv_timeout_ms_; }
+ 
+   // MpTransport
+   void begin() override;
+@@ -125,7 +129,10 @@ private:
+   Player me_;
+   u32 host_address_ = 0;
+   u16 connected_mask_ = 0;
+-  static constexpr int RECV_TIMEOUT_MS = 25;
++  // How long a reply/host-packet wait may block the emulation thread. 25 ms
++  // suits a wired LAN; a Wi-Fi access point's jitter can exceed it often, and
++  // every miss is a dropped MP exchange the game may give up on.
++  int recv_timeout_ms_ = kDefaultRecvTimeoutMs;
+   static constexpr u32 STALE_MS = 128;   // stale-packet window; melonDS uses 16
+   int last_host_id_ = -1;
+   _ENetPeer* last_host_peer_ = nullptr;
