@@ -21,3 +21,4 @@ logs/
 docs/evals
 devbridge-sessions/
 .cache/
+drastic-wifi/build*/obj/

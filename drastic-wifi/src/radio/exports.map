@@ -1,0 +1,4 @@
+/* DraStic finds this library by LD_PRELOAD; its constructor does the rest.
+ * Nothing is exported, so nothing in it can interpose on DraStic or its
+ * other preloads (the libstdc++ linked in included). */
+{ local: *; };
