@@ -1,0 +1,114 @@
+# Mario Kart DS - DraStic (NDS.pak + Netplay's radio overlay) hosting, DSperate
+# (DSP.pak) joining, over the Netplay session.
+#
+# The two emulators share melonDS's LAN protocol, so a TrimUI with DraStic and
+# an H700 with DSperate race each other. The host needs Settings > Nintendo DS
+# (DraStic) on and its ROM at Roms/Nintendo DS (NDS)/mariokart.nds; the guest
+# needs DSP.pak and Roms/Nintendo DS (DSP)/mariokart.nds. Both need a Mario Kart
+# save made once by hand.
+#
+# DraStic is driven with BTN and second-long gaps: it misses keys.sh's short
+# holds, and Mario Kart drops the first D-pad press after its menu settles, so
+# a harmless RIGHT goes first and every A follows a VERIFY. The guest steps are
+# dsp-mkds.test's.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+guest:OPEN_GAME DSP "Nintendo DS (DSP)/mariokart.nds"
+all:WAIT_FOR game 30000
+
+WAIT 10000
+host:VERIFY_WAIT {host_refs}/nds-mk-menu.png 8000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 6000
+
+# MULTIPLAYER on both.
+host:BTN RIGHT
+WAIT 1000
+host:BTN DOWN
+WAIT 1500
+host:VERIFY_WAIT {host_refs}/nds-mk-menu-multiplayer.png 3000
+host:BTN A
+guest:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/nds-mk-groups.png 6000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 6000
+
+# The host creates a Normal group.
+host:BTN UP
+WAIT 1200
+host:BTN A
+WAIT 2500
+host:VERIFY_WAIT {host_refs}/nds-mk-normal-host.png 6000
+host:BTN A
+host:VERIFY_WAIT {host_refs}/nds-mk-seeking-host.png 10000
+
+# The guest's browser lists the room once a beacon arrives; then it joins.
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-rooms-guest.png 20000
+guest:TRM sh {helpers}/keys.sh a:0.2:0
+WAIT 6000
+host:VERIFY_WAIT {host_refs}/nds-mk-lobby-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-lobby-guest.png 10000
+
+# The lobby has to hold.
+WAIT 15000
+host:VERIFY {host_refs}/nds-mk-lobby-host.png
+guest:VERIFY {guest_refs}/dsp-mk-lobby-guest.png
+
+# CUT OFF: the MP command/reply exchange starts. Mario Kart saves first.
+host:BTN A
+WAIT 12000
+host:VERIFY_WAIT {host_refs}/nds-mk-select-game.png 15000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-select-game.png 15000
+
+# VS; host Mario, guest Luigi; karts.
+host:BTN A
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/nds-mk-character.png 8000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-character.png 8000
+guest:TRM sh {helpers}/keys.sh right:0.2:0.6 a:0.2:3 a:0.2:0
+host:BTN A
+WAIT 4000
+host:BTN A
+WAIT 8000
+host:VERIFY_WAIT {host_refs}/nds-mk-settings-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-settings-guest.png 10000
+
+# Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK.
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 1200
+host:BTN A
+WAIT 4000
+host:BTN A
+WAIT 3000
+host:BTN A
+WAIT 3000
+host:BTN A
+WAIT 15000
+all:SCREEN nds-mk-race-start
+
+# A minute of racing, then both quit so each launcher archives its log:
+# DraStic through its own menu (MENU, UP, UP, A), DSperate with MENU+A.
+all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
+WAIT 30000
+all:SCREEN nds-mk-race-30s
+WAIT 32000
+all:SCREEN nds-mk-race-60s
+guest:TRM sh {helpers}/keys.sh menu+a:0.4:0
+host:BTN MENU
+WAIT 1500
+host:BTN UP
+WAIT 500
+host:BTN UP
+WAIT 500
+host:BTN A
+all:WAIT_FOR devbridge 45000
+host:TRM sh {helpers}/check.sh dsp mariokart 45
+guest:TRM sh {helpers}/check.sh dsp mariokart 45
