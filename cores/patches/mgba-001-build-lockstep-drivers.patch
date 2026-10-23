@@ -1,0 +1,20 @@
+diff --git a/libretro-build/Makefile.common b/libretro-build/Makefile.common
+index 8266a6a4f..8b388158f 100644
+--- a/libretro-build/Makefile.common
++++ b/libretro-build/Makefile.common
+@@ -78,6 +78,7 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
+ 					$(CORE_DIR)/src/gb/renderers/software.c \
+ 					$(CORE_DIR)/src/gb/serialize.c \
+ 					$(CORE_DIR)/src/gb/sio.c \
++					$(CORE_DIR)/src/gb/sio/lockstep.c \
+ 					$(CORE_DIR)/src/gb/timer.c \
+ 					$(CORE_DIR)/src/gb/video.c \
+ 					$(CORE_DIR)/src/gba/audio.c \
+@@ -108,6 +109,7 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
+ 					$(CORE_DIR)/src/gba/serialize.c \
+ 					$(CORE_DIR)/src/gba/sio.c \
+ 					$(CORE_DIR)/src/gba/sio/gbp.c \
++					$(CORE_DIR)/src/gba/sio/lockstep.c \
+ 					$(CORE_DIR)/src/gba/timer.c \
+ 					$(CORE_DIR)/src/gba/cart/vfame.c \
+ 					$(CORE_DIR)/src/gba/video.c \

@@ -1,0 +1,48 @@
+# Streets of Rage 2 - shared-screen lockstep (PicoDrive), two players.
+#
+# Title -> 2 PLAYERS -> each device picks its own fighter (host Max, guest
+# Skate, which also proves each device drives its own player) -> 90 seconds of
+# random brawling from both -> both logs must show agreement.
+#
+# Both devices show the same game, so the references differ only by platform.
+# Run with run.sh, which fills in {host_refs}, {guest_refs} and {helpers}.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME MD "Sega Genesis (MD)/Streets of Rage 2 (USA).zip"
+WAIT 3000
+guest:OPEN_GAME MD "Sega Genesis (MD)/Streets of Rage 2 (USA).zip"
+all:WAIT_FOR game 30000
+WAIT 12000
+
+# Intro -> title -> mode menu -> 2 PLAYERS, in one go: the idle menu rolls
+# into the attract demo sooner than both screens can be checked. Only
+# Player 1 drives the menus.
+host:TRM sh {helpers}/keys.sh start:0.15:2.5 start:0.15:2.5 down:0.15:0.8 start:0.15:3
+host:VERIFY_WAIT {host_refs}/sor2-select.png 6000
+guest:VERIFY_WAIT {guest_refs}/sor2-select.png 6000
+
+# Host moves to Max, guest to Skate. The portraits flash, so a match scores up
+# to ~8 while the unmoved screen is only 12.5 away on the Brick: keep the
+# default threshold of 10 here.
+host:TRM sh {helpers}/keys.sh --bg left:0.15:0
+guest:TRM sh {helpers}/keys.sh --bg right:0.15:0
+WAIT 1500
+host:VERIFY_WAIT {host_refs}/sor2-max-skate.png 6000
+guest:VERIFY_WAIT {guest_refs}/sor2-max-skate.png 6000
+
+# Both confirm, then fight.
+host:TRM sh {helpers}/keys.sh --bg start:0.15:0
+guest:TRM sh {helpers}/keys.sh --bg start:0.15:0
+WAIT 6000
+host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b left a a b b x right+x up down up+right down+right a+b
+guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b left a a b b x right+x up down up+right down+right a+b
+# Nothing but the game on the link while it plays: captures over a shared
+# radio show up as stalls.
+WAIT 93000
+all:SCREEN sor2-after-play
+
+host:TRM sh {helpers}/check.sh shared Streets_of_Rage_2 50
+guest:TRM sh {helpers}/check.sh shared Streets_of_Rage_2 50
+
+all:QUIT_GAME
+all:WAIT_FOR devbridge 30000

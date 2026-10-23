@@ -311,7 +311,9 @@ void* retro_get_memory_data(unsigned id) {
 }
 size_t retro_get_memory_size(unsigned id) {
 	HIT("get_memory_size");
-	if (id == RETRO_MEMORY_SAVE_RAM) return sizeof(save_ram);
+	/* PicoDrive reports no save RAM in some states and 16 KiB in others for
+	 * the same game, so one run's checkpoint can disagree with the next. */
+	if (id == RETRO_MEMORY_SAVE_RAM) return getenv("FAKE_NO_SAVE_RAM") ? 0 : sizeof(save_ram);
 	if (id == RETRO_MEMORY_RTC) return sizeof(rtc_ram);
 	return 0;
 }

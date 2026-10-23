@@ -1,18 +1,24 @@
 #include "netsetup.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <dlfcn.h>
+#include <dirent.h>
 #include <gnu/libc-version.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -32,6 +38,7 @@ typedef struct __attribute__((packed)) {
 
 static char ns_platform[16] = "tg5040";
 static char ns_pak[256];
+static char ns_state[256];
 static char ns_sd[128] = "/mnt/SDCARD";
 
 static int announce_fd = -1;
@@ -46,6 +53,87 @@ static char ns_ap_if[64];      /* interface hostapd was given, for teardown */
 static char joined_ssid[NS_SSID_LEN];  /* recorded into the session so the */
 static char joined_psk[NS_PSK_LEN];    /* launch stub can rejoin per game */
 static NS_ProgressFn ns_progress;      /* lets the UI animate a blocking join */
+static bool file_exists(const char* p);
+
+/* Everything that differs per platform lives in launcher/wifi-platform.sh, and
+ * this is how the app reaches it.
+ *
+ * A second copy of that table here would be the obvious alternative and is the
+ * wrong one: the launcher scripts need identical answers on every launch, and
+ * two tables in two languages drift silently - which is the class of bug this
+ * whole change exists to remove. What stays inline below is only what does not
+ * vary: `ip addr/link`, `killall wpa_supplicant`, and the AP-side `iw` calls,
+ * which are meaningful exactly on the platforms that can host at all.
+ *
+ * Cost is one short-lived shell per call, against `system()` calls this code
+ * already makes everywhere; the hottest caller polls once per second. */
+static int wifi_plat(const char* fmt, ...) {
+	char args[320];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(args, sizeof(args), fmt, ap);
+	va_end(ap);
+
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' SYSTEM_PATH='%s/.system/%s' "
+	         "sh '%s/launcher/wifi-platform.sh' %s",
+	         ns_sd, ns_platform, ns_sd, ns_platform, ns_pak, args);
+	return system(cmd);
+}
+
+/* First line of the helper's output, trimmed. Empty string when it says
+ * nothing, which every caller treats as "no answer" rather than an error. */
+static void wifi_plat_out(char* out, int len, const char* fmt, ...) {
+	out[0] = '\0';
+
+	char args[320];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(args, sizeof(args), fmt, ap);
+	va_end(ap);
+
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' SYSTEM_PATH='%s/.system/%s' "
+	         "sh '%s/launcher/wifi-platform.sh' %s 2>/dev/null",
+	         ns_sd, ns_platform, ns_sd, ns_platform, ns_pak, args);
+	FILE* f = popen(cmd, "r");
+	if (!f) return;
+	if (fgets(out, len, f)) {
+		char* nl = strpbrk(out, "\r\n");
+		if (nl) *nl = '\0';
+	}
+	pclose(f);
+}
+
+/* Ad hoc credentials arrive from Wi-Fi scans and LAN announcements, which any
+ * nearby device can forge, and end up in shell commands, supplicant/hostapd
+ * configs and the session file. Only the shapes Netplay itself generates are
+ * accepted: "nextui-" plus letters and digits, and an alphanumeric passphrase.
+ * Anything else (quotes, newlines, shell syntax) is dropped at the boundary. */
+static bool alnum_run(const char* s, size_t min, size_t max) {
+	size_t n = 0;
+	for (; s[n]; n++)
+		if (!isalnum((unsigned char)s[n])) return false;
+	return n >= min && n <= max;
+}
+
+bool NS_validAdhocSsid(const char* ssid) {
+	static const char prefix[] = NS_ADHOC_PREFIX "-";
+	return ssid && !strncmp(ssid, prefix, sizeof(prefix) - 1) &&
+	       alnum_run(ssid + sizeof(prefix) - 1, 1, NS_SSID_LEN - sizeof(prefix));
+}
+
+bool NS_validAdhocPsk(const char* psk) {
+	return psk && alnum_run(psk, 8, NS_PSK_LEN - 1);
+}
+
+/* Associated to this SSID, or to anything when ssid is NULL. */
+static bool wifi_associated(const char* ssid) {
+	if (ssid && ssid[0]) return wifi_plat("assoc '%s'", ssid) == 0;
+	return wifi_plat("assoc") == 0;
+}
 
 //////////////////////////////////////////////////////////////////////////////
 // environment
@@ -59,10 +147,44 @@ void NS_init(void) {
 	if (sd && sd[0]) snprintf(ns_sd, sizeof(ns_sd), "%s", sd);
 
 	snprintf(ns_pak, sizeof(ns_pak), "%s/Tools/%s/Netplay.pak", ns_sd, ns_platform);
+	snprintf(ns_state, sizeof(ns_state), "%s/.userdata/shared/Netplay", ns_sd);
+
+	/* Updates replace the pak directory, so no user preference or recovery
+	 * record may live underneath it. Migrate files from the historical location
+	 * without overwriting anything already present in the shared directory. */
+	char shared[256];
+	snprintf(shared, sizeof(shared), "%s/.userdata/shared", ns_sd);
+	mkdir(shared, 0777);
+	mkdir(ns_state, 0777);
+	char legacy[320];
+	snprintf(legacy, sizeof(legacy), "%s/state", ns_pak);
+	DIR* dir = opendir(legacy);
+	if (dir) {
+		struct dirent* entry;
+		while ((entry = readdir(dir))) {
+			if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+			char old_path[512], new_path[512];
+			snprintf(old_path, sizeof(old_path), "%s/%s", legacy, entry->d_name);
+			if (!strcmp(entry->d_name, "harness-backup")) {
+				snprintf(new_path, sizeof(new_path), "%s/netplay-harness", ns_state);
+				mkdir(new_path, 0777);
+				snprintf(new_path, sizeof(new_path), "%s/netplay-harness/session-backups", ns_state);
+			} else {
+				snprintf(new_path, sizeof(new_path), "%s/%s", ns_state, entry->d_name);
+			}
+			if (!file_exists(new_path)) rename(old_path, new_path);
+		}
+		closedir(dir);
+	}
+	char old_conf[320], new_conf[320];
+	snprintf(old_conf, sizeof(old_conf), "%s/session.conf", ns_pak);
+	snprintf(new_conf, sizeof(new_conf), "%s/session.conf", ns_state);
+	if (!file_exists(new_conf) && file_exists(old_conf)) rename(old_conf, new_conf);
 }
 
 const char* NS_platform(void) { return ns_platform; }
 const char* NS_pakPath(void)  { return ns_pak; }
+const char* NS_statePath(void) { return ns_state; }
 
 /* Read the first non-loopback IPv4 from `ip addr`. Cheaper and more portable
  * across these firmwares than getifaddrs, which busybox images vary on. */
@@ -145,19 +267,30 @@ static void ns_log(const char* fmt, ...) {
  * the thread that draws the UI. Nothing shelled out to from a screen may be
  * unbounded. Returns the number of lines read; kills the child on timeout.
  *
- * timeout(1) is not on these images, so the bound is enforced here: the pipe is
- * non-blocking and we give up on the clock. */
+ * timeout(1) is not on these images, so the bound is enforced here. popen()
+ * cannot be used: pclose() waits for the child, so a hung command blocked the
+ * caller after the deadline anyway. The shell runs in its own process group so
+ * the kill also reaches whatever it started. */
 /* Defined with the join code below; the scan helpers above need it. */
 static bool platform_ctrl_dir(char* out, int len);
 
 static int popen_bounded(const char* cmd, int timeout_ms,
                          void (*on_line)(const char*, void*), void* ctx) {
-	FILE* f = popen(cmd, "r");
-	if (!f) return -1;
-
-	int fd = fileno(f);
-	int flags = fcntl(fd, F_GETFL, 0);
-	if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+	int fds[2];
+	if (pipe(fds) < 0) return -1;
+	pid_t pid = fork();
+	if (pid < 0) { close(fds[0]); close(fds[1]); return -1; }
+	if (pid == 0) {
+		setpgid(0, 0);
+		dup2(fds[1], STDOUT_FILENO);
+		close(fds[0]);
+		close(fds[1]);
+		execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
+		_exit(127);
+	}
+	setpgid(pid, pid);  /* also here, so the kill below cannot race the child */
+	close(fds[1]);
+	int fd = fds[0];
 
 	struct timeval start;
 	gettimeofday(&start, NULL);
@@ -165,20 +298,26 @@ static int popen_bounded(const char* cmd, int timeout_ms,
 	char line[512];
 	size_t used = 0;
 	int lines = 0;
+	bool timed_out = false;
 
 	for (;;) {
 		struct timeval now;
 		gettimeofday(&now, NULL);
 		long ms = (now.tv_sec - start.tv_sec) * 1000L
 		        + (now.tv_usec - start.tv_usec) / 1000L;
-		if (ms > timeout_ms) {
-			ns_log("command timed out after %dms: %.60s\n", timeout_ms, cmd);
-			break;
-		}
+		if (ms > timeout_ms) { timed_out = true; break; }
 
-		char c;
-		ssize_t n = read(fd, &c, 1);
-		if (n == 1) {
+		struct pollfd p = { .fd = fd, .events = POLLIN };
+		int r = poll(&p, 1, (int)(timeout_ms - ms) + 1);
+		if (r < 0 && errno == EINTR) continue;
+		if (r <= 0) continue;  /* the clock check above ends it */
+
+		char buf[256];
+		ssize_t n = read(fd, buf, sizeof(buf));
+		if (n < 0 && errno == EINTR) continue;
+		if (n <= 0) break;                               /* EOF or error */
+		for (ssize_t i = 0; i < n; i++) {
+			char c = buf[i];
 			if (c == '\n' || used + 1 >= sizeof(line)) {
 				line[used] = '\0';
 				if (used && on_line) on_line(line, ctx);
@@ -187,39 +326,40 @@ static int popen_bounded(const char* cmd, int timeout_ms,
 			} else {
 				line[used++] = c;
 			}
-			continue;
 		}
-		if (n == 0) break;                               /* clean EOF */
-		if (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(20 * 1000); continue; }
-		break;
 	}
+	if (used) {  /* a last line without a newline */
+		line[used] = '\0';
+		if (on_line) on_line(line, ctx);
+		lines++;
+	}
+	close(fd);
 
-	pclose(f);
+	if (timed_out) {
+		ns_log("command timed out after %dms, killed: %.60s\n", timeout_ms, cmd);
+		kill(-pid, SIGKILL);
+	}
+	while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 	return lines;
 }
 
 static void ps_state_path(char* out, int len) {
-	snprintf(out, len, "%s/state/wifi_powersave", ns_pak);
+	snprintf(out, len, "%s/wifi_powersave", ns_state);
 }
 
-/* "on" / "off", as `iw` reports it. */
+/* "on" / "off". Empty where the platform has no power-save control at all
+ * (H700 has no `iw`), in which case there is nothing to record or restore. */
 static bool wifi_powerSaveGet(char* out, int len) {
-	FILE* f = popen("iw dev wlan0 get power_save 2>/dev/null "
-	                "| sed -n 's/.*Power save: *//p' | head -1", "r");
-	if (!f) return false;
-	bool ok = false;
-	if (fgets(out, len, f)) {
-		char* nl = strpbrk(out, "\r\n");
-		if (nl) *nl = '\0';
-		ok = out[0] != '\0';
-	}
-	pclose(f);
-	return ok;
+	wifi_plat_out(out, len, "powersave-get");
+	return out[0] != '\0';
 }
 
 void NS_wifiPowerSaveDisable(void) {
 	char prior[16] = "";
 	char path[512];
+	/* Off by choice: leave the radio as the platform configured it. pre-launch.sh
+	 * reads the same key from the settings file for the per-game re-apply. */
+	if (!NS_settings()->disable_powersave) return;
 	ps_state_path(path, sizeof(path));
 
 	/* Record the prior value once. Re-arming without disarming first must not
@@ -228,7 +368,25 @@ void NS_wifiPowerSaveDisable(void) {
 		FILE* f = fopen(path, "w");
 		if (f) { fprintf(f, "%s\n", prior); fclose(f); }
 	}
-	system("iw dev wlan0 set power_save off >/dev/null 2>&1");
+	wifi_plat("powersave off");
+}
+
+bool NS_wifiPowerSaveNeedsReload(void) {
+	return wifi_plat("powersave-needs-reload") == 0;
+}
+
+bool NS_wifiPowerSaveReload(char* err, int errlen) {
+	ns_log("reloading the wifi driver with power save off\n");
+	int rc = wifi_plat("powersave-reload off");
+	if (rc == 0) return true;
+	/* 3 is "driver back, no address yet": the supplicant usually finishes on
+	 * its own, so power save is off even though WiFi is not quite back. */
+	bool reloaded = WIFEXITED(rc) && WEXITSTATUS(rc) == 3;
+	snprintf(err, errlen, reloaded
+	         ? "Driver reloaded - WiFi is still reconnecting."
+	         : "Could not reload the WiFi driver - reboot to recover.");
+	ns_log("wifi driver reload exited %d\n", WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
+	return reloaded && !NS_wifiPowerSaveNeedsReload();
 }
 
 void NS_wifiPowerSaveRestore(void) {
@@ -241,7 +399,7 @@ void NS_wifiPowerSaveRestore(void) {
 		if (fgets(prior, sizeof(prior), f)) {
 			char* nl = strpbrk(prior, "\r\n");
 			if (nl) *nl = '\0';
-			if (!strcmp(prior, "on")) system("iw dev wlan0 set power_save on >/dev/null 2>&1");
+			if (!strcmp(prior, "on")) wifi_plat("powersave on");
 		}
 		fclose(f);
 		remove(path);
@@ -252,7 +410,7 @@ void NS_wifiPowerSaveRestore(void) {
 // settings
 //////////////////////////////////////////////////////////////////////////////
 
-const char* const NS_INST_CORE[NS_INST_CORES] = { "gambatte", "gpsp", "mgba" };
+const char* const NS_INST_CORE[NS_INST_CORES] = { "gambatte", "mgba" };
 
 /* Executable sharing is frozen and therefore defaults off. Compatibility cores
  * are local, pinned artifacts and are the safe default fallback. */
@@ -263,13 +421,15 @@ static NS_Settings ns_set = {
 	.verbose_logs = true,
 	.simple_client = false,
 	.add_gameswitcher = false,
+	.disable_powersave = false,
+	.dsperate = false,
 	.instanced     = NS_INST_OFF,
-	.inst_core     = { false, false, false },
+	.inst_core     = { false, false },
 };
 static bool ns_set_loaded = false;
 
 static void settings_path(char* out, int len) {
-	snprintf(out, len, "%s/state/settings", ns_pak);
+	snprintf(out, len, "%s/settings", ns_state);
 }
 
 static const char* compatibility_arch(void) {
@@ -314,6 +474,8 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "verbose_logs")) ns_set.verbose_logs = v != 0;
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
+		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
+		else if (!strcmp(k, "dsperate")) ns_set.dsperate = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -347,6 +509,8 @@ void NS_settingsSave(void) {
 	fprintf(f, "verbose_logs=%d\n", ns_set.verbose_logs ? 1 : 0);
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
+	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
+	fprintf(f, "dsperate=%d\n", ns_set.dsperate ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -369,6 +533,14 @@ void NS_settingsSave(void) {
  * (which is where mgba is - MGBA.pak, not the system cores dir). */
 bool NS_coreInstalled(const char* core) {
 	char p[640];
+	/* mGBA is intentionally installable from this pak, so its picker remains
+	 * available before an SD-card MGBA.pak exists. This path is platform-specific
+	 * and therefore also prevents unsupported devices enabling it. */
+	if (!strcmp(core, "mgba")) {
+		snprintf(p, sizeof(p), "%s/cores/mgba/%s/MGBA.pak/mgba_libretro.so",
+		         ns_pak, ns_platform);
+		return file_exists(p);
+	}
 
 	snprintf(p, sizeof(p), "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
 	if (file_exists(p)) return true;
@@ -381,6 +553,66 @@ bool NS_coreInstalled(const char* core) {
 	snprintf(cmd, sizeof(cmd),
 	         "ls '%s/Emus/%s'/*.pak/%s_libretro.so >/dev/null 2>&1", ns_sd, ns_platform, core);
 	return system(cmd) == 0;
+}
+
+/* pak-manage.sh's kind argument, and how an error names the pak. */
+static const char* const PAK_KIND[NS_PAK_COUNT] = { "mgba", "dsp" };
+static const char* const PAK_DIR[NS_PAK_COUNT]  = { "MGBA.pak", "DSP.pak" };
+static const char* const PAK_NAME[NS_PAK_COUNT] = { "mGBA", "DSP" };
+
+bool NS_pakAvailable(NS_ManagedPak pak) {
+	if (pak < 0 || pak >= NS_PAK_COUNT) return false;
+	char p[640];
+	snprintf(p, sizeof(p), "%s/cores/%s/%s/%s/launch.sh", ns_pak, PAK_KIND[pak], ns_platform, PAK_DIR[pak]);
+	return file_exists(p);
+}
+
+static bool pak_helper(NS_ManagedPak pak, const char* args, char* err, int errlen) {
+	char cmd[1280];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' NETPLAY_STATE='%s' "
+	         "sh '%s/launcher/pak-manage.sh' %s %s >/tmp/netplay-pak-result 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_state, ns_pak, PAK_KIND[pak], args);
+	int rc = system(cmd);
+	if (rc == 0) return true;
+	if (err && errlen) {
+		FILE* f = fopen("/tmp/netplay-pak-result", "r");
+		if (f && fgets(err, errlen, f)) {
+			char* nl = strpbrk(err, "\r\n"); if (nl) *nl = '\0';
+		} else snprintf(err, errlen, "%s file operation failed.", PAK_NAME[pak]);
+		if (f) fclose(f);
+	}
+	return false;
+}
+
+bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
+	if (!out) return false;
+	memset(out, 0, sizeof(*out));
+	if (!pak_helper(pak, "status", NULL, 0)) return false;
+	FILE* f = fopen("/tmp/netplay-pak-result", "r");
+	if (!f) return false;
+	char line[160];
+	while (fgets(line, sizeof(line), f)) {
+		char* nl = strpbrk(line, "\r\n"); if (nl) *nl = '\0';
+		char* eq = strchr(line, '='); if (!eq) continue;
+		*eq++ = '\0';
+		if (!strcmp(line, "installed")) out->installed = atoi(eq) != 0;
+		else if (!strcmp(line, "managed")) out->managed = atoi(eq) != 0;
+		else if (!strcmp(line, "missing")) out->missing = atoi(eq) != 0;
+		else if (!strcmp(line, "mismatch")) out->mismatch = atoi(eq) != 0;
+		else if (!strcmp(line, "mismatch_ignored")) out->mismatch_ignored = atoi(eq) != 0;
+		else if (!strcmp(line, "backup_date")) snprintf(out->backup_date, sizeof(out->backup_date), "%s", eq);
+	}
+	fclose(f);
+	return true;
+}
+
+bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "install", err, errlen); }
+bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "ignore", err, errlen); }
+bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen) {
+	char args[64];
+	snprintf(args, sizeof(args), "restore %d %d %d", restore_pak ? 1 : 0, saves ? 1 : 0, states ? 1 : 0);
+	return pak_helper(pak, args, err, errlen);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -516,6 +748,55 @@ static bool compatibility_core_path(const char* core, char* out, int len) {
 	return file_exists(out);
 }
 
+/* The broker answers every guest connection with a fresh manifest, and each
+ * entry costs a full read of the core plus a dlopen. Cores do not change during
+ * a session, so results are kept per file and reused while its size and mtime
+ * are unchanged; replacing a core still invalidates its entry. */
+static struct {
+	char         path[256];
+	off_t        size;
+	time_t       mtime;
+	bool         ok;
+	NS_CoreInfo  scan;
+	char         version[32];
+} core_file_cache[2 * NS_MAX_MANIFEST];
+
+static bool scan_core_file_cached(const char* path, NS_CoreInfo* out,
+                                  char* version, int vlen) {
+	struct stat st;
+	if (stat(path, &st) != 0) return false;
+	int slot = -1, free_slot = -1;
+	for (int i = 0; i < (int)(sizeof(core_file_cache) / sizeof(core_file_cache[0])); i++) {
+		if (!core_file_cache[i].path[0]) { if (free_slot < 0) free_slot = i; continue; }
+		if (!strcmp(core_file_cache[i].path, path)) { slot = i; break; }
+	}
+	if (slot >= 0 && core_file_cache[slot].size == st.st_size &&
+	    core_file_cache[slot].mtime == st.st_mtime) {
+		if (!core_file_cache[slot].ok) return false;
+		out->crc = core_file_cache[slot].scan.crc;
+		out->size = core_file_cache[slot].scan.size;
+		out->machine = core_file_cache[slot].scan.machine;
+		out->glibc = core_file_cache[slot].scan.glibc;
+		snprintf(version, vlen, "%s", core_file_cache[slot].version);
+		return true;
+	}
+
+	bool ok = scan_core_file(path, out);
+	version[0] = '\0';
+	if (ok) probe_version(path, version, vlen);
+	if (slot < 0) slot = free_slot;
+	if (slot >= 0) {
+		snprintf(core_file_cache[slot].path, sizeof(core_file_cache[slot].path), "%s", path);
+		core_file_cache[slot].size = st.st_size;
+		core_file_cache[slot].mtime = st.st_mtime;
+		core_file_cache[slot].ok = ok;
+		core_file_cache[slot].scan = *out;
+		snprintf(core_file_cache[slot].version, sizeof(core_file_cache[slot].version),
+		         "%s", version);
+	}
+	return ok;
+}
+
 int NS_coreManifest(NS_CoreInfo* out, int max) {
 	int n = 0;
 	for (size_t i = 0; i < sizeof(MANIFEST_CORES)/sizeof(MANIFEST_CORES[0]) && n < max; i++) {
@@ -525,19 +806,17 @@ int NS_coreManifest(NS_CoreInfo* out, int max) {
 		char path[256];
 		if (installed_core_path(MANIFEST_CORES[i], path, sizeof(path))) {
 			snprintf(out[n].path, sizeof(out[n].path), "%s", path);
-			if (scan_core_file(path, &out[n])) {
-				probe_version(path, out[n].version, sizeof(out[n].version));
+			if (scan_core_file_cached(path, &out[n], out[n].version,
+			                          sizeof(out[n].version)))
 				out[n].installed = true;
-			}
 		}
 
 		if (compatibility_core_path(MANIFEST_CORES[i], path, sizeof(path))) {
 			NS_CoreInfo compat;
 			memset(&compat, 0, sizeof(compat));
-			if (scan_core_file(path, &compat)) {
-				probe_version(path, out[n].compat_version, sizeof(out[n].compat_version));
+			if (scan_core_file_cached(path, &compat, out[n].compat_version,
+			                          sizeof(out[n].compat_version)))
 				out[n].compat_available = out[n].compat_version[0] != '\0';
-			}
 		}
 
 		if (!out[n].installed && !out[n].compat_available) continue;
@@ -553,7 +832,13 @@ int NS_coreManifest(NS_CoreInfo* out, int max) {
 //////////////////////////////////////////////////////////////////////////////
 
 #define CORE_MAGIC 0x4E504333u   /* 'NPC3': metadata-only compatibility protocol */
+#define CORE_BUSY  0x42555359u   /* 'BUSY': this session already admitted a peer */
 #define CORE_IO_MS   30000
+/* The host serves this from its render loop, so its budget is a frozen UI, not
+ * merely a slow transfer. The exchange is a few KB on a LAN: a healthy peer is
+ * done in well under a second, and anything approaching this is already a peer
+ * that is not coming back. */
+#define CORE_SERVE_IO_MS 8000
 
 typedef struct __attribute__((packed)) {
 	char     core[32];
@@ -568,10 +853,20 @@ typedef struct __attribute__((packed)) {
 } CoreWire;
 
 static int core_listen_fd = -1;
+static char core_last_peer[NS_IP_LEN];
 
 /* Bounded, so neither side can be parked forever by a peer that stops talking
- * mid-transfer - the failure that has bitten this codebase repeatedly. */
-static bool io_all(int fd, void* buf, size_t len, bool writing) {
+ * mid-transfer - the failure that has bitten this codebase repeatedly.
+ *
+ * The deadline only bounds anything if the socket can return control. It is
+ * checked between calls, so on a *blocking* socket recv() simply never comes
+ * back and none of this runs - which is what the host's accepted socket was:
+ * the listener is non-blocking, but accept() does not pass O_NONBLOCK to the
+ * connection on Linux, and unlike the client path nothing set a timeout on it.
+ * A peer that completed the TCP handshake and then went silent parked the
+ * host's render loop indefinitely. Every caller must give its socket a receive
+ * timeout; see core_socket_deadline. */
+static bool io_all_to(int fd, void* buf, size_t len, bool writing, long budget_ms) {
 	uint8_t* p = buf;
 	size_t done = 0;
 	struct timeval start, now;
@@ -580,7 +875,7 @@ static bool io_all(int fd, void* buf, size_t len, bool writing) {
 	while (done < len) {
 		gettimeofday(&now, NULL);
 		long ms = (now.tv_sec - start.tv_sec) * 1000L + (now.tv_usec - start.tv_usec) / 1000L;
-		if (ms > CORE_IO_MS) return false;
+		if (ms > budget_ms) return false;
 
 		ssize_t n = writing ? send(fd, p + done, len - done, MSG_NOSIGNAL)
 		                    : recv(fd, p + done, len - done, 0);
@@ -593,14 +888,38 @@ static bool io_all(int fd, void* buf, size_t len, bool writing) {
 	return true;
 }
 
-static bool instanced_gambatte_available(void);
+/* Retained for the frozen core-sharing block below, which is `#if 0` and so
+ * has no live caller - keeping it means that code still compiles unchanged if
+ * the setting ever returns. */
+__attribute__((unused))
+static bool io_all(int fd, void* buf, size_t len, bool writing) {
+	return io_all_to(fd, buf, len, writing, CORE_IO_MS);
+}
 
-static bool send_manifest(int fd, NS_CoreInfo* m, int n) {
+/* Give a socket a send/receive timeout, so a silent peer surfaces as EAGAIN and
+ * the deadline above is reachable. Well under the caller's budget, so the
+ * budget is what actually decides when to give up. */
+static void core_socket_deadline(int fd, long budget_ms) {
+	struct timeval tv = {
+		.tv_sec  = (budget_ms / 4) / 1000,
+		.tv_usec = ((budget_ms / 4) % 1000) * 1000,
+	};
+	if (!tv.tv_sec && !tv.tv_usec) tv.tv_usec = 250 * 1000;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+#define INST_CAP_GAMBATTE (1u << 0)
+#define INST_CAP_MGBA     (1u << 1)
+
+static uint32_t instanced_available_mask(void);
+
+static bool send_manifest_to(int fd, NS_CoreInfo* m, int n, long budget_ms) {
 	uint32_t hdr[5] = { htonl(CORE_MAGIC), htonl((uint32_t)n),
 	                    htonl(NS_settings()->compatibility_cores ? 1u : 0u),
 	                    htonl(NS_settings()->force_compatibility ? 1u : 0u),
-	                    htonl(instanced_gambatte_available() ? 1u : 0u) };
-	if (!io_all(fd, hdr, sizeof(hdr), true)) return false;
+	                    htonl(instanced_available_mask()) };
+	if (!io_all_to(fd, hdr, sizeof(hdr), true, budget_ms)) return false;
 	for (int i = 0; i < n; i++) {
 		CoreWire w;
 		memset(&w, 0, sizeof(w));
@@ -613,27 +932,28 @@ static bool send_manifest(int fd, NS_CoreInfo* m, int n) {
 		w.machine = htons(m[i].machine);
 		w.installed = m[i].installed ? 1 : 0;
 		w.compat_available = m[i].compat_available ? 1 : 0;
-		if (!io_all(fd, &w, sizeof(w), true)) return false;
+		if (!io_all_to(fd, &w, sizeof(w), true, budget_ms)) return false;
 	}
 	return true;
 }
 
-static int recv_manifest(int fd, NS_CoreInfo* out, int max,
+static int recv_manifest_to(int fd, NS_CoreInfo* out, int max, long budget_ms,
                          bool* peer_compat_enabled, bool* peer_force_compatibility,
-                         bool* peer_instanced) {
+                         uint32_t* peer_instanced) {
 	uint32_t hdr[5];
-	if (!io_all(fd, hdr, sizeof(hdr), false)) return -1;
+	if (!io_all_to(fd, hdr, sizeof(hdr), false, budget_ms)) return -1;
+	if (ntohl(hdr[0]) == CORE_BUSY) return -2;
 	if (ntohl(hdr[0]) != CORE_MAGIC) return -1;
 	int n = (int)ntohl(hdr[1]);
 	*peer_compat_enabled = ntohl(hdr[2]) != 0;
 	*peer_force_compatibility = ntohl(hdr[3]) != 0;
-	*peer_instanced = ntohl(hdr[4]) != 0;
+	*peer_instanced = ntohl(hdr[4]);
 	if (n < 0 || n > NS_MAX_MANIFEST) return -1;
 
 	int kept = 0;
 	for (int i = 0; i < n; i++) {
 		CoreWire w;
-		if (!io_all(fd, &w, sizeof(w), false)) return -1;
+		if (!io_all_to(fd, &w, sizeof(w), false, budget_ms)) return -1;
 		if (kept >= max) continue;
 		w.core[sizeof(w.core) - 1] = '\0';
 		w.version[sizeof(w.version) - 1] = '\0';
@@ -679,11 +999,11 @@ static bool compatibility_builds_match(const NS_CoreInfo* a, const NS_CoreInfo* 
 
 /* Rewrite only the generated compatibility selections, preserving role,
  * transport and hand-edited options. Both copies must agree because the
- * launcher reads state/session while session.conf is the durable template. */
+ * launcher reads session while session.conf is the durable shared template. */
 static bool write_compat_file(const char* path,
                               const char selected[][32], int count,
                               const char mismatched[][32], int mismatch_count,
-                              bool instanced_gambatte) {
+                              uint32_t instanced_mask) {
 	char tmp[560];
 	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
 	FILE* in = fopen(path, "r");
@@ -695,7 +1015,8 @@ static bool write_compat_file(const char* path,
 	while (fgets(line, sizeof(line), in))
 		if (strncmp(line, "compat_core.", 12) &&
 		    strncmp(line, "core_mismatch.", 14) &&
-		    strncmp(line, "instanced_gambatte=", 19)) fputs(line, out);
+		    strncmp(line, "instanced_gambatte=", 19) &&
+		    strncmp(line, "instanced_mgba=", 15)) fputs(line, out);
 	for (int i = 0; i < count; i++) fprintf(out, "compat_core.%s=1\n", selected[i]);
 	for (int i = 0; i < mismatch_count; i++)
 		fprintf(out, "core_mismatch.%s=1\n", mismatched[i]);
@@ -703,7 +1024,8 @@ static bool write_compat_file(const char* path,
 	 * agreement. Instanced play cannot be one-sided - a device running the
 	 * paired core against a peer running the ordinary network-serial core has
 	 * nothing to talk to - and both session files are rewritten here. */
-	fprintf(out, "instanced_gambatte=%d\n", instanced_gambatte ? 1 : 0);
+	fprintf(out, "instanced_gambatte=%d\n", (instanced_mask & INST_CAP_GAMBATTE) ? 1 : 0);
+	fprintf(out, "instanced_mgba=%d\n", (instanced_mask & INST_CAP_MGBA) ? 1 : 0);
 
 	fclose(in);
 	if (fclose(out) != 0 || rename(tmp, path) != 0) {
@@ -713,19 +1035,26 @@ static bool write_compat_file(const char* path,
 	return true;
 }
 
-/* Whether this device can even offer instanced play: the setting is on for
- * Gambatte and the paired artifact is actually staged here. Both halves have to
- * hold on both devices, so this is exchanged with the manifest and ANDed. */
-static bool instanced_gambatte_available(void) {
+/* Whether this device can offer each paired core: its setting is on and its
+ * paired artifact is actually staged. Each bit must be present on both devices,
+ * so the masks are exchanged with the manifest and intersected. */
+static uint32_t instanced_available_mask(void) {
 	char path[512];
+	uint32_t mask = 0;
 	snprintf(path, sizeof(path), "%s/cores/override/%s/gambatte_dual_libretro.so",
 	         ns_pak, ns_platform);
-	return instanced_core_enabled("gambatte") && file_exists(path);
+	if (instanced_core_enabled("gambatte") && file_exists(path))
+		mask |= INST_CAP_GAMBATTE;
+	snprintf(path, sizeof(path), "%s/cores/override/%s/mgba_dual_libretro.so",
+	         ns_pak, ns_platform);
+	if (instanced_core_enabled("mgba") && file_exists(path))
+		mask |= INST_CAP_MGBA;
+	return mask;
 }
 
 static int select_compatibility(NS_CoreInfo* mine, int mn, NS_CoreInfo* theirs, int tn,
 								bool peer_enabled, bool peer_force,
-								bool peer_instanced) {
+								uint32_t peer_instanced) {
 	char selected[NS_MAX_MANIFEST][32];
 	char mismatched[NS_MAX_MANIFEST][32];
 	int count = 0;
@@ -762,22 +1091,24 @@ static int select_compatibility(NS_CoreInfo* mine, int mn, NS_CoreInfo* theirs, 
 			       MANIFEST_CORES[i]);
 		}
 	}
-	bool instanced = instanced_gambatte_available() && peer_instanced;
-	ns_log("instanced gambatte: here=%d peer=%d -> %s\n",
-	       instanced_gambatte_available() ? 1 : 0, peer_instanced ? 1 : 0,
-	       instanced ? "enabled" : "network serial");
+	uint32_t local_instanced = instanced_available_mask();
+	uint32_t instanced = local_instanced & peer_instanced;
+	ns_log("paired cores: here=0x%x peer=0x%x agreed=0x%x (gambatte=%d mgba=%d)\n",
+	       local_instanced, peer_instanced, instanced,
+	       (instanced & INST_CAP_GAMBATTE) ? 1 : 0,
+	       (instanced & INST_CAP_MGBA) ? 1 : 0);
 
 	char path[512];
-	snprintf(path, sizeof(path), "%s/session.conf", ns_pak);
+	snprintf(path, sizeof(path), "%s/session.conf", ns_state);
 	if (!write_compat_file(path, selected, count, mismatched, mismatch_count, instanced)) {
 		ns_log("cannot update compatibility selections in session.conf\n");
 		return -1;
 	}
-	snprintf(path, sizeof(path), "%s/state/session", ns_pak);
+	snprintf(path, sizeof(path), "%s/session", ns_state);
 	if (!write_compat_file(path, selected, count, mismatched, mismatch_count, instanced)) {
 		ns_log("cannot update compatibility selections in active session\n");
 		/* Do not leave a durable selection that disagrees with the active file. */
-		snprintf(path, sizeof(path), "%s/session.conf", ns_pak);
+		snprintf(path, sizeof(path), "%s/session.conf", ns_state);
 		write_compat_file(path, selected, 0, mismatched, 0, false);
 		return -1;
 	}
@@ -819,11 +1150,29 @@ void NS_compatServeStop(void) {
 	if (core_listen_fd >= 0) { close(core_listen_fd); core_listen_fd = -1; }
 }
 
+const char* NS_compatLastPeer(void) { return core_last_peer; }
+
 void NS_compatServeTick(void) {
 	if (core_listen_fd < 0) return;
 
-	int fd = accept(core_listen_fd, NULL, NULL);
+	struct sockaddr_in peer;
+	socklen_t peer_len = sizeof(peer);
+	int fd = accept(core_listen_fd, (struct sockaddr*)&peer, &peer_len);
 	if (fd < 0) return;                       /* nothing waiting - normal */
+	/* accept() does not inherit the listener's O_NONBLOCK on Linux, so without
+	 * this the connection is fully blocking and every deadline below is
+	 * unreachable. This is the whole of the fix; the rest is bookkeeping. */
+	core_socket_deadline(fd, CORE_SERVE_IO_MS);
+	char peer_ip[NS_IP_LEN] = "";
+	inet_ntop(AF_INET, &peer.sin_addr, peer_ip, sizeof(peer_ip));
+	if (core_last_peer[0] && strcmp(core_last_peer, peer_ip)) {
+		uint32_t busy[5] = { htonl(CORE_BUSY), 0, 0, 0, 0 };
+		io_all_to(fd, busy, sizeof(busy), true, CORE_SERVE_IO_MS);
+		ns_log("core compatibility negotiation: %s rejected BUSY; admitted peer is %s\n",
+		       peer_ip, core_last_peer);
+		close(fd);
+		return;
+	}
 
 	NS_CoreInfo mine[NS_MAX_MANIFEST];
 	int n = NS_coreManifest(mine, NS_MAX_MANIFEST);
@@ -831,16 +1180,18 @@ void NS_compatServeTick(void) {
 	NS_CoreInfo theirs[NS_MAX_MANIFEST];
 	bool peer_compat_enabled = false;
 	bool peer_force_compatibility = false;
-	bool peer_instanced = false;
-	int tn = recv_manifest(fd, theirs, NS_MAX_MANIFEST,
-	                       &peer_compat_enabled, &peer_force_compatibility,
-	                       &peer_instanced);
+	uint32_t peer_instanced = 0;
+	int tn = recv_manifest_to(fd, theirs, NS_MAX_MANIFEST, CORE_SERVE_IO_MS,
+	                          &peer_compat_enabled, &peer_force_compatibility,
+	                          &peer_instanced);
 	if (tn < 0 ||
-	    !send_manifest(fd, mine, n)) {
-		ns_log("core compatibility negotiation: manifest failed\n");
+	    !send_manifest_to(fd, mine, n, CORE_SERVE_IO_MS)) {
+		ns_log("core compatibility negotiation: manifest failed "
+		       "(peer %s went quiet or spoke nonsense)\n", peer_ip);
 		close(fd);
 		return;
 	}
+	snprintf(core_last_peer, sizeof(core_last_peer), "%s", peer_ip);
 	int selected = select_compatibility(mine, n, theirs, tn,
 	                                    peer_compat_enabled, peer_force_compatibility,
 	                                    peer_instanced);
@@ -849,62 +1200,6 @@ void NS_compatServeTick(void) {
 	else
 		ns_log("core compatibility negotiation: %d fallback(s) selected\n", selected);
 
-	/* Frozen core-sharing implementation. Executable files must never be
-	 * accepted from an unauthenticated peer. Kept here, excluded from the build,
-	 * so the setting and its former implementation can be revisited together. */
-#if 0
-	/* Serve requests until the client says it is done. The client drives,
-	 * because it is the side that knows what it could not load. */
-	for (;;) {
-		uint8_t op;
-		char name[32];
-		if (!io_all(fd, &op, 1, false)) break;
-		if (op == CORE_OP_DONE) break;
-		if (!io_all(fd, name, sizeof(name), false)) break;
-		name[sizeof(name) - 1] = '\0';
-
-		if (op == CORE_OP_GET) {
-			NS_CoreInfo* c = find_core(mine, n, name);
-			uint32_t len = 0;
-			uint8_t* buf = NULL;
-			if (c) {
-				FILE* f = fopen(c->path, "rb");
-				if (f) {
-					buf = malloc(c->size);
-					if (buf && fread(buf, 1, c->size, f) == c->size) len = c->size;
-					else { free(buf); buf = NULL; }
-					fclose(f);
-				}
-			}
-			uint32_t nl_len = htonl(len);
-			if (!io_all(fd, &nl_len, 4, true)) { free(buf); break; }
-			if (len && !io_all(fd, buf, len, true)) { free(buf); break; }
-			ns_log("core exchange: sent %s (%u bytes)\n", name, len);
-			free(buf);
-		} else if (op == CORE_OP_PUT) {
-			uint32_t len;
-			if (!io_all(fd, &len, 4, false)) break;
-			len = ntohl(len);
-			if (!len || len > CORE_MAX_BYTES) break;
-			uint8_t* buf = malloc(len);
-			if (!buf || !io_all(fd, buf, len, false)) { free(buf); break; }
-
-			char dir[512], path[600], cmd[700];
-			staged_dir(dir, sizeof(dir));
-			snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", dir);
-			system(cmd);
-			snprintf(path, sizeof(path), "%s/%s_libretro.so", dir, name);
-			FILE* out = fopen(path, "wb");
-			if (out) {
-				size_t w = fwrite(buf, 1, len, out);
-				fclose(out);
-				if (w == len) ns_log("core exchange: staged %s from peer (%u bytes)\n", name, len);
-				else remove(path);
-			}
-			free(buf);
-		} else break;
-	}
-#endif
 	close(fd);
 }
 
@@ -931,9 +1226,7 @@ int NS_compatSync(const char* host_ip, char* err, int errlen) {
 		return -1;
 	}
 
-	struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
-	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	core_socket_deadline(fd, CORE_IO_MS);
 
 	if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
 		close(fd);
@@ -944,15 +1237,20 @@ int NS_compatSync(const char* host_ip, char* err, int errlen) {
 	NS_CoreInfo theirs[NS_MAX_MANIFEST];
 	bool peer_compat_enabled = false;
 	bool peer_force_compatibility = false;
-	bool peer_instanced = false;
-	if (!send_manifest(fd, mine, n)) {
+	uint32_t peer_instanced = 0;
+	if (!send_manifest_to(fd, mine, n, CORE_IO_MS)) {
 		close(fd);
 		snprintf(err, errlen, "manifest exchange failed");
 		return -1;
 	}
-	int tn = recv_manifest(fd, theirs, NS_MAX_MANIFEST,
+	int tn = recv_manifest_to(fd, theirs, NS_MAX_MANIFEST, CORE_IO_MS,
 	                       &peer_compat_enabled, &peer_force_compatibility,
 	                       &peer_instanced);
+	if (tn == -2) {
+		close(fd);
+		snprintf(err, errlen, "host is busy with another guest");
+		return -1;
+	}
 	if (tn < 0) {
 		close(fd);
 		snprintf(err, errlen, "manifest exchange failed");
@@ -967,90 +1265,6 @@ int NS_compatSync(const char* host_ip, char* err, int errlen) {
 	else if (selected < 0)
 		snprintf(err, errlen, "cannot activate core selection");
 
-	/* Frozen peer-to-peer executable transfer. Compatibility negotiation above
-	 * exchanges metadata only and selects local, packaged artifacts. */
-#if 0
-	uint32_t my_runtime = NS_runtimeGlibc();
-	int staged = 0, attempted = 0;
-	for (int i = 0; i < n; i++) {
-		NS_CoreInfo* t = find_core(theirs, tn, mine[i].core);
-		if (!t || !t->version[0]) continue;                 /* peer lacks it */
-		if (mine[i].version[0] && !strcmp(mine[i].version, t->version)) continue;
-		if (t->machine != mine[i].machine) continue;        /* unbridgeable */
-
-		attempted++;
-		bool we_can_load_theirs = t->glibc <= my_runtime;
-		bool they_can_load_ours = mine[i].glibc <= peer_runtime;
-
-		if (we_can_load_theirs) {
-			uint8_t op = CORE_OP_GET;
-			char name[32];
-			memset(name, 0, sizeof(name));
-			snprintf(name, sizeof(name), "%s", mine[i].core);
-			if (!io_all(fd, &op, 1, true) || !io_all(fd, name, sizeof(name), true)) break;
-
-			uint32_t len;
-			if (!io_all(fd, &len, 4, false)) break;
-			len = ntohl(len);
-			if (!len || len > CORE_MAX_BYTES) continue;
-			uint8_t* buf = malloc(len);
-			if (!buf) break;
-			if (!io_all(fd, buf, len, false)) { free(buf); break; }
-
-			char dir[512], path[600], cmd[700];
-			staged_dir(dir, sizeof(dir));
-			snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", dir);
-			system(cmd);
-			snprintf(path, sizeof(path), "%s/%s_libretro.so", dir, mine[i].core);
-			FILE* out = fopen(path, "wb");
-			bool ok = false;
-			if (out) {
-				ok = fwrite(buf, 1, len, out) == len;
-				fclose(out);
-			}
-			free(buf);
-
-			/* Prove it loads before leaving it where the shim will find it. */
-			if (ok) {
-				void* probe = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-				if (probe) { dlclose(probe); staged++;
-					ns_log("staged %s from host (%u bytes)\n", mine[i].core, len); }
-				else { ns_log("host's %s will not load here (%s)\n", mine[i].core, dlerror());
-					remove(path); ok = false; }
-			}
-			if (!ok) remove(path);
-
-		} else if (they_can_load_ours) {
-			/* We cannot use theirs but they can use ours - push instead. */
-			FILE* f = fopen(mine[i].path, "rb");
-			if (!f) continue;
-			uint8_t* buf = malloc(mine[i].size);
-			if (!buf) { fclose(f); continue; }
-			size_t got = fread(buf, 1, mine[i].size, f);
-			fclose(f);
-
-			uint8_t op = CORE_OP_PUT;
-			char name[32];
-			memset(name, 0, sizeof(name));
-			snprintf(name, sizeof(name), "%s", mine[i].core);
-			uint32_t len = htonl((uint32_t)got);
-			if (got == mine[i].size &&
-			    io_all(fd, &op, 1, true) && io_all(fd, name, sizeof(name), true) &&
-			    io_all(fd, &len, 4, true) && io_all(fd, buf, got, true)) {
-				ns_log("pushed our %s to the host (%zu bytes)\n", mine[i].core, got);
-				staged++;
-			}
-			free(buf);
-		} else {
-			ns_log("%s: neither build is loadable on the other device\n", mine[i].core);
-		}
-	}
-
-	uint8_t done = CORE_OP_DONE;
-	io_all(fd, &done, 1, true);
-	(void)my_runtime;
-	(void)attempted;
-#endif
 	close(fd);
 
 	if (selected >= 0)
@@ -1162,6 +1376,43 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst) {
 		    ok ? ns_platform : "missing - unsupported platform");
 	}
 
+	/* 5. This device can tell whether it is associated, and can get an address.
+	 *
+	 * Both were assumed rather than checked, and on the H700 both assumptions
+	 * were false: no `iw`, no `udhcpc`. Nothing said so. A missing association
+	 * probe is indistinguishable from "not associated", so the join loop ran
+	 * its full budget and reported that it could not find the host; a missing
+	 * DHCP client meant the restore path could never produce an address and
+	 * left WiFi needing a reboot after every session. Two silent absences cost
+	 * two rounds of field debugging, which is what this check is for.
+	 *
+	 * A warning, not a failure. Shared-screen play over an existing network
+	 * touches none of this - it is only ad hoc that moves the client stack -
+	 * so refusing to arm would be wrong. */
+	{
+		/* Short tokens: "iw", "wpa_cli", "dhclient", "dhcpcd", "none". Sized
+		 * so both fit in a detail line with room to spare. */
+		char assoc[24] = "", dhcp[24] = "";
+		wifi_plat_out(assoc, sizeof(assoc), "assoc-kind");
+		wifi_plat_out(dhcp,  sizeof(dhcp),  "dhcp-kind");
+
+		bool no_assoc = !assoc[0] || !strcmp(assoc, "none");
+		bool no_dhcp  = !dhcp[0]  || !strcmp(dhcp,  "none");
+
+		char detail[96];
+		if (no_assoc && no_dhcp)
+			snprintf(detail, sizeof(detail), "no association probe and no DHCP client");
+		else if (no_assoc)
+			snprintf(detail, sizeof(detail), "no association probe (%s for DHCP)", dhcp);
+		else if (no_dhcp)
+			snprintf(detail, sizeof(detail), "%s works, but no DHCP client", assoc);
+		else
+			snprintf(detail, sizeof(detail), "%s + %s", assoc, dhcp);
+
+		add(out, &n, max, (no_assoc || no_dhcp) ? NS_CHECK_WARN : NS_CHECK_OK,
+		    "WiFi tools for ad hoc", detail);
+	}
+
 	for (int i = 0; i < n; i++) if (out[i].result > w) w = out[i].result;
 	if (worst) *worst = w;
 	return n;
@@ -1173,17 +1424,177 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst) {
 
 bool NS_isArmed(void) {
 	char p[512];
-	snprintf(p, sizeof(p), "%s/state/session", ns_pak);
+	snprintf(p, sizeof(p), "%s/session", ns_state);
 	return file_exists(p);
+}
+
+bool NS_cleanupStaleSession(void) {
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd),
+	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
+	         "sh '%s/launcher/session-cleanup.sh' >/dev/null 2>&1",
+	         ns_sd, ns_platform, ns_pak, ns_pak);
+	int rc = system(cmd);
+	return rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 10;
+}
+
+static int broker_pid(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/broker.pid", ns_state);
+	FILE* f = fopen(path, "r");
+	int pid = 0;
+	if (f) { if (fscanf(f, "%d", &pid) != 1) pid = 0; fclose(f); }
+	if (pid <= 1) return 0;
+
+	char proc[64];
+	snprintf(proc, sizeof(proc), "/proc/%d/cmdline", pid);
+	f = fopen(proc, "r");
+	if (!f) return 0;
+	char cmdline[256] = "";
+	size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, f);
+	fclose(f);
+	cmdline[n] = '\0';
+	return strstr(cmdline, "netplay-broker.elf") ? pid : 0;
+}
+
+bool NS_sessionInfo(NS_SessionInfo* out) {
+	if (!out) return false;
+	memset(out, 0, sizeof(*out));
+
+	char path[512];
+	snprintf(path, sizeof(path), "%s/session", ns_state);
+	FILE* f = fopen(path, "r");
+	if (!f) return false;
+	out->armed = true;
+	out->role = NS_ROLE_HOST;
+
+	char line[192];
+	while (fgets(line, sizeof(line), f)) {
+		char* nl = strpbrk(line, "\r\n");
+		if (nl) *nl = '\0';
+		char* value = strchr(line, '=');
+		if (!value) continue;
+		*value++ = '\0';
+		if (!strcmp(line, "role")) out->role = !strcmp(value, "client") ? NS_ROLE_CLIENT : NS_ROLE_HOST;
+		else if (!strcmp(line, "peer")) snprintf(out->host, sizeof(out->host), "%s", value);
+		else if (!strcmp(line, "adhoc_ssid") && NS_validAdhocSsid(value))
+			snprintf(out->network, sizeof(out->network), "%s", value);
+		else if (!strcmp(line, "adhoc_psk") && NS_validAdhocPsk(value))
+			snprintf(out->psk, sizeof(out->psk), "%s", value);
+	}
+	fclose(f);
+	if (out->role == NS_ROLE_HOST && !out->network[0] &&
+	    system("pidof hostapd >/dev/null 2>&1") == 0) {
+		/* Upgrade an already-running host created before host metadata was
+		 * written into the shared session record. */
+		f = fopen("/tmp/netplay_hostapd.conf", "r");
+		while (f && fgets(line, sizeof(line), f)) {
+			char value[NS_PSK_LEN];
+			if (sscanf(line, "ssid=%23s", value) == 1)
+				snprintf(out->network, sizeof(out->network), "%s", value);
+			else if (sscanf(line, "wpa_passphrase=%23s", value) == 1)
+				snprintf(out->psk, sizeof(out->psk), "%s", value);
+		}
+		if (f) fclose(f);
+	}
+
+	out->broker_running = broker_pid() != 0;
+	if (out->role != NS_ROLE_HOST || !out->broker_running) return true;
+
+	snprintf(path, sizeof(path), "%s/broker.status", ns_state);
+	f = fopen(path, "r");
+	if (!f) return true;
+	while (fgets(line, sizeof(line), f)) {
+		char* nl = strpbrk(line, "\r\n");
+		if (nl) *nl = '\0';
+		int i;
+		if (sscanf(line, "guest_count=%d", &i) == 1) {
+			out->guest_count = i < 0 ? 0 : i > 4 ? 4 : i;
+			continue;
+		}
+		char* value = strchr(line, '=');
+		if (!value) continue;
+		*value++ = '\0';
+		if (sscanf(line, "guest_%d_id", &i) == 1 && i >= 0 && i < 4)
+			snprintf(out->guest[i].id, sizeof(out->guest[i].id), "%s", value);
+		else if (sscanf(line, "guest_%d_ip", &i) == 1 && i >= 0 && i < 4)
+			snprintf(out->guest[i].ip, sizeof(out->guest[i].ip), "%s", value);
+	}
+	fclose(f);
+	return true;
+}
+
+bool NS_brokerStart(char* err, int errlen) {
+	if (broker_pid()) return true;
+	char stale[512];
+	snprintf(stale, sizeof(stale), "%s/broker.pid", ns_state); remove(stale);
+	snprintf(stale, sizeof(stale), "%s/broker.status", ns_state); remove(stale);
+
+	char executable[512];
+	snprintf(executable, sizeof(executable), "%s/bin/%s/netplay-broker.elf", ns_pak, ns_platform);
+	if (access(executable, X_OK) != 0) {
+		snprintf(err, errlen, "persistent host broker is missing");
+		return false;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		snprintf(err, errlen, "could not start host broker");
+		return false;
+	}
+	if (pid == 0) {
+		setsid();
+		char log_path[512];
+		snprintf(log_path, sizeof(log_path), "%s/broker.log", ns_state);
+		int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+		int null_fd = open("/dev/null", O_RDONLY);
+		if (null_fd >= 0) { dup2(null_fd, STDIN_FILENO); close(null_fd); }
+		if (log_fd >= 0) {
+			dup2(log_fd, STDOUT_FILENO);
+			dup2(log_fd, STDERR_FILENO);
+			if (log_fd > STDERR_FILENO) close(log_fd);
+		}
+		long max_fd = sysconf(_SC_OPEN_MAX);
+		if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
+		for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) close(fd);
+		setenv("SDCARD_PATH", ns_sd, 1);
+		setenv("PLATFORM", ns_platform, 1);
+		execl(executable, executable, (char*)NULL);
+		_exit(127);
+	}
+
+	for (int i = 0; i < 30; i++) {
+		usleep(100 * 1000);
+		snprintf(stale, sizeof(stale), "%s/broker.status", ns_state);
+		if (broker_pid() && file_exists(stale)) return true;
+		if (kill(pid, 0) != 0 && errno == ESRCH) break;
+	}
+	waitpid(pid, NULL, WNOHANG);
+	snprintf(err, errlen, "host broker did not start");
+	return false;
+}
+
+void NS_brokerStop(void) {
+	int pid = broker_pid();
+	if (pid) {
+		kill(pid, SIGTERM);
+		for (int i = 0; i < 20 && kill(pid, 0) == 0; i++) {
+			int status;
+			if (waitpid(pid, &status, WNOHANG) == pid) break;
+			usleep(100 * 1000);
+		}
+		if (kill(pid, 0) == 0) kill(pid, SIGKILL);
+		waitpid(pid, NULL, WNOHANG);
+	}
+	char path[512];
+	snprintf(path, sizeof(path), "%s/broker.pid", ns_state); remove(path);
+	snprintf(path, sizeof(path), "%s/broker.status", ns_state); remove(path);
 }
 
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	char path[512];
 
-	snprintf(path, sizeof(path), "%s/state", ns_pak);
-	mkdir(path, 0755);
-
-	snprintf(path, sizeof(path), "%s/session.conf", ns_pak);
+	snprintf(path, sizeof(path), "%s/session.conf", ns_state);
 	FILE* f = fopen(path, "w");
 	if (!f) {
 		snprintf(err, errlen, "cannot write session.conf");
@@ -1212,16 +1623,28 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	for (size_t i = 0; i < sizeof(nonce); i++) fprintf(f, i ? "%02x" : "session_id=%02x", nonce[i]);
 	fputc('\n', f);
 
+	/* App-process persistence is intentional; cross-boot persistence is not.
+	 * A boot identity lets the launcher discard an otherwise-valid session
+	 * after a crash/reboot without using guest presence as a liveness signal. */
+	FILE* boot = fopen("/proc/sys/kernel/random/boot_id", "r");
+	if (boot) {
+		char boot_id[80] = "";
+		if (fgets(boot_id, sizeof(boot_id), boot)) {
+			char* nl = strpbrk(boot_id, "\r\n");
+			if (nl) *nl = '\0';
+			if (boot_id[0]) fprintf(f, "boot_id=%s\n", boot_id);
+		}
+		fclose(boot);
+	}
+
 	/* Sized for the transport actually in use. Both sides reach the same answer
 	 * because a client only holds an ad hoc address when it joined this host's
 	 * network, and the host only serves one when it is hosting ad hoc.
 	 *
-	 * This is now the fallback rather than the verdict: the shim measures the
-	 * round trip during the handshake and both peers adopt the higher of their
-	 * two proposals, so a good ad hoc link can settle below this and a poor one
-	 * above it. The number still matters - it is what a link that never answers
-	 * a probe uses, and it is picked from the transport actually in use, which
-	 * is more than the shim can know on its own. */
+	 * This is a safety floor, not merely a startup guess. The shim can raise it
+	 * when measured RTT requires more room, but a couple of quiet handshake
+	 * probes cannot lower it: later jitter is what the window must survive. The
+	 * transport selection is information the shim cannot infer on its own. */
 	bool adhoc = hotspot_running || joined_hotspot;
 	fprintf(f, "input_delay=%d\n", adhoc ? NS_INPUT_DELAY_ADHOC : NS_INPUT_DELAY_WIFI);
 	fprintf(f, "input_delay_auto=1\n");
@@ -1231,15 +1654,21 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	fprintf(f, "compatibility_cores=%d\n", NS_settings()->compatibility_cores ? 1 : 0);
 	fprintf(f, "force_compatibility=%d\n", NS_settings()->force_compatibility ? 1 : 0);
 	fprintf(f, "verbose_logs=%d\n", NS_settings()->verbose_logs ? 1 : 0);
-	/* Gambatte is the first implemented instanced core. The other choices stay
-	 * persisted so their UI/API do not need another format change when their
-	 * local-link hosts are ready. Unknown session keys are deliberately safe. */
+	/* These are local wishes until the manifest exchange replaces them with the
+	 * intersection of artifacts/settings available on both devices. */
 	fprintf(f, "instanced_gambatte=%d\n", instanced_core_enabled("gambatte") ? 1 : 0);
+	fprintf(f, "instanced_mgba=%d\n", instanced_core_enabled("mgba") ? 1 : 0);
 
 	/* Record the ad hoc network so the launch stub can put us back on it. The
 	 * join done here does not survive the app exiting - the platform brings its
 	 * own WiFi back up before the game ever starts. */
-	if (joined_hotspot && joined_ssid[0]) {
+	/* Both sources were validated on the way in; checked again because this
+	 * file is parsed line by line and its values reach shell scripts. */
+	if (role == NS_ROLE_HOST && NS_validAdhocSsid(announce_ssid) &&
+	    NS_validAdhocPsk(announce_psk)) {
+		fprintf(f, "adhoc_ssid=%s\nadhoc_psk=%s\n", announce_ssid, announce_psk);
+	} else if (joined_hotspot && NS_validAdhocSsid(joined_ssid) &&
+	           NS_validAdhocPsk(joined_psk)) {
 		fprintf(f, "adhoc_ssid=%s\nadhoc_psk=%s\n", joined_ssid, joined_psk);
 	}
 
@@ -1270,7 +1699,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	fclose(f);
 
 	char cmd[1200];
-	snprintf(cmd, sizeof(cmd), "cp '%s/session.conf' '%s/state/session'", ns_pak, ns_pak);
+	snprintf(cmd, sizeof(cmd), "cp '%s/session.conf' '%s/session'", ns_state, ns_state);
 	if (system(cmd) != 0) {
 		snprintf(err, errlen, "cannot activate session");
 		return false;
@@ -1326,6 +1755,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 
 void NS_disarm(void) {
 	char cmd[1200];
+	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
 	/* Takes both routes down - mounts, the boot hook, and any legacy stubs -
@@ -1337,8 +1767,8 @@ void NS_disarm(void) {
 	         ns_sd, ns_platform, ns_sd, ns_platform, ns_sd, ns_platform, ns_pak);
 	system(cmd);
 
-	snprintf(cmd, sizeof(cmd), "rm -f '%s/state/session' '%s/state/force-shim'",
-	         ns_pak, ns_pak);
+	snprintf(cmd, sizeof(cmd), "rm -f '%s/session' '%s/force-shim'",
+	         ns_state, ns_state);
 	system(cmd);
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -1349,6 +1779,8 @@ void NS_disarm(void) {
 	NS_hotspotStop();
 	NS_wifiPowerSaveRestore();
 }
+
+static void wifi_client_leave_adhoc(void);
 
 /* Drop the session but leave the launch stubs installed.
  *
@@ -1358,9 +1790,12 @@ void NS_disarm(void) {
  * instead of a full reinstall across every Emus pak. */
 void NS_endSession(void) {
 	char cmd[1200];
+	NS_SessionInfo session;
+	bool was_client = NS_sessionInfo(&session) && session.role == NS_ROLE_CLIENT;
+	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
-	snprintf(cmd, sizeof(cmd), "rm -f '%s/state/session'", ns_pak);
+	snprintf(cmd, sizeof(cmd), "rm -f '%s/session'", ns_state);
 	system(cmd);
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -1368,19 +1803,23 @@ void NS_endSession(void) {
 	         ns_sd, ns_platform, ns_pak, ns_pak);
 	system(cmd);
 
-	/* A session is a network arrangement as much as a file. Ending one has to
-	 * put the radio back: stop serving if we were, and rejoin the normal
-	 * network if we had left it. Callers used to have to remember both. */
-	NS_hotspotStop();
+	/* A session is a network arrangement as much as a file. Remember the role
+	 * before removing that file: a guest must restore its station interface,
+	 * but must never enter host teardown merely because an unrelated/stale
+	 * hostapd process exists on the system. */
+	if (was_client)
+		wifi_client_leave_adhoc();
+	else
+		NS_hotspotStop();
 	NS_wifiPowerSaveRestore();
 }
 
 /* Covered by either route: mounts (preferred) or legacy stubs. */
 bool NS_stubsInstalled(void) {
 	char p[512];
-	snprintf(p, sizeof(p), "%s/state/mounts.list", ns_pak);
+	snprintf(p, sizeof(p), "%s/mounts.list", ns_state);
 	if (file_exists(p)) return true;
-	snprintf(p, sizeof(p), "%s/state/stubs.list", ns_pak);
+	snprintf(p, sizeof(p), "%s/stubs.list", ns_state);
 	return file_exists(p);
 }
 
@@ -1436,7 +1875,7 @@ struct scan_ctx { NS_Peer* out; int max; int n; };
 
 static void scan_line(const char* line, void* v) {
 	struct scan_ctx* c = v;
-	if (c->n >= c->max || !line[0]) return;
+	if (c->n >= c->max || !NS_validAdhocSsid(line)) return;
 	memset(&c->out[c->n], 0, sizeof(c->out[c->n]));
 	snprintf(c->out[c->n].ssid, sizeof(c->out[c->n].ssid), "%s", line);
 	snprintf(c->out[c->n].psk,  sizeof(c->out[c->n].psk),  "%s", NS_ADHOC_PSK);
@@ -1459,6 +1898,8 @@ int NS_scanAdhoc(NS_Peer* out, int max) {
 	 * The frontend polls the same way, so the cache is kept warm for us. */
 	char ctrl[256];
 	char cmd[600];
+	struct scan_ctx c = { out, max, 0 };
+
 	if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
 		/* Ask for a refresh but do not wait on it - this returns at once. */
 		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 scan >/dev/null 2>&1", ctrl);
@@ -1467,14 +1908,21 @@ int NS_scanAdhoc(NS_Peer* out, int max) {
 		         "wpa_cli -p %s -i wlan0 scan_results 2>/dev/null "
 		         "| awk -F'\t' 'NR>1 && NF>=5 {print $5}' "
 		         "| grep -i '^%s-' | sort -u", ctrl, NS_ADHOC_PREFIX);
-	} else {
+		popen_bounded(cmd, 6000, scan_line, &c);
+	}
+
+	/* The control directory now resolves to the platform's own socket even when
+	 * no supplicant is running, which is right for everything else that uses it
+	 * but would have quietly retired this fallback: an empty cache and a dead
+	 * supplicant both read as "no networks". Asking the radio directly is the
+	 * slower answer and stays the second one, not the abandoned one. */
+	if (c.n == 0) {
 		snprintf(cmd, sizeof(cmd),
 		         "iw dev wlan0 scan 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' "
 		         "| grep -i '^%s-' | sort -u", NS_ADHOC_PREFIX);
+		popen_bounded(cmd, 6000, scan_line, &c);
 	}
 
-	struct scan_ctx c = { out, max, 0 };
-	popen_bounded(cmd, 6000, scan_line, &c);
 	ns_log("scan found %d ad hoc network(s)\n", c.n);
 	return c.n;
 }
@@ -1526,6 +1974,12 @@ int NS_discoverTick(NS_Peer* peers, int max) {
 		peers[count].hotspot = ntohl(a.hotspot) != 0;
 		a.ssid[sizeof(a.ssid) - 1] = '\0';
 		a.psk[sizeof(a.psk) - 1]   = '\0';
+		/* A forged or malformed network is not offered; the peer still is. */
+		if (peers[count].hotspot &&
+		    (!NS_validAdhocSsid(a.ssid) || !NS_validAdhocPsk(a.psk))) {
+			peers[count].hotspot = false;
+			a.ssid[0] = a.psk[0] = '\0';
+		}
 		snprintf(peers[count].ssid, NS_SSID_LEN, "%s", a.ssid);
 		snprintf(peers[count].psk,  NS_PSK_LEN,  "%s", a.psk);
 		count++;
@@ -1552,6 +2006,7 @@ void NS_discoverStop(void) {
 //////////////////////////////////////////////////////////////////////////////
 
 void NS_announceHotspot(const char* ssid, const char* psk) {
+	if (!NS_validAdhocSsid(ssid) || !NS_validAdhocPsk(psk)) ssid = psk = NULL;
 	snprintf(announce_ssid, sizeof(announce_ssid), "%s", ssid ? ssid : "");
 	snprintf(announce_psk, sizeof(announce_psk), "%s", psk ? psk : "");
 }
@@ -1725,13 +2180,24 @@ static void wifi_client_stack_down(void) {
 	 * longer there and has nothing left that knows how to get back. */
 	if (saved_supplicant[0]) {
 		char path[512];
-		snprintf(path, sizeof(path), "%s/state/wifi_restore", ns_pak);
+		snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
 		FILE* w = fopen(path, "w");
 		if (w) { fprintf(w, "%s\n", saved_supplicant); fclose(w); }
 	}
 
+	/* The supplicant command line is not the whole client stack. H700 runs a
+	 * `wpa_cli -a <script>` alongside it and that action script is the only
+	 * thing on the device that ever starts a DHCP client; killing the
+	 * supplicant takes the hook with it. Restoring one without the other is
+	 * what left that platform associating forever with no address - not just
+	 * for our session, but for every reassociation until the next reboot.
+	 *
+	 * A no-op wherever no such process exists, which is every other platform. */
+	if (wifi_plat("hook-capture '%s/wifi_restore_hook'", ns_state) == 0)
+		ns_log("recorded the platform's supplicant DHCP hook\n");
+
 	system("killall -q wpa_supplicant 2>/dev/null");
-	system("killall -q udhcpc 2>/dev/null");
+	wifi_plat("dhcp-stop");
 	system("ip addr flush dev wlan0 2>/dev/null");
 	system("ip route flush dev wlan0 2>/dev/null");
 }
@@ -1741,7 +2207,7 @@ static bool load_saved_supplicant(void) {
 	if (saved_supplicant[0]) return true;
 
 	char path[512];
-	snprintf(path, sizeof(path), "%s/state/wifi_restore", ns_pak);
+	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
 	FILE* f = fopen(path, "r");
 	if (!f) return false;
 	if (fgets(saved_supplicant, sizeof(saved_supplicant), f)) {
@@ -1780,7 +2246,7 @@ static bool load_saved_supplicant(void) {
 #define WIFI_RESTORE_LOCK "/tmp/netplay_wifi_restore.lock"
 
 static bool wifi_link_up(void) {
-	return system("iw dev wlan0 link 2>/dev/null | grep -q 'Connected to'") == 0;
+	return wifi_associated(NULL);
 }
 
 static bool wifi_has_ip(void) {
@@ -1844,7 +2310,7 @@ static bool wifi_client_stack_up(void) {
 	if (!wifi_restore_lock_acquire()) return false;
 
 	system("killall -q wpa_supplicant 2>/dev/null");
-	system("killall -q udhcpc 2>/dev/null");
+	wifi_plat("dhcp-stop");
 	/* Do not race a daemon which has accepted SIGTERM but has not released its
 	 * control socket yet. The A30 log showed precisely that first-start loss. */
 	for (int i = 0; i < 10 && supplicant_running(); i++) usleep(100000);
@@ -1853,21 +2319,37 @@ static bool wifi_client_stack_up(void) {
 	system("ip link set wlan0 up 2>/dev/null");
 
 	bool can_retry_saved = false;
+	bool used_saved = false;
 	char cmd[600] = "";
-	if (file_exists("/etc/wifi/wifi_init.sh")) {
-		system("/etc/wifi/wifi_init.sh stop  >/dev/null 2>&1");
-		system("/etc/wifi/wifi_init.sh start >/dev/null 2>&1");
-		ns_log("started wifi restoration via wifi_init.sh\n");
-	} else if (!load_saved_supplicant()) {
+	/* Prefer the exact daemon command captured before joining ad hoc. On the
+	 * Brick, wifi_init.sh stop/start performs rfkill and service teardown after
+	 * we have already stopped/flushed the client stack; that redundant path was
+	 * measured blocking the UI for 10.1s before restoration even began. */
+	if (load_saved_supplicant()) {
+		/* Captured service command lines are not guaranteed to contain -B. A
+		 * foreground wpa_supplicant here blocks the UI forever; explicitly make
+		 * the replay daemonise while preserving every platform-specific option. */
+		bool already_backgrounds = strstr(saved_supplicant, " -B") != NULL;
+		snprintf(cmd, sizeof(cmd), "%s%s >/dev/null 2>&1", saved_supplicant,
+		         already_backgrounds ? "" : " -B");
+		system(cmd);
+		wifi_plat("hook-replay '%s/wifi_restore_hook'", ns_state);
+		can_retry_saved = true;
+		used_saved = true;
+		ns_log("started saved supplicant command\n");
+	} else if (wifi_plat("wifi-init start") == 0) {
+		/* The stack was already stopped above; start is sufficient and avoids
+		 * a second service/rfkill teardown.
+		 *
+		 * The path is resolved per platform now. Hardcoding /etc/wifi here was
+		 * correct only on tg50xx; my282, my355 and h700 all keep their script
+		 * under SYSTEM_PATH, so this entire recovery route was dead code on
+		 * three of the five platforms that reach it. */
+		ns_log("started wifi restoration via the platform wifi_init.sh\n");
+	} else {
 		ns_log("WARNING: nothing recorded to restore wifi with\n");
 		wifi_restore_lock_release();
 		return false;
-	} else {
-		/* The captured line already carries -B; it daemonises itself. */
-		snprintf(cmd, sizeof(cmd), "%s >/dev/null 2>&1", saved_supplicant);
-		system(cmd);
-		can_retry_saved = true;
-		ns_log("started saved supplicant command\n");
 	}
 
 	/* One loop to the deadline. What we are waiting for is an address; whether
@@ -1888,6 +2370,20 @@ static bool wifi_client_stack_up(void) {
 			            i + 1, RESTORE_TOTAL_S);
 		sleep(1);
 
+		/* Checked every second regardless of what the association probe thinks.
+		 *
+		 * This used to sit behind the `continue` below, so an address could
+		 * only ever be noticed on a second where we had already decided we were
+		 * associated. On a platform whose DHCP is driven by the supplicant's
+		 * own hook the address can arrive without this loop doing anything at
+		 * all - and on one where the association probe is simply unavailable it
+		 * never became observable, so a restore that had in fact succeeded was
+		 * reported as a failure and the recovery breadcrumb was kept forever.
+		 * The answer we actually want is "does wlan0 have an address"; asking
+		 * it directly costs one `ip` call a second. */
+		got_ip = wifi_has_ip();
+		if (got_ip) break;
+
 		if (!assoc) {
 			assoc = wifi_link_up();
 			if (!assoc) {
@@ -1897,6 +2393,7 @@ static bool wifi_client_stack_up(void) {
 					system("killall -q wpa_supplicant 2>/dev/null");
 					for (int n = 0; n < 10 && supplicant_running(); n++) usleep(100000);
 					system(cmd);
+					wifi_plat("hook-replay '%s/wifi_restore_hook'", ns_state);
 				}
 				continue;
 			}
@@ -1904,18 +2401,19 @@ static bool wifi_client_stack_up(void) {
 		}
 
 		/* Ask on the first second we are associated, and again if nothing has
-		 * arrived - never leaving a request unretried inside the deadline. */
+		 * arrived - never leaving a request unretried inside the deadline.
+		 * Persistent, because we are handing the radio back to the user and
+		 * will not be here when the lease expires. */
 		if (dhcp_at < 0 || i - dhcp_at >= RESTORE_DHCP_RETRY_S) {
-			system("killall -q udhcpc 2>/dev/null");
-			system("udhcpc -i wlan0 -n -q -t 3 -T 2 >/dev/null 2>&1 &");
+			wifi_plat("dhcp-stop");
+			wifi_plat("dhcp-start persistent");
 			dhcp_at = i;
 		}
-
-		got_ip = wifi_has_ip();
 	}
 
 	if (got_ip) {
-		ns_log("restored wifi via saved supplicant command\n");
+		ns_log("restored wifi via %s\n",
+		       used_saved ? "saved supplicant command" : "platform startup script");
 		wifi_restore_lock_release();
 		return true;
 	}
@@ -1950,18 +2448,17 @@ static bool watchdog_running(void) {
  * Two ways in: a join that failed partway, and a join that worked whose host
  * then tore its AP down. Both end with the radio associated to nothing, and
  * neither used to leave anything behind that knew how to undo it. */
-bool NS_wifiRecoverIfStranded(void) {
+NS_Recovery NS_wifiRecoverIfStranded(void) {
 	char path[512];
-	snprintf(path, sizeof(path), "%s/state/wifi_restore", ns_pak);
-	if (!file_exists(path)) return false;   /* never moved the client stack */
+	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+	if (!file_exists(path)) return NS_RECOVERY_NONE;   /* never moved the stack */
 
-	bool connected = system("iw dev wlan0 link 2>/dev/null | grep -q 'Connected to'") == 0;
-	bool has_ip    = system("ip -4 addr show wlan0 2>/dev/null | grep -q 'inet '") == 0;
+	bool connected = wifi_associated(NULL);
+	bool has_ip    = wifi_has_ip();
 
-	char cmd[256];
-	snprintf(cmd, sizeof(cmd),
-	         "iw dev wlan0 link 2>/dev/null | grep -q 'SSID: %s-'", NS_ADHOC_PREFIX);
-	bool on_adhoc = system(cmd) == 0;
+	char cur_ssid[NS_SSID_LEN + 40] = "";
+	wifi_plat_out(cur_ssid, sizeof(cur_ssid), "assoc-ssid");
+	bool on_adhoc = !strncmp(cur_ssid, NS_ADHOC_PREFIX "-", sizeof(NS_ADHOC_PREFIX));
 
 	/* Healthy on some other network: nothing to do, and the record is stale.
 	 *
@@ -1971,11 +2468,11 @@ bool NS_wifiRecoverIfStranded(void) {
 	 * strikes. Whoever finishes gets to clean up. */
 	if (connected && has_ip && !on_adhoc) {
 		if (!watchdog_running()) remove(path);
-		return false;
+		return NS_RECOVERY_NONE;
 	}
 
 	/* Still usefully on the ad hoc network with a session armed - leave it. */
-	if (on_adhoc && has_ip && NS_isArmed()) return false;
+	if (on_adhoc && has_ip && NS_isArmed()) return NS_RECOVERY_NONE;
 
 	ns_log("stranded (connected=%d ip=%d adhoc=%d) - restoring wifi\n",
 	       connected, has_ip, on_adhoc);
@@ -1985,8 +2482,13 @@ bool NS_wifiRecoverIfStranded(void) {
 	 * app launch use to know a restore is still owed - stranding the device for
 	 * good, which is the exact failure this whole mechanism exists to stop. */
 	bool back = wifi_client_stack_up();
-	if (back) remove(path);
-	return true;
+	if (back) {
+		remove(path);
+		char hook[512];
+		snprintf(hook, sizeof(hook), "%s/wifi_restore_hook", ns_state);
+		remove(hook);
+	}
+	return back ? NS_RECOVERY_DONE : NS_RECOVERY_FAILED;
 }
 
 /* Are we currently sitting on one of our own ad hoc networks?
@@ -1997,10 +2499,16 @@ bool NS_wifiRecoverIfStranded(void) {
  * restore on it meant ending a session left the device on a network that was
  * about to be torn down. */
 static bool on_own_adhoc(void) {
-	char cmd[256];
-	snprintf(cmd, sizeof(cmd),
-	         "iw dev wlan0 link 2>/dev/null | grep -q 'SSID: %s-'", NS_ADHOC_PREFIX);
-	return system(cmd) == 0;
+	char ssid[NS_SSID_LEN + 40] = "";
+	wifi_plat_out(ssid, sizeof(ssid), "assoc-ssid");
+	return !strncmp(ssid, NS_ADHOC_PREFIX "-", sizeof(NS_ADHOC_PREFIX));
+}
+
+static void wifi_client_leave_adhoc(void) {
+	if (!joined_hotspot && !on_own_adhoc()) return;
+	ns_log("leaving ad hoc network, restoring wifi\n");
+	wifi_client_stack_up();
+	joined_hotspot = false;
 }
 
 /* An in-process flag is not enough: the app can be reopened after a crash or a
@@ -2011,6 +2519,23 @@ static bool hotspot_processes_alive(void) {
 	    || system("pidof udhcpd  >/dev/null 2>&1") == 0;
 }
 
+static bool active_hotspot_interface(char* out, int len) {
+	out[0] = '\0';
+	if (ns_ap_if[0]) {
+		snprintf(out, len, "%s", ns_ap_if);
+		return true;
+	}
+	if (!hotspot_processes_alive()) return false;
+
+	FILE* conf = fopen("/tmp/netplay_hostapd.conf", "r");
+	char line[128];
+	while (conf && fgets(line, sizeof(line), conf)) {
+		if (sscanf(line, "interface=%63s", out) == 1) break;
+	}
+	if (conf) fclose(conf);
+	return out[0] != '\0';
+}
+
 bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	/* Already serving this network? Leave it alone.
 	 *
@@ -2018,6 +2543,10 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	 * already joined: the old AP was killed, the restart then failed, and the
 	 * peer was left associated to a network that no longer existed with no way
 	 * back. Restarting is only worth the risk if something is actually wrong. */
+	if (!NS_validAdhocSsid(ssid) || !NS_validAdhocPsk(psk)) {
+		snprintf(err, errlen, "invalid network name or passphrase");
+		return false;
+	}
 	char cur[128];
 	if (hotspot_running && ns_ap_if[0]
 	    && system("pidof hostapd >/dev/null 2>&1") == 0) {
@@ -2148,59 +2677,15 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
  * Taken from -O on the running command line if present (tg5040), otherwise from
  * ctrl_interface= in the config it was given (my282). */
 static bool platform_ctrl_dir(char* out, int len) {
-	out[0] = '\0';
-
-	FILE* p = popen(
-		"for d in /proc/[0-9]*; do "
-		"  a0=$(tr '\\0' '\\n' < $d/cmdline 2>/dev/null | head -1); "
-		"  case \"$a0\" in */wpa_supplicant|wpa_supplicant) "
-		"    tr '\\0' '\\n' < $d/cmdline 2>/dev/null; break;; "
-		"  esac; "
-		"done 2>/dev/null", "r");
-	if (!p) return false;
-
-	char line[512];
-	char conf[512] = "";
-	int want = 0;   /* 'O' or 'c' when the value is the next argument */
-	while (fgets(line, sizeof(line), p)) {
-		char* nl = strpbrk(line, "\r\n");
-		if (nl) *nl = '\0';
-
-		/* Both spellings occur: tg5040 runs `-O/etc/wifi/sockets` joined, my282
-		 * runs `-c /path` as two arguments. Handling only the joined form found
-		 * nothing on my282 and silently fell back to a directory the frontend
-		 * does not watch - which is the whole bug this function exists to fix. */
-		if (want) {
-			if (want == 'O') snprintf(out, len, "%s", line);
-			else             snprintf(conf, sizeof(conf), "%s", line);
-			want = 0;
-			continue;
-		}
-		if (!strcmp(line, "-O")) { want = 'O'; continue; }
-		if (!strcmp(line, "-c")) { want = 'c'; continue; }
-		if (!strncmp(line, "-O", 2) && line[2]) snprintf(out, len, "%s", line + 2);
-		if (!strncmp(line, "-c", 2) && line[2]) snprintf(conf, sizeof(conf), "%s", line + 2);
-	}
-	pclose(p);
-
-	if (!out[0] && conf[0]) {
-		char cmd[600];
-		snprintf(cmd, sizeof(cmd),
-		         "sed -n 's/^ctrl_interface=\\(DIR=\\)\\?//p' '%s' 2>/dev/null "
-		         "| sed 's/ .*//' | head -1", conf);
-		FILE* c = popen(cmd, "r");
-		if (c) {
-			if (fgets(out, len, c)) {
-				char* nl = strpbrk(out, "\r\n");
-				if (nl) *nl = '\0';
-			}
-			pclose(c);
-		}
-	}
+	wifi_plat_out(out, len, "ctrl-dir");
 	return out[0] != '\0';
 }
 
 bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
+	if (!NS_validAdhocSsid(ssid) || !NS_validAdhocPsk(psk)) {
+		snprintf(err, errlen, "invalid network name or passphrase");
+		return false;
+	}
 	char ctrl[256];
 	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) {
 		snprintf(ctrl, sizeof(ctrl), "/var/run/wpa_supplicant");
@@ -2222,18 +2707,16 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 	wifi_client_stack_down();
 	joined_hotspot = true;   /* set before the first failure path can return */
 
-	char cmd[256];
 	for (int attempt = 1; attempt <= NS_JOIN_ATTEMPTS; attempt++) {
 		system("ip link set wlan0 up 2>/dev/null");
 		system("wpa_supplicant -B -D nl80211 -i wlan0 -c /tmp/netplay_wpa.conf >/dev/null 2>&1");
 
 		/* Bounded per attempt: five unbounded tries is minutes of black screen. */
 		bool assoc = false;
-		snprintf(cmd, sizeof(cmd), "iw dev wlan0 link 2>/dev/null | grep -q '%s'", ssid);
 		for (int i = 0; i < NS_JOIN_ASSOC_S && !assoc; i++) {
 			if (ns_progress) ns_progress("Connecting", attempt, NS_JOIN_ATTEMPTS);
 			sleep(1);
-			assoc = system(cmd) == 0;
+			assoc = wifi_associated(ssid);
 		}
 
 		if (assoc) {
@@ -2242,9 +2725,20 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 			 * simply dropped. */
 			if (ns_progress) ns_progress("Getting an address", attempt, NS_JOIN_ATTEMPTS);
 			sleep(1);
+			/* Poll for the address rather than trusting the client's exit
+			 * status: a platform whose DHCP is driven by the supplicant hook
+			 * has no exit status to read, and a client that is simply not
+			 * installed returns 127, which is not "no lease". */
 			for (int j = 0; j < 2; j++) {
-				if (system("udhcpc -i wlan0 -n -q -t 6 >/dev/null 2>&1") == 0
-				    && system("ip -4 addr show wlan0 2>/dev/null | grep -q 'inet '") == 0) {
+				wifi_plat("dhcp-start");
+				bool leased = false;
+				for (int w = 0; w < NS_JOIN_DHCP_S && !leased; w++) {
+					if (ns_progress)
+						ns_progress("Getting an address", attempt, NS_JOIN_ATTEMPTS);
+					sleep(1);
+					leased = wifi_has_ip();
+				}
+				if (leased) {
 					snprintf(joined_ssid, sizeof(joined_ssid), "%s", ssid);
 					snprintf(joined_psk,  sizeof(joined_psk),  "%s", psk);
 
@@ -2287,6 +2781,12 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 void NS_hotspotStop(void) {
 	announce_ssid[0] = '\0';
 	announce_psk[0]  = '\0';
+	/* Recover the AP interface before stopping its owner. A reopened app has no
+	 * process-local ns_ap_if, but still must return the interface to managed
+	 * mode when ending a broker-owned session. */
+	char recovered_ap_if[64];
+	if (!ns_ap_if[0] && active_hotspot_interface(recovered_ap_if, sizeof(recovered_ap_if)))
+		snprintf(ns_ap_if, sizeof(ns_ap_if), "%s", recovered_ap_if);
 
 	/* Host and client undo different things, and doing the wrong one is how
 	 * Turn off used to take a device off WiFi with no way back. */
@@ -2336,11 +2836,7 @@ void NS_hotspotStop(void) {
 
 	/* Restore the client stack if we moved it - judged by what the radio is
 	 * actually associated to, not by a flag this process may not have set. */
-	if (joined_hotspot || on_own_adhoc()) {
-		ns_log("leaving ad hoc network, restoring wifi\n");
-		wifi_client_stack_up();
-		joined_hotspot = false;
-	}
+	wifi_client_leave_adhoc();
 }
 
 bool NS_hotspotActive(void) { return hotspot_running || joined_hotspot; }
@@ -2368,14 +2864,19 @@ void NS_setProgressCallback(NS_ProgressFn fn) { ns_progress = fn; }
 
 void NS_wifiRestore(void) {
 	char path[512];
-	snprintf(path, sizeof(path), "%s/state/wifi_restore", ns_pak);
+	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
 
 	/* Stop serving too - on one radio, an AP left running is part of why the
 	 * client stack cannot settle. */
 	if (hotspot_running || hotspot_processes_alive()) NS_hotspotStop();
 
 	joined_hotspot = false;
-	if (wifi_client_stack_up()) remove(path);   /* see NS_wifiRecoverIfStranded */
+	if (wifi_client_stack_up()) {              /* see NS_wifiRecoverIfStranded */
+		remove(path);
+		char hook[512];
+		snprintf(hook, sizeof(hook), "%s/wifi_restore_hook", ns_state);
+		remove(hook);
+	}
 }
 
 /* Who is actually on our network.
@@ -2384,12 +2885,19 @@ void NS_wifiRestore(void) {
  * still have no address - so this reports the address where one is known and
  * says so plainly when it is not, rather than implying a working peer. */
 int NS_hotspotClients(NS_Client* out, int max) {
-	if (!hotspot_running || !ns_ap_if[0] || !out || max <= 0) return 0;
+	if (!out || max <= 0) return 0;
+
+	/* A broker or newly opened setup app has no process-local hotspot flags.
+	 * Reconstruct the interface from the config owned by the still-live hostapd
+	 * instead of making every post-launch guest table look empty. */
+	char apif[64] = "";
+	active_hotspot_interface(apif, sizeof(apif));
+	if (!apif[0]) return 0;
 
 	char cmd[256];
 	snprintf(cmd, sizeof(cmd),
 	         "iw dev %s station dump 2>/dev/null | sed -n 's/^Station \\([0-9a-f:]*\\).*/\\1/p'",
-	         ns_ap_if);
+	         apif);
 	FILE* p = popen(cmd, "r");
 	if (!p) return 0;
 
@@ -2404,19 +2912,19 @@ int NS_hotspotClients(NS_Client* out, int max) {
 		out[n].ip[0] = '\0';
 
 		/* The lease lands in the kernel's neighbour table once the client
-		 * actually talks to us, which is the thing worth showing. */
-		char look[256];
-		snprintf(look, sizeof(look),
-		         "awk 'tolower($4)==\"%s\" && $6==\"%s\" {print $1; exit}' /proc/net/arp 2>/dev/null",
-		         mac, ns_ap_if);
-		FILE* a = popen(look, "r");
-		if (a) {
-			if (fgets(out[n].ip, sizeof(out[n].ip), a)) {
-				char* n2 = strpbrk(out[n].ip, "\r\n");
-				if (n2) *n2 = '\0';
-			}
-			pclose(a);
+		 * actually talks to us, which is the thing worth showing. Read
+		 * directly: the broker refreshes this during play, and a process per
+		 * station per refresh was most of its cost. */
+		FILE* a = fopen("/proc/net/arp", "r");
+		char row[256];
+		while (a && fgets(row, sizeof(row), a)) {
+			char ip[NS_IP_LEN], hw[32], dev[64];
+			if (sscanf(row, "%15s %*s %*s %31s %*s %63s", ip, hw, dev) != 3) continue;
+			if (strcasecmp(hw, mac) || strcmp(dev, apif)) continue;
+			snprintf(out[n].ip, sizeof(out[n].ip), "%s", ip);
+			break;
 		}
+		if (a) fclose(a);
 		n++;
 	}
 	pclose(p);

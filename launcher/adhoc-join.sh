@@ -16,19 +16,34 @@
 SESSION="$1"
 [ -f "$SESSION" ] || exit 0
 
-# Derive our own paths. launch-stub.sh sets NETPLAY_PAK but does not export it,
-# and this runs as a separate process - so taking it from the session path is
-# the only thing guaranteed to be right.
-NETPLAY_PAK=$(dirname "$(dirname "$SESSION")")
+# The host session also records the ad-hoc SSID so the persistent broker and a
+# reopened setup UI can describe the network they own.  That is metadata, not
+# an instruction to associate as a station.  Running the client rejoin path on
+# a host tears down/reconfigures wlan0 while hostapd owns wlan1 and can make the
+# host's 10.0.0.1 endpoint unreachable just before the emulator starts.
+ROLE=$(sed -n 's/^role=//p' "$SESSION" | head -1)
+[ "$ROLE" = "client" ] || exit 0
+
+# The session now lives in shared userdata, so it no longer identifies a
+# platform pak. Callers export NETPLAY_PAK; retain defaults for manual use.
+: "${SDCARD_PATH:=/mnt/SDCARD}"
+: "${PLATFORM:=tg5040}"
+: "${NETPLAY_PAK:=$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak}"
+. "$NETPLAY_PAK/launcher/state-path.sh"
+. "$NETPLAY_PAK/launcher/wifi-platform.sh"
 
 SSID=$(sed -n 's/^adhoc_ssid=//p' "$SESSION" | head -1)
 PSK=$(sed -n 's/^adhoc_psk=//p' "$SESSION" | head -1)
 [ -n "$SSID" ] || exit 0
+# The app only writes names it generated; refuse anything else before it
+# reaches a supplicant config or a command line.
+case "$SSID" in nextui-*[!A-Za-z0-9]*|nextui-) exit 0 ;; nextui-*) ;; *) exit 0 ;; esac
+case "$PSK" in *[!A-Za-z0-9]*|"") exit 0 ;; esac
 
 say() { echo "[netplay-adhoc] $*" >&2; }
 
 # Already there? Nothing to do.
-if iw dev wlan0 link 2>/dev/null | grep -q "SSID: $SSID"; then
+if np_assoc "$SSID"; then
 	say "already on $SSID"
 	exit 0
 fi
@@ -38,34 +53,10 @@ say "not on $SSID - rejoining"
 # Reuse the platform's control socket, so the frontend's wifi status keeps
 # working while we are on the ad hoc network. Without this the signal icon and
 # SSID go blank even though the radio is associated - see docs/adhoc.md.
-CTRL=""
-for d in /proc/[0-9]*; do
-	a0=$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | head -1)
-	case "$a0" in
-	*/wpa_supplicant|wpa_supplicant)
-		# Both spellings occur: `-O/etc/wifi/sockets` joined on tg5040,
-		# `-c /path` as two arguments on my282.
-		want=""
-		for a in $(tr '\0' '\n' < "$d/cmdline" 2>/dev/null); do
-			if [ -n "$want" ]; then
-				[ "$want" = "O" ] && CTRL="$a" || CONFPATH="$a"
-				want=""
-				continue
-			fi
-			case "$a" in
-			-O)   want=O ;;
-			-c)   want=c ;;
-			-O?*) CTRL=${a#-O} ;;
-			-c?*) CONFPATH=${a#-c} ;;
-			esac
-		done
-		break ;;
-	esac
-done
-if [ -z "$CTRL" ] && [ -n "${CONFPATH:-}" ] && [ -f "$CONFPATH" ]; then
-	CTRL=$(sed -n 's/^ctrl_interface=\(DIR=\)\?//p' "$CONFPATH" 2>/dev/null | sed 's/ .*//' | head -1)
-fi
-[ -n "$CTRL" ] || CTRL=/var/run/wpa_supplicant
+# The per-platform default (and the -C spelling the H700 uses) live in
+# wifi-platform.sh; guessing /var/run/wpa_supplicant here was right on one of
+# the five platforms.
+CTRL=$(np_ctrl_dir)
 say "using ctrl_interface $CTRL"
 
 CONF=/tmp/netplay_adhoc_join.conf
@@ -88,22 +79,29 @@ EOF
 # whose joining was done by the stub had no recovery breadcrumb at all and no
 # watchdog: the two mechanisms meant to prevent stranding were simply never
 # armed. That is exactly what happened in testing.
-RESTORE="$NETPLAY_PAK/state/wifi_restore"
+RESTORE="$NETPLAY_STATE/wifi_restore"
+RESTORE_HOOK="$NETPLAY_STATE/wifi_restore_hook"
 if [ ! -f "$RESTORE" ]; then
 	for d in /proc/[0-9]*; do
-		a0=$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | head -1)
+		a0=$( { tr '\0' '\n' < "$d/cmdline"; } 2>/dev/null | head -1)
 		case "$a0" in
 		*/wpa_supplicant|wpa_supplicant)
-			tr '\0' ' ' < "$d/cmdline" > "$RESTORE" 2>/dev/null
+			{ tr '\0' ' ' < "$d/cmdline" > "$RESTORE"; } 2>/dev/null
 			echo >> "$RESTORE"
 			say "recorded restore command"
 			break ;;
 		esac
 	done
+	# On platforms that drive DHCP from a `wpa_cli -a` action script (H700),
+	# the supplicant command line alone is not enough to put WiFi back: the
+	# hook dies with the supplicant and nothing else ever runs a DHCP client.
+	if np_hook_capture "$RESTORE_HOOK"; then
+		say "recorded supplicant DHCP hook"
+	fi
 fi
 
 killall -q wpa_supplicant 2>/dev/null
-killall -q udhcpc 2>/dev/null
+np_dhcp_stop
 ip addr flush dev wlan0 2>/dev/null
 sleep 1
 
@@ -114,17 +112,25 @@ while [ $attempt -le 5 ]; do
 
 	w=1
 	while [ $w -le 8 ]; do
-		iw dev wlan0 link 2>/dev/null | grep -q "SSID: $SSID" && break
+		np_assoc "$SSID" && break
 		sleep 1
 		w=$((w + 1))
 	done
 
-	if iw dev wlan0 link 2>/dev/null | grep -q "SSID: $SSID"; then
-		# iw reports the SSID once associated, which is before the 4-way
-		# handshake finishes; a DHCP request sent in that gap is dropped.
+	if np_assoc "$SSID"; then
+		# The iw probe reports the SSID once associated, which is before the
+		# 4-way handshake finishes; a DHCP request sent in that gap is dropped.
+		# (The wpa_cli probe waits for COMPLETED and does not need this, but
+		# one extra second costs nothing and keeps both paths identical.)
 		sleep 1
-		udhcpc -i wlan0 -n -q -t 6 >/dev/null 2>&1
-		IP=$(ip -4 addr show wlan0 2>/dev/null | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -1)
+		np_dhcp_start
+		w=1
+		while [ $w -le 8 ]; do
+			np_has_ip && break
+			sleep 1
+			w=$((w + 1))
+		done
+		IP=$(np_ip)
 		if [ -n "$IP" ]; then
 			say "rejoined $SSID as $IP (attempt $attempt)"
 			# Guard the session we just re-entered. Self-terminating and
@@ -167,22 +173,32 @@ done
 say "could not rejoin $SSID - restoring previous network"
 killall -q wpa_supplicant 2>/dev/null
 ip addr flush dev wlan0 2>/dev/null
-if [ -x /etc/wifi/wifi_init.sh ]; then
-	/etc/wifi/wifi_init.sh stop  >/dev/null 2>&1
-	/etc/wifi/wifi_init.sh start >/dev/null 2>&1
-elif [ -f "$RESTORE" ]; then
-	# A30 has no wifi_init.sh. Replay the command captured before joining,
-	# which is the same portable fallback used by the app and watchdog.
+# Replaying the captured command is the portable route and is tried first:
+# the platform script performs a full rfkill/service teardown on top of the
+# stack we have already stopped, which was measured costing the Brick 10.1s
+# before restoration even began.
+if [ -f "$RESTORE" ]; then
 	OLD_SUPPLICANT=$(head -1 "$RESTORE" 2>/dev/null)
 	if [ -n "$OLD_SUPPLICANT" ]; then
+		# Captured service commands are not guaranteed to daemonise themselves. A
+		# foreground supplicant here would block this script (and pre-launch.sh
+		# waiting on it) forever instead of returning.
+		case " $OLD_SUPPLICANT " in
+			*" -B "*) ;;
+			*) OLD_SUPPLICANT="$OLD_SUPPLICANT -B" ;;
+		esac
 		sh -c "$OLD_SUPPLICANT" >/dev/null 2>&1
+		np_hook_replay "$RESTORE_HOOK"
 		w=1
 		while [ $w -le 10 ]; do
-			iw dev wlan0 link 2>/dev/null | grep -q "Connected to" && break
+			np_assoc && break
 			sleep 1
 			w=$((w + 1))
 		done
-		udhcpc -i wlan0 -n -q -t 3 -T 2 >/dev/null 2>&1
+		np_dhcp_start persistent
 	fi
+elif np_wifi_init stop; then
+	# Nothing recorded. The platform's own script is the only route left.
+	np_wifi_init start
 fi
 exit 1

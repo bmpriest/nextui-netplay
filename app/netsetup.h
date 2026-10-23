@@ -40,6 +40,7 @@ typedef struct {
 void NS_init(void);                  /* resolve pak path, platform, sd root */
 const char* NS_platform(void);
 const char* NS_pakPath(void);
+const char* NS_statePath(void); /* durable state in .userdata/shared/Netplay */
 bool NS_localIP(char* out, int len);
 
 /* --- assumption checks -------------------------------------------------
@@ -69,7 +70,7 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst);
 
 typedef enum { NS_ROLE_HOST, NS_ROLE_CLIENT } NS_Role;
 
-/* Write session.conf + state/session, and install launch stubs.
+/* Write session.conf + shared Netplay/session, and install launch stubs.
  * Writes no mode= line - the shim picks the mode from the core. */
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen);
 
@@ -79,13 +80,30 @@ void NS_disarm(void);
 /* Wi-Fi power save costs tens of milliseconds on the sparse per-frame traffic
  * netplay generates. Held off for as long as a session is armed; the prior
  * value is recorded and put back by NS_disarm. */
-void NS_wifiPowerSaveDisable(void);
+void NS_wifiPowerSaveDisable(void);   /* no-op when the setting is off */
+/* H700: the radio's power save only changes when its driver is reloaded. True
+ * when turning it off would need that reload (platform and current state). */
+bool NS_wifiPowerSaveNeedsReload(void);
+/* Reload the driver with power save off - several seconds without WiFi. Lasts
+ * until the device reboots. */
+bool NS_wifiPowerSaveReload(char* err, int errlen);
 void NS_wifiPowerSaveRestore(void);
 
-/* Put the platform's own WiFi back. Safe to call at any time; returns true if
- * it actually did something. The stranded check runs at startup, this is the
- * manual escape hatch for when it does not fire. */
-bool NS_wifiRecoverIfStranded(void);
+/* Put the platform's own WiFi back. Safe to call at any time. The stranded
+ * check runs at startup, NS_wifiRestore is the manual escape hatch for when it
+ * does not fire.
+ *
+ * Three outcomes, not two. This returned a bare "we tried" and the caller read
+ * it as "we succeeded", so a device whose restore had just failed - and logged
+ * that it failed - was told on screen that it had reconnected. A failure the
+ * user is not shown is a failure they cannot act on. */
+typedef enum {
+	NS_RECOVERY_NONE = 0,   /* nothing was owed */
+	NS_RECOVERY_DONE,       /* the client stack is back, with an address */
+	NS_RECOVERY_FAILED,     /* attempted; the record is retained for a retry */
+} NS_Recovery;
+
+NS_Recovery NS_wifiRecoverIfStranded(void);
 void NS_wifiRestore(void);
 
 /* Drop the session, keep the launch stubs. Games launch stock (the shim is a
@@ -95,9 +113,37 @@ void NS_endSession(void);
 bool NS_isArmed(void);         /* a session file exists */
 bool NS_stubsInstalled(void);  /* launch stubs are in place, session or not */
 
+/* Durable facts used by a newly opened setup app. The session file owns the
+ * role/network/host fields; the detached broker contributes liveness and the
+ * host's current guest table. */
+typedef struct {
+	bool    armed;
+	NS_Role role;
+	char    network[NS_SSID_LEN];
+	char    psk[NS_PSK_LEN];
+	char    host[NS_IP_LEN];
+	bool    broker_running;
+	int     guest_count;
+	struct {
+		char id[32];
+		char ip[NS_IP_LEN];
+	} guest[4];
+} NS_SessionInfo;
+
+bool NS_sessionInfo(NS_SessionInfo* out);
+
+/* Remove an active-session record that belongs to a previous device boot.
+ * Empty hosts and temporarily absent peers are valid and are never considered
+ * stale. Returns true only when a leftover session was actually removed. */
+bool NS_cleanupStaleSession(void);
+
+/* Host-only detached owner of discovery and compatibility negotiation. */
+bool NS_brokerStart(char* err, int errlen);
+void NS_brokerStop(void);
+
 /* --- settings -----------------------------------------------------------
  *
- * Persisted to state/settings as key=value. Read once at startup; written on
+ * Persisted to .userdata/shared/Netplay/settings as key=value. Read once at startup; written on
  * every change, because a handheld can lose power at any moment and a setting
  * that survives only until a clean exit is worse than no setting at all.
  */
@@ -107,8 +153,8 @@ bool NS_stubsInstalled(void);  /* launch stubs are in place, session or not */
  * systems, where each player has their own screen. A shared-screen system is
  * already one instance by definition and instancing it would be pure overhead -
  * hence a fixed, short compatibility list rather than "any core". */
-#define NS_INST_CORES 3
-extern const char* const NS_INST_CORE[NS_INST_CORES];   /* gambatte, gpsp, mgba */
+#define NS_INST_CORES 2
+extern const char* const NS_INST_CORE[NS_INST_CORES];   /* gambatte, mgba */
 
 typedef enum {
 	NS_INST_OFF = 0,     /* never */
@@ -123,6 +169,8 @@ typedef struct {
 	bool        verbose_logs; /* retain a complete immutable log for each game launch */
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
+	bool        disable_powersave; /* radio power save off while a session is armed */
+	bool        dsperate;      /* DSP.pak installed by this pak for DS local wireless */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
@@ -134,6 +182,30 @@ void NS_settingsSave(void);
 /* Is this core present anywhere we would load it from? Used to grey out an
  * instanced-core choice rather than offer something that cannot run. */
 bool NS_coreInstalled(const char* core);
+
+/* Emulator paks this pak ships and installs on request, backing up whatever
+ * was there (launcher/pak-manage.sh does the file work). */
+typedef enum {
+	NS_PAK_MGBA = 0,   /* MGBA.pak, paired with the instanced mGBA core */
+	NS_PAK_DSP,        /* DSP.pak (DSperate), Nintendo DS local wireless */
+	NS_PAK_COUNT
+} NS_ManagedPak;
+
+typedef struct {
+	bool installed;
+	bool managed;
+	bool missing;
+	bool mismatch;
+	bool mismatch_ignored;
+	char backup_date[32];
+} NS_PakStatus;
+
+/* Whether this pak carries a build of it for the running platform. */
+bool NS_pakAvailable(NS_ManagedPak pak);
+bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out);
+bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen);
+bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen);
+bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen);
 
 /* --- core manifest ------------------------------------------------------
  *
@@ -176,11 +248,12 @@ uint32_t NS_runtimeGlibc(void);
  */
 #define NS_CORE_PORT 55439
 
-/* Host: accept and serve one exchange if a client is waiting. Non-blocking on
- * accept, so it can sit in the hosting screen's once-a-second tick. */
+/* Host broker: accept and serve one exchange if a client is waiting.
+ * Non-blocking accept keeps the idle detached process inexpensive. */
 bool NS_compatServeStart(void);
 void NS_compatServeTick(void);
 void NS_compatServeStop(void);
+const char* NS_compatLastPeer(void);
 
 /* Client: compare manifests with the host. Returns the number of compatibility
  * fallbacks selected on both devices, or -1 on failure. */
@@ -216,12 +289,18 @@ int NS_compatSync(const char* host_ip, char* err, int errlen);
 #define NS_JOIN_ATTEMPTS 5
 #define NS_JOIN_GAP_S    3
 #define NS_JOIN_ASSOC_S  8
+/* Seconds to wait for a lease, per request, of which two are made per attempt.
+ * Polled rather than delegated to the client's own retry budget: `udhcpc -t 6`
+ * multiplies its -T pause straight into wall clock (~18s a call, 36s an
+ * attempt) and a client that is not installed at all returns instantly. */
+#define NS_JOIN_DHCP_S   6
 
 /* Frames of input lag traded for tolerance of a late peer. Written into both
- * session files from here rather than left to the shim's default, because the
- * two devices must use the same number: each side substitutes neutral input for
- * its own first input_delay frames, so a mismatch diverges during priming and
- * never recovers.
+ * session files from here as a transport-specific floor, alongside
+ * input_delay_auto=1: the shim may raise it from the measured round trip, and
+ * the two devices then adopt the higher of their proposals. They must end up on
+ * the same number - each side substitutes neutral input for its own first
+ * input_delay frames, so a mismatch diverges during priming and never recovers.
  *
  * Two values, because the two transports are not remotely comparable and a
  * single constant tuned for one is unusable on the other. Measured RTT:
@@ -273,6 +352,12 @@ void NS_setProgressCallback(NS_ProgressFn fn);
 
 void NS_announceStart(NS_Mode mode);
 void NS_announceHotspot(const char* ssid, const char* psk);
+
+/* True for the network names and passphrases Netplay generates ("nextui-" plus
+ * letters and digits; an alphanumeric passphrase of 8+ characters). Scan
+ * results, announcements and session values that fail are ignored. */
+bool NS_validAdhocSsid(const char* ssid);
+bool NS_validAdhocPsk(const char* psk);
 void NS_announceTick(void);
 void NS_announceStop(void);
 

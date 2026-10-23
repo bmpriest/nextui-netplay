@@ -51,9 +51,10 @@
 : "${USERDATA_PATH:=$SDCARD_PATH/.userdata/$PLATFORM}"
 
 NP="$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak"
+. "$NP/launcher/state-path.sh"
 STAGE="$NP/mounts"
 MOUNT_STAGE="$STAGE"
-MANIFEST="$NP/state/mounts.list"
+MANIFEST="$NETPLAY_STATE/mounts.list"
 SYS_EMUS="$SYSTEM_PATH/paks/Emus"
 AUTO="$USERDATA_PATH/auto.sh"
 
@@ -117,7 +118,7 @@ do_up() {
 	# Legacy stubs win over anything we mount: getEmuPath checks the SD card
 	# first, so a leftover Emus/<PLATFORM>/<TAG>.pak would shadow the mount and
 	# we would wrap twice. Clearing them is also the migration.
-	if [ -f "$NP/state/stubs.list" ] && [ -x "$NP/launcher/install-stubs.sh" ]; then
+	if [ -f "$NETPLAY_STATE/stubs.list" ] && [ -x "$NP/launcher/install-stubs.sh" ]; then
 		log "removing legacy SD stubs (superseded by mounts)"
 		SDCARD_PATH="$SDCARD_PATH" PLATFORM="$PLATFORM" SYSTEM_PATH="$SYSTEM_PATH" \
 			"$NP/launcher/install-stubs.sh" uninstall
@@ -188,7 +189,7 @@ do_down() {
 	[ -x "$NP/launcher/wrap-pak.sh" ] && "$NP/launcher/wrap-pak.sh" down
 
 	# Any legacy stubs go too, so "off" means off by either mechanism.
-	if [ -f "$NP/state/stubs.list" ] && [ -x "$NP/launcher/install-stubs.sh" ]; then
+	if [ -f "$NETPLAY_STATE/stubs.list" ] && [ -x "$NP/launcher/install-stubs.sh" ]; then
 		SDCARD_PATH="$SDCARD_PATH" PLATFORM="$PLATFORM" SYSTEM_PATH="$SYSTEM_PATH" \
 			"$NP/launcher/install-stubs.sh" uninstall
 	fi
@@ -201,6 +202,8 @@ do_down() {
 # stale or missing after a NextUI update, and the correct response to that is an
 # unwrapped system, never a device that will not start.
 do_boot() {
+	[ ! -x "$NP/launcher/session-cleanup.sh" ] || \
+		"$NP/launcher/session-cleanup.sh" >/dev/null 2>&1 || :
 	[ -d "$STAGE" ] || exit 0
 	do_up >/dev/null 2>&1
 	exit 0

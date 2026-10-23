@@ -55,14 +55,14 @@ future feature descriptions into current behavior.
 - **P2.14 mount transaction:** activation reports failure if any eligible target
   or wrapped extra cannot be covered, allowing the caller to roll back and use
   one consistent fallback route.
-- **P1.10 hosting navigation (partial):** B leaves Hosting without ending the
-  session, and announcements/compatibility serving continue in the setup-app
-  menu. Surviving setup-app exit still requires the planned broker.
+- **P1.10 hosting navigation:** armed hosts and guests return to a state-aware
+  main menu with Host/Join hidden. A detached broker keeps announcements and
+  compatibility serving alive after the setup app exits and reports guests.
 - **P1.7 compatibility feedback (partial):** manifest comparison runs even when
   compatibility fallback is disabled. The session records unresolved per-core
   mismatches, and the shim overlays either the selected compatibility build or
-  desync-risk outcome for the first two seconds of live core frames. Socket
-  deadlines and broker ownership remain.
+  desync-risk outcome for the first two seconds of live core frames. Kernel-
+  enforced accepted-socket deadlines remain.
 - **P2.16 reset policy:** shared-screen guest reset is rejected; host reset is a
   typed authoritative state transaction with guest ACK and host COMMIT. Link
   and solo reset remain local.
@@ -160,14 +160,11 @@ future feature descriptions into current behavior.
    and wait boundedly for the requested supplicant scan generation rather than
    relying only on whatever cache preceded the button press.
 
-10. Repair UI lifecycle edges.
-    - `Hosting -> B` leaves the screen and keeps the session alive. It must not
-      end the session. Prefer continuing discovery automatically; selecting
-      Host again must at least re-enable advertising and show connected peers.
+10. **Partial:** repair UI lifecycle edges.
+    - Armed hosts and guests now use one durable status main screen; Host/Join
+      are absent until X ends the session, and the broker reports host guests.
     - Return failed arm checks to the originating Host/Join flow, not always to
       Tools.
-    - Show the host's ready/core-selection status instead of making the host
-      `SCREEN_ARMED` presentation unreachable.
     - Use role-aware recovery text: the host is sending/committing state; the
       guest is receiving/rejoining.
 
@@ -213,14 +210,13 @@ future feature descriptions into current behavior.
     - Keep actions explicit: continue solo, retry/rejoin, end session, and
       dismiss. Do not map them onto controls a core can receive accidentally.
 
-18. Move discovery and compatibility serving to session lifetime. A small
-    detached broker started at arm time should own the UDP announcement socket,
-    compatibility listener, session/peer admission, and clean shutdown. This
-    lets a host remain discoverable in the setup-app menu, the NextUI menu, and
-    in-game without keeping the setup UI alive. Ad-hoc SSID beacons already make
-    the network discoverable; the broker supplies metadata, core negotiation,
-    and explicit busy/capacity replies. Its idle radio/CPU overhead is trivial
-    compared with emulation; lifecycle and peer authorization are the risks.
+18. **Partial:** discovery and compatibility serving now follow session
+    lifetime. A detached broker owns the UDP announcement socket, compatibility
+    listener, one-peer admission with explicit `BUSY`, atomic UI status, and
+    clean shutdown. A boot-identity check cleans session state that cannot have
+    survived a reboot, without treating an empty hot-seat host as stale.
+    Remaining work is authenticated pairing, binding admission to gameplay
+    sockets, and game-offer/reply ownership.
 
 ## Platform validation matrix
 

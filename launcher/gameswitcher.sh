@@ -2,14 +2,15 @@
 # Netplay-owned Game Switcher integration.
 #
 # NextUI backs both Recents and the Game Switcher with one recent.txt file.
-# While armed we therefore keep the user's list in state/ and expose only the
+# While armed we therefore keep the user's list in shared Netplay userdata and expose only the
 # hidden Netplay redirect.  Ending the session restores the list atomically.
 
 : "${SDCARD_PATH:=/mnt/SDCARD}"
 : "${PLATFORM:=tg5040}"
 
 NP="${NETPLAY_PAK:-$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak}"
-STATE="$NP/state"
+. "$NP/launcher/state-path.sh"
+STATE="$NETPLAY_STATE"
 SETTINGS="$STATE/settings"
 SHARED="$SDCARD_PATH/.userdata/shared"
 RECENTS="$SHARED/.minui/recent.txt"

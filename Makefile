@@ -1,4 +1,4 @@
-.PHONY: dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp gblc-pak nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak nds-wifi-brick-pak app test test-gambatte-dual clean help
+.PHONY: cores-dsp check-dsp dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak nds-wifi-brick-pak
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -12,7 +12,12 @@ PLATFORMS  := tg5040 tg5050 my282 my355 h700
 # build-platforms owns the image-digest/source-commit pairing for every target.
 # Keep the sibling checkout as the convenient default, but allow CI and other
 # workspaces to point at it without reproducing one developer's home directory.
-BUILDER    ?= $(abspath $(CURDIR)/../../build-platforms)
+# From the main checkout that is sbcs/build-platforms; from a worktree under
+# .worktrees/<name>/ it sits two levels further up. Prefer whichever exists so
+# the same command works in both, and fall back to the plain guess so a missing
+# builder still reports the path it expected.
+BUILDER_PATHS := $(abspath $(CURDIR)/../../build-platforms) $(abspath $(CURDIR)/../../../build-platforms)
+BUILDER    ?= $(firstword $(wildcard $(BUILDER_PATHS)) $(firstword $(BUILDER_PATHS)))
 
 help:
 	@echo "make shim    cross-build the shim for $(PLATFORMS) (needs docker)"
@@ -24,6 +29,7 @@ help:
 	@echo "make compatibility  build seven pinned cores for ARMv7 + AArch64"
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
+	@echo "make cores-dsp  build DSP.pak (DSperate, NDS local wireless) for $(DSP_PLATFORMS)"
 	@echo "make test    run the host test suites"
 	@echo "make dist    create Netplay.pak.zip, compatibility-cores.zip and Netplay-Full.pak.zip"
 	@echo "make clean   remove dist/"
@@ -59,6 +65,19 @@ GPSP_PATCHES := cores/patches/gpsp-platforms.patch cores/patches/gpsp-001-rfu-di
 GAMBATTE_STAMP := $(GAMBATTE_SRC)/.netplay-fork-$(GAMBATTE_REV)
 GAMBATTE_DUAL_STAMP := $(GAMBATTE_DUAL_SRC)/.netplay-fork-$(GAMBATTE_REV)
 GPSP_STAMP := $(GPSP_SRC)/.netplay-patched-$(GPSP_REV)
+
+#  mgba - carries a working lockstep cable in core code, but the libretro build
+#         does not compile the two SIO drivers that use it. We add them; that is
+#         the whole of this change so far. Pinned to the same revision NextUI
+#         builds (925f0f0b) so our core and the shipped one are the same mGBA:
+#         later revisions moved the libretro build out of the repo root and the
+#         platform patch no longer applies.
+MGBA_SRC  := $(CORE_SRC_ROOT)/mgba
+MGBA_REPO := https://github.com/libretro/mgba
+MGBA_REV  := 925f0f0bc1f51c79ca5446d7427512c653e615b3
+MGBA_DUAL_FRONTEND := cores/mgba/libretro_dual.c
+MGBA_PATCHES := cores/patches/mgba-platforms.patch cores/patches/mgba-001-build-lockstep-drivers.patch cores/patches/mgba-002-dual-frontend.patch
+MGBA_STAMP := $(MGBA_SRC)/.netplay-patched-$(MGBA_REV)
 
 FCEUMM_SRC := $(CORE_SRC_ROOT)/fceumm
 PICODRIVE_SRC := $(CORE_SRC_ROOT)/picodrive
@@ -131,6 +150,18 @@ $(GPSP_STAMP): $(GPSP_PATCHES)
 	@patch -d "$(GPSP_SRC)" -p1 < cores/patches/gpsp-003-netplay-version.patch
 	@touch "$@"
 
+$(MGBA_STAMP): $(MGBA_PATCHES) $(MGBA_DUAL_FRONTEND) shim/include/gambatte_dual.h
+	@rm -rf "$(MGBA_SRC)"
+	@mkdir -p "$(CORE_SRC_ROOT)"
+	@git clone -q "$(MGBA_REPO)" "$(MGBA_SRC)"
+	@git -C "$(MGBA_SRC)" checkout -q "$(MGBA_REV)"
+	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-platforms.patch
+	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-001-build-lockstep-drivers.patch
+	@cp "$(MGBA_DUAL_FRONTEND)" "$(MGBA_SRC)/src/platform/libretro/libretro_dual.c"
+	@cp "shim/include/gambatte_dual.h" "$(MGBA_SRC)/src/platform/libretro/gambatte_dual.h"
+	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-002-dual-frontend.patch
+	@touch "$@"
+
 # The `platform=` string is not our platform id - it selects a branch inside the
 # core's own Makefile, and an unrecognised one can silently fall through to
 # Windows. Our tracked patches add tg5040/tg5050/my282; the two newer aarch64
@@ -180,6 +211,68 @@ cores-gambatte-dual: $(GAMBATTE_DUAL_STAMP)
 	@for p in $(PLATFORMS); do \
 		printf "   %-7s %s\n" "$$p" \
 			"$$(strings -n 6 dist/cores-experimental/$$p/gambatte_dual_libretro.so | grep -m1 '^v0\.5\.0-netdual')"; \
+	done
+
+# Only tg5040 (and h700, which core_build maps onto it) has an mGBA platform
+# branch - ours is NextUI's, and NextUI only ever added that one. Building the
+# others would hit the `else` at the bottom of mGBA's Makefile.libretro and
+# silently produce a Windows target, exactly the failure the comment above
+# core_build warns about. Restrict the loop rather than trust the caller.
+# mGBA's `platform=` strings are its own, and do not line up with ours or with
+# core_build's mapping. tg5040 gets a branch from the platform patch; my282 has
+# none and uses the generic unix branch with CC from the toolchain, which is
+# exactly what NextUI does for it. Anything else selects no branch and the build
+# dies with "no makefile found" - or worse, falls through to Windows.
+MGBA_PLATFORMS := tg5040 h700 my282
+
+mgba_platform = $(if $(filter tg5040 h700,$(1)),tg5040,$(if $(filter my282,$(1)),unix,))
+
+cores-mgba: $(MGBA_STAMP)
+	@bad=""; for p in $(PLATFORMS); do \
+		case " $(MGBA_PLATFORMS) " in *" $$p "*) ;; *) bad="$$bad $$p" ;; esac; \
+	done; \
+	if [ -n "$$bad" ]; then \
+		echo "cores-mgba: no mGBA platform branch for:$$bad"; \
+		echo "  supported: $(MGBA_PLATFORMS)  (override with PLATFORMS=)"; \
+		exit 1; \
+	fi
+	@for p in $(PLATFORMS); do \
+		mp=$$(case $$p in tg5040|h700) echo tg5040 ;; my282) echo unix ;; esac); \
+		echo "== mgba $$p (mgba platform=$$mp)"; \
+		mkdir -p dist/cores/$$p; \
+		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
+			CMD="make -C $(MGBA_SRC) -f Makefile.libretro platform=$$mp clean >/dev/null 2>&1 && \
+			make -C $(MGBA_SRC) -f Makefile.libretro platform=$$mp -j4 && \
+			cp $(MGBA_SRC)/mgba_libretro.so dist/cores/$$p/" || exit 1; \
+	done
+
+cores-mgba-dual: $(MGBA_STAMP)
+	@bad=""; for p in $(PLATFORMS); do \
+		case " $(MGBA_PLATFORMS) " in *" $$p "*) ;; *) bad="$$bad $$p" ;; esac; \
+	done; \
+	if [ -n "$$bad" ]; then \
+		echo "cores-mgba-dual: no mGBA platform branch for:$$bad"; \
+		echo "  supported: $(MGBA_PLATFORMS)  (override with PLATFORMS=)"; \
+		exit 1; \
+	fi
+	@for p in $(PLATFORMS); do \
+		mp=$$(case $$p in tg5040|h700) echo tg5040 ;; my282) echo unix ;; esac); \
+		echo "== mgba-dual $$p (mgba platform=$$mp)"; \
+		mkdir -p dist/cores-experimental/$$p; \
+		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
+			CMD="make -C $(MGBA_SRC) -f Makefile.libretro NETPLAY_DUAL_INSTANCE=1 platform=$$mp clean >/dev/null 2>&1 && \
+			make -C $(MGBA_SRC) -f Makefile.libretro NETPLAY_DUAL_INSTANCE=1 platform=$$mp -j4 && \
+			cp $(MGBA_SRC)/mgba_libretro.so dist/cores-experimental/$$p/mgba_dual_libretro.so" || exit 1; \
+	done
+	@for p in $(PLATFORMS); do \
+		printf "   %-7s abi=%s scheduler=%s\n" "$$p" \
+			"$$(nm -D --defined-only dist/cores-experimental/$$p/mgba_dual_libretro.so 2>/dev/null | grep -c retro_dual_get_abi_version)" \
+			"$$(strings dist/cores-experimental/$$p/mgba_dual_libretro.so | grep -c 0.11-dev-netdual1)"; \
+	done
+	@for p in $(PLATFORMS); do \
+		printf "   %-7s lockstep symbols: gb=%s gba=%s\n" "$$p" \
+			"$$(nm --defined-only dist/cores-experimental/$$p/mgba_dual_libretro.so 2>/dev/null | grep -c 'GBSIOLockstep')" \
+			"$$(nm --defined-only dist/cores-experimental/$$p/mgba_dual_libretro.so 2>/dev/null | grep -c 'GBASIOLockstep')"; \
 	done
 
 test-gambatte-dual: $(GAMBATTE_DUAL_STAMP)
@@ -312,6 +405,31 @@ nds-wifi-brick-pak: nds-wifi-hooks
 
 nds-wifi-paks: nds-wifi-a30-pak nds-wifi-brick-pak
 
+# Stage and package the measurement pak for one platform, laid out as it sits on
+# the card so the zip is self-describing: unpack it at the SD root and the pak
+# and its ROM folder land where they belong. Same shape as gblc-pak.
+#
+#   make mgba-pak MGBA_PAK_PLATFORM=tg5040   -> dist/MGBA-tg5040.pak.zip
+#   make mgba-pak MGBA_PAK_PLATFORM=my282    -> dist/MGBA-my282.pak.zip
+MGBA_PAK_PLATFORM ?= tg5040
+MGBA_PAK_STAGE   := dist/mgba-$(MGBA_PAK_PLATFORM)
+MGBA_PAK_ARCHIVE := dist/MGBA-$(MGBA_PAK_PLATFORM).pak.zip
+MGBA_PAK_DIR     := $(MGBA_PAK_STAGE)/Emus/$(MGBA_PAK_PLATFORM)/MGBA.pak
+MGBA_ROM_DIR     := $(MGBA_PAK_STAGE)/Roms/Game Boy Advance (MGBA)
+
+mgba-pak:
+	@$(MAKE) --no-print-directory cores-mgba PLATFORMS=$(MGBA_PAK_PLATFORM)
+	@rm -rf "$(MGBA_PAK_STAGE)"
+	@mkdir -p "$(MGBA_PAK_DIR)" "$(MGBA_ROM_DIR)"
+	@cp testing/MGBA.pak/launch.sh testing/MGBA.pak/default.cfg \
+		testing/MGBA.pak/README.txt "$(MGBA_PAK_DIR)/"
+	@cp dist/cores/$(MGBA_PAK_PLATFORM)/mgba_libretro.so "$(MGBA_PAK_DIR)/"
+	@cp testing/roms/README-mgba.txt "$(MGBA_ROM_DIR)/README.txt"
+	@chmod +x "$(MGBA_PAK_DIR)"/*.sh
+	@rm -f "$(MGBA_PAK_ARCHIVE)"
+	@cd "$(MGBA_PAK_STAGE)" && zip -qr "$(abspath $(MGBA_PAK_ARCHIVE))" Emus Roms
+	@echo "built $(MGBA_PAK_ARCHIVE)"
+
 cores-gpsp:
 	@test -d "$(GPSP_SRC)" || { echo "missing $(GPSP_SRC)"; exit 1; }
 	$(call core_build,gpsp,$(GPSP_SRC),)
@@ -344,13 +462,38 @@ NEXTUI ?= ../../NextUI
 
 # NEXTUI=/opt/nextui-src is where build-platforms mounts the pinned tree for the
 # platform being built - not a path on this machine.
+# DSperate (DSP.pak) - a standalone NDS emulator, not a libretro core. Its own
+# build lives in dsperate/ (toolchain images, patches, launcher); this stages
+# one DSP.pak per platform, holding only that platform's binaries, the way
+# MGBA.pak is shipped. launcher/pak-manage.sh installs it on request.
+DSP_PLATFORMS := tg5040 tg5050 h700
+DSP_STAGE     := dist/dsp
+DSPERATE_REPO ?= https://github.com/beebono/DSperate
+
+cores-dsp:
+	@for p in $(DSP_PLATFORMS); do \
+		echo "== dsp $$p"; \
+		$(MAKE) -s -C dsperate dist-$$p DSPERATE_REPO="$(DSPERATE_REPO)" >/dev/null || exit 1; \
+		rm -rf "$(DSP_STAGE)/$$p/DSP.pak"; mkdir -p "$(DSP_STAGE)/$$p/DSP.pak"; \
+		( cd dsperate/dist/DSP.pak && for f in *; do \
+			case " $(DSP_PLATFORMS) " in *" $$f "*) [ "$$f" = "$$p" ] || continue ;; esac; \
+			cp -R "$$f" "$(CURDIR)/$(DSP_STAGE)/$$p/DSP.pak/"; \
+		done ); \
+		printf "   %-7s %s\n" "$$p" "$$(du -sh $(DSP_STAGE)/$$p/DSP.pak | cut -f1)"; \
+	done
+
+check-dsp:
+	@for p in $(DSP_PLATFORMS); do \
+		test -x "$(DSP_STAGE)/$$p/DSP.pak/$$p/dsperate" || { echo "missing DSP.pak $$p - run 'make cores-dsp' first"; exit 1; }; \
+	done
+
 app:
 	@for p in $(PLATFORMS); do \
 		echo "== app $$p"; \
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
 			CMD='sh -c "cd app && make PLATFORM='$$p' NEXTUI=/opt/nextui-src"' || exit 1; \
 	done
-	@ls -la bin/*/netplay.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
+	@ls -la bin/*/netplay.elf bin/*/netplay-broker.elf bin/*/netplay-wifips.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
 test:
 	@./shim/test/run.sh
@@ -358,7 +501,17 @@ test:
 	@./shim/test/dual.sh
 	@./shim/test/romscan.sh
 	@./cores/tests/run.sh
+	@./cores/tests/mgbalockstep.sh
+	@./cores/tests/mgbadual.sh
+	@./testing/test-mgba-launch.sh
+	@./testing/test-mgba-manage.sh
+	@./testing/test-dsp-manage.sh
+	@./testing/test-instanced-ui.sh
+	@./testing/test-wifi-platform.sh
+	@./testing/test-log-rotation.sh
+	@./testing/test-wifi-watchdog.sh
 	@./launcher/test.sh
+	@PYTHONDONTWRITEBYTECODE=1 python3 tools/test-netplay-harness.py
 
 ###########################################################
 # Test build.
@@ -379,7 +532,7 @@ test:
 # shipped and is the pak's whole UI.)
 ###########################################################
 
-BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores
+BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-dsp
 
 dist: dist-base dist-compatibility dist-full
 	@echo
@@ -391,9 +544,10 @@ dist-base: $(BASE_DIST_CHECKS)
 
 	@cp pak.json "$(BASE_STAGE)/$(PAK)/"
 	@cp launcher/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
-	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh \
+	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
-	    launcher/mount-common.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh \
+	    launcher/mount-common.sh launcher/state-path.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh launcher/mgba-manage.sh \
+	    launcher/pak-manage.sh launcher/wifi-platform.sh \
 	    "$(BASE_STAGE)/$(PAK)/launcher/"
 	@cp launcher/session.conf.example "$(BASE_STAGE)/$(PAK)/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override"
@@ -404,10 +558,27 @@ dist-base: $(BASE_DIST_CHECKS)
 		cp dist/cores-experimental/$$p/gambatte_dual_libretro.so \
 		   "$(BASE_STAGE)/$(PAK)/cores/override/$$p/"; \
 	done
+	@for p in $(MGBA_PLATFORMS); do \
+		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/mgba/$$p/MGBA.pak" \
+		             "$(BASE_STAGE)/$(PAK)/cores/override/$$p"; \
+		cp testing/MGBA.pak/launch.sh testing/MGBA.pak/default.cfg testing/MGBA.pak/README.txt \
+		   "$(BASE_STAGE)/$(PAK)/cores/mgba/$$p/MGBA.pak/"; \
+		cp dist/cores/$$p/mgba_libretro.so \
+		   "$(BASE_STAGE)/$(PAK)/cores/mgba/$$p/MGBA.pak/"; \
+		cp dist/cores-experimental/$$p/mgba_dual_libretro.so \
+		   "$(BASE_STAGE)/$(PAK)/cores/override/$$p/"; \
+	done
+	@for p in $(DSP_PLATFORMS); do \
+		case " $(PLATFORMS) " in *" $$p "*) ;; *) continue ;; esac; \
+		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/dsp/$$p"; \
+		cp -R "$(DSP_STAGE)/$$p/DSP.pak" "$(BASE_STAGE)/$(PAK)/cores/dsp/$$p/"; \
+	done
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/bin/$$p"; \
 		cp bin/$$p/netplay_shim.so "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
+		cp bin/$$p/netplay-broker.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
+		cp bin/$$p/netplay-wifips.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		done
 	@chmod 755 "$(BASE_STAGE)/$(PAK)/launch.sh" "$(BASE_STAGE)/$(PAK)/launcher"/*
 	@find "$(BASE_STAGE)" -name '.DS_Store' -delete
@@ -438,6 +609,10 @@ check-netplay-cores:
 	test -f dist/cores-experimental/$$p/gambatte_dual_libretro.so || { \
 		echo "missing netplay core $$p/gambatte_dual - run 'make cores' first"; exit 1; }; \
 	done
+	@for p in $(MGBA_PLATFORMS); do \
+		test -f dist/cores/$$p/mgba_libretro.so || { echo "missing mGBA core $$p"; exit 1; }; \
+		test -f dist/cores-experimental/$$p/mgba_dual_libretro.so || { echo "missing mGBA dual core $$p"; exit 1; }; \
+	done
 
 check-shim-%:
 	@test -f bin/$*/netplay_shim.so || { \
@@ -446,6 +621,8 @@ check-shim-%:
 check-app-%:
 	@test -f bin/$*/netplay.elf || { \
 		echo "missing bin/$*/netplay.elf - run 'make app' first"; exit 1; }
+	@test -f bin/$*/netplay-broker.elf || { \
+		echo "missing bin/$*/netplay-broker.elf - run 'make app' first"; exit 1; }
 
 clean:
 	rm -rf dist

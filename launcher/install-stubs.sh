@@ -18,8 +18,9 @@
 : "${SYSTEM_PATH:=$SDCARD_PATH/.system/$PLATFORM}"
 
 NP="$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak"
+. "$NP/launcher/state-path.sh"
 STUB="$NP/launcher/launch-stub.sh"
-MANIFEST="$NP/state/stubs.list"
+MANIFEST="$NETPLAY_STATE/stubs.list"
 SD_EMUS="$SDCARD_PATH/Emus/$PLATFORM"
 
 # Identifies a launch.sh as ours. Anything without this marker is not ours to

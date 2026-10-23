@@ -213,8 +213,9 @@ instances over loopback with a core that uses the netpacket interface, and
 asserts the interface is accepted, both sides start with the right client ids,
 packets cross in both directions, and teardown reaches the core.
 
-Not yet exercised on device: link play between two units, and the tier 2 bind
-mount. Shared-screen input lockstep, authoritative desync recovery, and both
+Link play between two units and the tier 2 bind mount have since been exercised
+on device (see [implementation.md](implementation.md#working-on-hardware)).
+Shared-screen input lockstep, authoritative desync recovery, and both
 process-rejoin paths are covered by the host-side integration suite; the rejoin
 paths still need two-device fault testing.
 
@@ -248,7 +249,7 @@ peer=192.168.1.42    # clients only
 session_id=<generated hex> # namespaces host recovery data in /tmp
 ```
 
-`launcher/minarch.elf` finds it at `<pak>/state/session` and exports
+`launcher/minarch.elf` finds it at `.userdata/shared/Netplay/session` and exports
 `NETPLAY_SESSION`. It has to discover the file rather than read an environment
 variable, because games launched from the game list are started by NextUI and
 there is no point in that path where anyone could set one.

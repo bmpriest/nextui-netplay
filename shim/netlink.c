@@ -20,7 +20,7 @@
  *     rather than overwritten; CMD_SESSION_IDENTITY carries rom_size;
  *     CMD_LINK_VERDICT added.
  * 11: CMD_RTT_PROBE/CMD_RTT_ECHO added; input delay is negotiated from the
- *     measured round trip rather than fixed by the session file. */
+ *     measured round trip above the session's transport-specific floor. */
 #define NETLINK_PROTOCOL 13
 
 #define QUEUE_SIZE    512
@@ -51,9 +51,6 @@
 /* Long enough not to trip on a frame hitch, short enough that a menu does not
  * overrun the peer's queue first. A frame is ~16ms. */
 #define STALL_MS       250
-/* A peer can pause indefinitely and legitimately - a long menu. But if it stops
- * responding without closing the socket, resuming beats hanging forever. */
-#define MAX_PAUSE_MS   30000
 
 enum {
 	CMD_HELLO = 0x00,
@@ -163,19 +160,17 @@ static struct {
 	uint32_t resync_commit_epoch;
 	bool     resync_commit_ready;
 
-	/* Smoothed round trip. Kept as a small ring rather than an average so one
-	 * scheduling hiccup on either device cannot pin the estimate high: the
-	 * median of the last few samples is what the delay is derived from. */
+	/* Recent round trips. Kept as a small ring so the median can describe the
+	 * normal link while the maximum sizes the jitter-tolerance window. */
 	uint32_t rtt_us[RTT_SAMPLES];
 	unsigned rtt_count, rtt_next;
 	uint32_t rtt_token;
 	struct timeval rtt_sent_at;
 	bool     rtt_outstanding;
+	bool     rtt_skip_first;  /* first echo of a connection - see the echo handler */
 	struct timeval rtt_last_probe;
 
-	struct timeval starved_since; /* core running, queue empty, peer connected */
 	struct timeval last_run;      /* last retro_run, per NetLink_markFrame */
-	struct timeval peer_paused_at;
 	bool           told_peer_paused;
 	bool           core_running;
 	bool           peer_paused;
@@ -527,7 +522,6 @@ static void drop_connection(const char* reason) {
 		 * strands us waiting for a CMD_RESUME that can never arrive. */
 		nl.peer_paused = false;
 		nl.told_peer_paused = false;
-		nl.starved_since.tv_sec = nl.starved_since.tv_usec = 0;
 		nl.rtt_count = nl.rtt_next = 0;
 		nl.rtt_outstanding = false;
 		/* Everything the departed peer told us dies with it, so a reconnecting
@@ -570,6 +564,7 @@ static void* worker(void* arg) {
 			nl.peer_session_identity_ready = false;
 			nl.checkpoint_ack_ready = false;
 			nl.connected = true;
+			nl.rtt_skip_first = true;
 			nl.connect_event = true;
 			nl.connection_generation++;
 			if (!nl.connection_generation) nl.connection_generation++;
@@ -660,6 +655,10 @@ static void* worker(void* arg) {
 		unsigned queued = (nl.q_tail - nl.q_head + QUEUE_SIZE) % QUEUE_SIZE;
 		pthread_mutex_unlock(&nl.lock);
 		if (queued >= QUEUE_HIGH_WATER) {
+			/* POLLIN says the peer is still sending; we are the side not reading.
+			 * Without this the silence timeout above dropped a healthy
+			 * connection whenever a long menu filled the queue. */
+			gettimeofday(&nl.last_rx, NULL);
 			if (!nl.backpressure) {
 				nl.backpressure = true;
 				nl_log("queue at %u/%u - applying backpressure\n", queued, QUEUE_SIZE);
@@ -694,7 +693,6 @@ static void* worker(void* arg) {
 		if (hdr.cmd == CMD_PAUSE || hdr.cmd == CMD_RESUME) {
 			pthread_mutex_lock(&nl.lock);
 			nl.peer_paused = (hdr.cmd == CMD_PAUSE);
-			if (nl.peer_paused) gettimeofday(&nl.peer_paused_at, NULL);
 			pthread_mutex_unlock(&nl.lock);
 			if (hdr.cmd == CMD_PAUSE) {
 				const char* why = (size && buf[0] == NETLINK_PAUSE_FRONTEND)
@@ -779,12 +777,30 @@ static void* worker(void* arg) {
 				long sec = now.tv_sec - nl.rtt_sent_at.tv_sec;
 				long usec = now.tv_usec - nl.rtt_sent_at.tv_usec;
 				long long total = (long long)sec * 1000000LL + usec;
+				/* Test hook: the first round trip of each process arrives this
+				 * much late, as from a peer still loading its game. */
+				static bool slow_first_applied;
+				if (!slow_first_applied) {
+					const char* v = getenv("NETLINK_TEST_SLOW_FIRST_RTT_MS");
+					if (v) total += atoll(v) * 1000LL;
+					slow_first_applied = true;
+				}
 				if (total < 0) total = 0;
 				if (total > UINT32_MAX) total = UINT32_MAX;
-				nl.rtt_us[nl.rtt_next] = (uint32_t)total;
-				nl.rtt_next = (nl.rtt_next + 1) % RTT_SAMPLES;
-				if (nl.rtt_count < RTT_SAMPLES) nl.rtt_count++;
 				nl.rtt_outstanding = false;
+				/* The first probe of a connection goes out while the peer may
+				 * still be loading its game, and its echo then measures that
+				 * rather than the link: 280-800 ms on H700/Brick pairs whose link
+				 * answered in 10-30 ms. Sized from the maximum, that one sample
+				 * alone set a 20-frame delay. Drop it; later probes describe the
+				 * link. */
+				if (nl.rtt_skip_first) {
+					nl.rtt_skip_first = false;
+				} else {
+					nl.rtt_us[nl.rtt_next] = (uint32_t)total;
+					nl.rtt_next = (nl.rtt_next + 1) % RTT_SAMPLES;
+					if (nl.rtt_count < RTT_SAMPLES) nl.rtt_count++;
+				}
 			}
 			pthread_mutex_unlock(&nl.lock);
 		}
@@ -796,38 +812,6 @@ static void* worker(void* arg) {
 			nl.link_verdict_ready = true;
 			pthread_mutex_unlock(&nl.lock);
 		}
-
-#if 0 /* Frozen executable transfer path. */
-		if (hdr.cmd == CMD_CORE && size > 8) {
-			uint32_t total = ntohl(*(uint32_t*)buf);
-			uint32_t off   = ntohl(*(uint32_t*)(buf + 4));
-			size_t   n     = size - 8;
-
-			/* Same bounds discipline as CMD_STATE: a hostile or corrupt total
-			 * must not become a huge malloc, and off/n must not wrap. */
-			if (total == 0 || total > NETLINK_MAX_CORE || off > total || n > total - off) {
-				nl_log("bad core chunk (total=%u off=%u n=%zu) - ignoring\n", total, off, n);
-			} else {
-				pthread_mutex_lock(&nl.lock);
-				if (!nl.core_buf || nl.core_len != total) {
-					free(nl.core_buf);
-					nl.core_buf = malloc(total);
-					nl.core_len = total;
-					nl.core_have = 0;
-					nl.core_ready = false;
-				}
-				if (nl.core_buf) {
-					memcpy(nl.core_buf + off, buf + 8, n);
-					nl.core_have += n;
-					if (nl.core_have >= total) {
-						nl.core_ready = true;
-						nl_log("core received (%u bytes)\n", total);
-					}
-				}
-				pthread_mutex_unlock(&nl.lock);
-			}
-		}
-#endif
 
 		if (hdr.cmd == CMD_HASH && size == 8) {
 			pthread_mutex_lock(&nl.lock);
@@ -959,34 +943,6 @@ void NetLink_markFrame(void) {
 void NetLink_setCoreRunning(bool running) {
 	nl.core_running = running;
 	if (!running) gettimeofday(&nl.last_run, NULL);
-
-	/* A link core may legitimately block in retro_run waiting for a serial byte,
-	 * and NetLink_markFrame deliberately does not count that as a frontend
-	 * stall - saying otherwise would pause the peer and starve the very data the
-	 * core is waiting for. The consequence is that a byte which never arrives
-	 * blocks forever, unobserved.
-	 *
-	 * So observe it, without changing what is reported to the peer: note when
-	 * the core enters a run with nothing queued for it. Any delivery clears it
-	 * (see NetLink_popPacket), which is why "quiet" alone can never trip this. */
-	pthread_mutex_lock(&nl.lock);
-	if (running && nl.connected && nl.q_head == nl.q_tail) {
-		if (!nl.starved_since.tv_sec) gettimeofday(&nl.starved_since, NULL);
-	} else if (!running) {
-		/* Leave the timer running across the frame boundary: a core that blocks
-		 * for several frames is one starvation, not several. */
-	}
-	pthread_mutex_unlock(&nl.lock);
-}
-
-/* Milliseconds the core has been running with an empty queue on a live
- * connection, or 0 when it is not starved. */
-long NetLink_starvedMs(void) {
-	pthread_mutex_lock(&nl.lock);
-	long ms = 0;
-	if (nl.connected && nl.starved_since.tv_sec) ms = ms_since(&nl.starved_since);
-	pthread_mutex_unlock(&nl.lock);
-	return ms;
 }
 
 bool NetLink_isPeerPaused(void) {
@@ -1148,55 +1104,6 @@ bool NetLink_takeLinkVerdict(bool* can_pair, uint32_t* reason) {
 	pthread_mutex_unlock(&nl.lock);
 	return ok;
 }
-
-#if 0 /* Frozen executable-sharing API. */
-void NetLink_setCoreId(const NetLinkCoreId* id) {
-	pthread_mutex_lock(&nl.lock);
-	nl.core_id = *id;
-	pthread_mutex_unlock(&nl.lock);
-}
-
-bool NetLink_peerCoreId(NetLinkCoreId* out) {
-	pthread_mutex_lock(&nl.lock);
-	bool known = nl.peer_core_known;
-	if (known && out) *out = nl.peer_core_id;
-	pthread_mutex_unlock(&nl.lock);
-	return known;
-}
-
-bool NetLink_sendCore(const void* data, size_t len) {
-	if (!len || len > NETLINK_MAX_CORE) return false;
-	const uint8_t* p = data;
-	for (size_t off = 0; off < len; off += STATE_CHUNK) {
-		size_t n = len - off;
-		if (n > STATE_CHUNK) n = STATE_CHUNK;
-
-		uint8_t pkt[8 + STATE_CHUNK];
-		uint32_t hdr[2] = { htonl((uint32_t)len), htonl((uint32_t)off) };
-		memcpy(pkt, hdr, 8);
-		memcpy(pkt + 8, p + off, n);
-
-		pthread_mutex_lock(&nl.lock);
-		bool ok = nl.connected && send_framed(CMD_CORE, pkt, n + 8, NetLink_localClientId());
-		pthread_mutex_unlock(&nl.lock);
-		if (!ok) return false;
-	}
-	return true;
-}
-
-bool NetLink_takeCore(void** data, size_t* len) {
-	pthread_mutex_lock(&nl.lock);
-	if (!nl.core_ready) { pthread_mutex_unlock(&nl.lock); return false; }
-	*data = nl.core_buf;
-	*len  = nl.core_len;
-	nl.core_buf = NULL;
-	nl.core_len = 0;
-	nl.core_have = 0;
-	nl.core_ready = false;
-	pthread_mutex_unlock(&nl.lock);
-	return true;
-}
-#endif
 
 /* Kinds keep the two bootstrap transfers apart even if they arrive back to
  * back: a payload of the wrong kind stays queued rather than being handed to a
@@ -1362,9 +1269,6 @@ bool NetLink_popPacket(void* out, size_t out_cap, size_t* out_len) {
 	memcpy(out, p->data, n);
 	*out_len = n;
 	nl.q_head = (nl.q_head + 1) % QUEUE_SIZE;
-	/* Serial data reached the core, so whatever it was waiting for arrived. */
-	nl.starved_since.tv_sec = nl.starved_since.tv_usec = 0;
-
 	pthread_mutex_unlock(&nl.lock);
 	return true;
 }

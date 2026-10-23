@@ -116,17 +116,23 @@ to whichever console initiates an internal-clock transfer. For GBA, it supports 
 to four nodes, timestamped event queues, mode changes, attach/detach events, and
 periodic hard synchronization.
 
-Neither `mgba-master` nor `mgba-libretro` exposes this through libretro. Both
-libretro implementations own one global `mCore`, and both implement
-`retro_load_game_special()` as a stub returning false. Reusing mGBA for NextUI
-would therefore require a new dual-instance libretro wrapper or a standalone
-runner.
+Neither stock `mgba-master` nor `mgba-libretro` exposes this through libretro.
+Both implementations own one global `mCore`, and both implement
+`retro_load_game_special()` as a stub returning false. Netplay therefore ships
+a separately named experimental frontend: `mgba_dual_libretro.so` owns two GBA
+cores, attaches both to the upstream coordinator, and exposes the shared
+`retro_dual_*` ABI without changing ordinary mGBA launches.
 
-The key lesson is not merely "replace sockets with memory." mGBA coordinates at
-emulated serial events and can yield/resume each instance mid-frame. Gambatte's
-current `SerialIO::send()` is synchronous, while `SerialIO::check()` is polled by
-the external-clock console. That relationship can leave the clock owner blocked
-inside `GB::runFor()` until the peer advances.
+The wrapper schedules `mCore::runLoop`, not `runFrame`, and switches consoles
+whenever mGBA's lockstep user marks one asleep. That preserves the coordinator's
+4096-cycle quanta and avoids running a sleeping console to the next video frame.
+Host tests complete 597 transfers over 600 frames with reproducible state hashes
+and zero lockstep assertions. On two Bricks, Mario Kart: Super Circuit completed
+a multiplayer race with audio over ad hoc and ordinary Wi-Fi. The enclosing
+paired calls averaged about 16.2 ms, but phase profiling showed that presentation
+pacing consumes the unused portion: emulation plus cable leaves about 5 ms of
+real headroom on Brick. Broader game and platform coverage, rather than raw CPU
+time there, is the current beta concern.
 
 ## Gambatte replacement design
 

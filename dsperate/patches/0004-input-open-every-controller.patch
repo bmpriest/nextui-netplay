@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bmpriest <benjamin.m.priest@gmail.com>
+Date: Fri, 23 Oct 2026 03:19:30 -0600
+Subject: [PATCH] input: open every game controller, not just the first
+
+Only the first controller SDL could map was opened, so a second pad was
+ignored entirely. On NextUI that includes the launcher's own virtual pads
+(DevBridge's, used for scripted testing) and Bluetooth controllers.
+
+Open every mappable controller. The first stays pad_ and alone drives the
+sticks; the others feed the same button events. Hot-plugged pads are added,
+removed ones closed, and if pad_ goes the next one takes its place.
+
+pad.face_fix is now worked out per controller and applied by the event's
+instance id: a correction derived from one pad's mapping swapped the face
+buttons of a second pad whose mapping was already positional.
+---
+ src/frontend/sdl/input.cpp | 63 +++++++++++++++++++++++++++++---------
+ src/frontend/sdl/input.h   |  8 ++++-
+ 2 files changed, 55 insertions(+), 16 deletions(-)
+
+diff --git a/src/frontend/sdl/input.cpp b/src/frontend/sdl/input.cpp
+index 36e188e..c48e23d 100644
+--- a/src/frontend/sdl/input.cpp
++++ b/src/frontend/sdl/input.cpp
+@@ -335,26 +335,49 @@ void Input::warn_collisions() const {
+     std::fprintf(stderr, "config: pad.stylus_button.alt = %s is already pad.stylus_button\n", pad_name(stylus_button_[1]).c_str());
+ }
+ 
++// The first controller SDL can map becomes pad_; every other one is opened
++// too, so a second pad (Bluetooth, or a launcher's virtual one) drives the
++// same DS buttons instead of being ignored.
+ void Input::open_controllers() {
+-  for (int i = 0; i < SDL_NumJoysticks() && !pad_; ++i) {
++  for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+     if (!SDL_IsGameController(i)) continue;
+-    pad_ = SDL_GameControllerOpen(i);
+-    if (pad_) std::fprintf(stderr, "controller: %s\n", SDL_GameControllerName(pad_));
++    const SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
++    auto is_open = [&](SDL_GameController* c) { return c && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c)) == id; };
++    if (is_open(pad_) || std::any_of(extra_pads_.begin(), extra_pads_.end(), is_open)) continue;
++    SDL_GameController* c = SDL_GameControllerOpen(i);
++    if (!c) continue;
++    std::fprintf(stderr, "controller: %s%s\n", SDL_GameControllerName(c), pad_ ? " (extra)" : "");
++    if (!pad_) pad_ = c;
++    else extra_pads_.push_back(c);
+   }
+   detect_faces();
+ }
+ 
++// The correction is per controller: two pads can have different mappings, and
++// one pad's swap applied to the other would swap a correct pad.
+ void Input::detect_faces() {
+-  for (u8 f = 0; f < 4; ++f) face_remap_[f] = f;
+-  int phys[4];
+-  if (!face_fix_ || !face_positions(pad_, phys)) return;
+-  for (int f = 0; f < 4; ++f) face_remap_[f] = static_cast<u8>(phys[f]);
+-  std::fprintf(stderr, "controller: SDL mapping has %s swapped against the kernel's button positions; correcting (pad.face_fix = off to keep it)\n",
+-               phys[0] != 0 && phys[2] != 2 ? "a/b and x/y" : phys[0] != 0 ? "a/b" : "x/y");
++  auto detect = [&](SDL_GameController* c, u8 remap[4]) {
++    for (u8 f = 0; f < 4; ++f) remap[f] = f;
++    int phys[4];
++    if (!face_fix_ || !face_positions(c, phys)) return;
++    for (int f = 0; f < 4; ++f) remap[f] = static_cast<u8>(phys[f]);
++    std::fprintf(stderr, "controller: %s: SDL mapping has %s swapped against the kernel's button positions; correcting (pad.face_fix = off to keep it)\n",
++                 SDL_GameControllerName(c), phys[0] != 0 && phys[2] != 2 ? "a/b and x/y" : phys[0] != 0 ? "a/b" : "x/y");
++  };
++  detect(pad_, face_remap_);
++  extra_faces_.clear();
++  for (SDL_GameController* c : extra_pads_) {
++    ExtraFaces x{SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c)), {}};
++    detect(c, x.remap);
++    extra_faces_.push_back(x);
++  }
+ }
+ 
+ void Input::close() {
+   if (pad_) { SDL_GameControllerClose(pad_); pad_ = nullptr; }
++  for (SDL_GameController* c : extra_pads_) SDL_GameControllerClose(c);
++  extra_pads_.clear();
++  extra_faces_.clear();
+ }
+ 
+ void Input::fake_mic_frame(std::vector<s16>& out) {
+@@ -913,8 +936,11 @@ std::vector<std::string> Input::collisions() const {
+ void Input::handle(const SDL_Event& e0, Display& display, Display* second) {
+   // Face buttons by position (pad.face_fix), before capture, bindings or the menu see them.
+   SDL_Event e = e0;
+-  if ((e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) && e.cbutton.button < 4)
+-    e.cbutton.button = face_remap_[e.cbutton.button];
++  if ((e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) && e.cbutton.button < 4) {
++    const u8* remap = face_remap_;
++    for (const ExtraFaces& x : extra_faces_) if (x.id == e.cbutton.which) remap = x.remap;
++    e.cbutton.button = remap[e.cbutton.button];
++  }
+   // Route window-addressed events to the window they happened on; keyboard
+   // and controller input is global.
+   auto owner = [&](u32 wid) -> Display& {
+@@ -945,14 +971,21 @@ void Input::handle(const SDL_Event& e0, Display& display, Display* second) {
+     break;
+ 
+   case SDL_CONTROLLERDEVICEADDED:
+-    if (!pad_) open_controllers();
++    open_controllers();
+     break;
+-  case SDL_CONTROLLERDEVICEREMOVED:
+-    if (pad_ && e.cdevice.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pad_))) {
++  case SDL_CONTROLLERDEVICEREMOVED: {
++    auto is_gone = [&](SDL_GameController* c) { return e.cdevice.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c)); };
++    for (auto it = extra_pads_.begin(); it != extra_pads_.end();) {
++      if (is_gone(*it)) { SDL_GameControllerClose(*it); it = extra_pads_.erase(it); } else ++it;
++    }
++    if (pad_ && is_gone(pad_)) {
+       SDL_GameControllerClose(pad_); pad_ = nullptr;
+-      detect_faces();
++      // The next controller, if any, takes over the sticks.
++      if (!extra_pads_.empty()) { pad_ = extra_pads_.front(); extra_pads_.erase(extra_pads_.begin()); }
+     }
++    detect_faces();
+     break;
++  }
+ 
+   // Mouse copies of touches (SDL_TOUCH_MOUSEID) are skipped: the finger
+   // events carry the touch, and the copy goes to whichever window has focus.
+diff --git a/src/frontend/sdl/input.h b/src/frontend/sdl/input.h
+index 8fa01e5..95ee6b3 100644
+--- a/src/frontend/sdl/input.h
++++ b/src/frontend/sdl/input.h
+@@ -203,6 +203,9 @@ private:
+   bool lid_ = false, mic_key_ = false, mic_pad_ = false, ff_key_ = false, ff_pad_ = false;
+   u32  noise_ = 0x2545F491;
+   SDL_GameController* pad_ = nullptr;
++  // Every other controller SDL can map. Their buttons arrive through the same
++  // events as pad_'s; pad_ alone sets the face correction and the sticks.
++  std::vector<SDL_GameController*> extra_pads_;
+ 
+   Bind key_map_[io::Io::BTN_COUNT];
+   Bind pad_map_[io::Io::BTN_COUNT];
+@@ -242,7 +245,10 @@ private:
+   // pad.face_fix: SDL face button -> the positional one the kernel says it is
+   // (identity unless the mapping has a/b or x/y swapped); see pad_faces.h.
+   bool face_fix_ = true;
+-  u8   face_remap_[4] = {0, 1, 2, 3};
++  u8   face_remap_[4] = {0, 1, 2, 3};   // pad_'s
++  // Each extra pad's own correction: its mapping need not share pad_'s mistake.
++  struct ExtraFaces { SDL_JoystickID id; u8 remap[4]; };
++  std::vector<ExtraFaces> extra_faces_;
+   void detect_faces();
+   std::vector<TouchRoute> touch_routes_;
+   std::vector<std::pair<SDL_TouchID, Panel>> touch_cache_;

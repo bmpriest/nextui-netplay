@@ -1,0 +1,16 @@
+Build the dedicated paired frontend when NETPLAY_DUAL_INSTANCE=1.
+
+The frontend source is maintained in Netplay.pak and copied into the pinned
+mGBA checkout by the source rule before this patch is applied.
+
+--- a/libretro-build/Makefile.common
++++ b/libretro-build/Makefile.common
+@@ -114,7 +114,7 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
+ 					$(CORE_DIR)/src/gba/cart/vfame.c \
+ 					$(CORE_DIR)/src/gba/video.c \
+ 					$(CORE_DIR)/src/platform/libretro/memory.c \
+-					$(CORE_DIR)/src/platform/libretro/libretro.c \
++					$(if $(filter 1,$(NETPLAY_DUAL_INSTANCE)),$(CORE_DIR)/src/platform/libretro/libretro_dual.c,$(CORE_DIR)/src/platform/libretro/libretro.c) \
+ 					$(CORE_DIR)/src/sm83/isa-sm83.c \
+ 					$(CORE_DIR)/src/sm83/sm83.c \
+ 					$(CORE_DIR)/src/third-party/inih/ini.c \

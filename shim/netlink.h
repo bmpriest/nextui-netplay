@@ -82,15 +82,6 @@ void NetLink_markFrame(void);
  * removes the very data the blocked core is waiting for - a deadlock. */
 void NetLink_setCoreRunning(bool running);
 
-/* How long the core has been running with nothing queued for it on a live
- * connection, in milliseconds; 0 when it is not starved.
- *
- * Deliberately not a pause signal. A core blocked inside retro_run is working,
- * and telling the peer otherwise would stop it sending the data being waited
- * for. This exists so an indefinite freeze can be named and bounded rather than
- * simply endured. */
-long NetLink_starvedMs(void);
-
 /* Round-trip time over the last few seconds, in microseconds; false until a
  * probe has completed. Measured continuously on the transport thread, so it
  * reflects the link rather than either side's frame loop.
@@ -215,61 +206,6 @@ bool NetLink_ackResync(uint32_t epoch, bool loaded);
 bool NetLink_takeResyncAck(uint32_t* epoch, bool* loaded);
 bool NetLink_commitResync(uint32_t epoch);
 bool NetLink_takeResyncCommit(uint32_t* epoch);
-
-/* --- core sharing -------------------------------------------------------
- *
- * Two devices can only share a screen if their cores emulate identically, and
- * across NextUI releases that is a coin toss: pcsx_rearmed changed behaviour
- * seven times in six months. Rather than demand matching installs, the client
- * can adopt the host's core file for the session.
- *
- * Viable because build provenance does not affect emulation - only source
- * revision does. A tg5050-built fceumm and a tg5040-built one of the same
- * revision produce identical state despite different toolchains, sizes and
- * CRCs. Verified by loading three platforms' cores on one device.
- *
- * The hard limit is architecture: a 32-bit ARM device cannot load an AArch64
- * object. That is checked before any transfer is attempted.
- */
-#if 0 /* Frozen: never accept executable code from an unauthenticated peer. */
-#define NETLINK_MAX_CORE (24u * 1024u * 1024u)
-
-/* Identifies a build well enough to know whether two differ. Machine is the
- * ELF e_machine, so an impossible pairing is refused rather than transferred
- * and then failed at dlopen. */
-#define NETLINK_VERSION_LEN 32
-
-typedef struct {
-	uint32_t crc;      /* of the core file */
-	uint32_t size;
-	uint16_t machine;  /* ELF e_machine: 40 = ARM, 183 = AArch64 */
-	uint8_t  can_send; /* sharing enabled on this side */
-
-	/* library_version, e.g. "(SVN) afe65ef" - the source revision.
-	 *
-	 * A far better predictor than the CRC. Two platforms building the same
-	 * revision produce different files, and measurement says they emulate
-	 * identically: of six shipped fceumm builds the CRC gives six groups, the
-	 * version five, and actual behaviour three. Matching on CRC alone would
-	 * transfer 3MB between two builds that already agree. */
-	char     version[NETLINK_VERSION_LEN];
-
-	/* Whether the *other* device could load this file, encoded major*1000+minor:
-	 * core_glibc is what the core requires, runtime_glibc what the device
-	 * provides. A tg5050 build needs 2.33 where every other platform needs
-	 * 2.17, so the host's core is not automatically the loadable one. */
-	uint32_t core_glibc;
-	uint32_t runtime_glibc;
-} NetLinkCoreId;
-
-/* Set before NetLink_start; exchanged during the handshake. */
-void NetLink_setCoreId(const NetLinkCoreId* id);
-/* The peer's, once connected. False until the handshake completes. */
-bool NetLink_peerCoreId(NetLinkCoreId* out);
-
-bool NetLink_sendCore(const void* data, size_t len);
-bool NetLink_takeCore(void** data, size_t* len);   /* caller frees */
-#endif
 
 /* Copy the oldest queued packet out. False when the queue is empty. */
 bool NetLink_popPacket(void* out, size_t out_cap, size_t* out_len);

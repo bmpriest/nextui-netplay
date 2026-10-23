@@ -55,6 +55,16 @@ changes do not restart its Game Link socket. A live peer may remain in its menu
 without a fixed timeout; transport disconnect detection releases the other
 device if that peer actually disappears.
 
+### 2a. Nintendo DS local wireless — Implemented, experimental
+
+Each device runs its own DS in DSP.pak (DSperate), which Netplay installs on
+request and starts as the session's LAN host or guest; the DS radio travels in
+melonDS's LAN protocol. Mario Kart DS plays a full race between a Brick and an
+RG35XX H over ad hoc at about 50 fps (menus 60). Through an access point it
+runs at about a third of full speed. One device emulating both consoles was
+measured and rejected: each DS needs about two of the four A53 cores. See
+[dsperate.md](dsperate.md).
+
 ### 3. Continue solo — Partial
 
 When a peer is absent long enough to make progress impossible, present an
@@ -73,8 +83,21 @@ The shared-screen shim now times out an unavailable or input-silent peer and
 offers Wait/retry, Continue solo, and Exit game from its failure overlay. Left
 and Right select, A confirms, and B is a direct Wait/retry shortcut. Exiting the
 game deliberately leaves the durable session armed: the shim cannot safely
-restore an ad-hoc radio or remove mounts owned by the setup process. Equivalent
-link-mode UX and an explicit end-session action remain planned.
+restore an ad-hoc radio or remove mounts owned by the setup process. Link mode
+shows the same overlay when one call into the core blocks for longer than
+`LINK_STARVE_TIMEOUT_MS` (5 s) while the peer is connected, and instanced
+sessions use it for every network failure. An explicit end-session action
+remains planned.
+
+A peer whose frontend is in MinArch's menu reports it with `CMD_PAUSE`, and
+every mode (shared-screen, link and instanced) waits for it without a deadline,
+showing "Waiting for other player (menu open)...". After `PEER_WAIT_TIMEOUT_MS`
+(30 s) of pause the waiting device offers "Connected device may be stalled"
+with Keep waiting, Continue solo and Exit game; Keep waiting (or B) keeps the
+connection and restarts the clock. A peer whose device suspends or crashes goes silent
+rather than paused, drops the connection, and reaches the failure overlay
+above. The menu-side transport no longer times out while it holds incoming
+data back during a long menu.
 
 ## Setup, discovery, and platform support
 
@@ -87,29 +110,55 @@ are merged into one Join list without losing the visible SSID.
 
 The implementation captures the original supplicant command before moving the
 guest radio, persists a recovery breadcrumb, restores original Wi-Fi on session
-end/failure, and runs a detached watchdog if the AP disappears. Remaining work
-includes reconstructing AP state after an app crash or relaunch. Static guest
-addressing may eventually remove the `udhcpd` dependency.
+end/failure, and runs a detached watchdog if the AP disappears. After its
+failure grace period, a recovered guest session ends automatically once the
+original WiFi is back; persistent host/hot-seat sessions remain armed. A reopened app
+and the broker reconstruct the active AP interface and SSID from durable session
+metadata and hostapd configuration. Static guest addressing may eventually
+remove the `udhcpd` dependency.
 
-### 5. Persistent hosting/session broker — Planned
+### 4a. Wi-Fi power save — Implemented, off by default
 
-Hosting should outlive the Hosting screen and setup-app process. A small
-detached broker, started when a host arms, should own:
+**Disable Wi-Fi Power Saving** turns the radio's power save off while a session
+is armed and records the prior value so ending the session restores it.
+`pre-launch.sh` re-applies it on each game launch, because reassociation turns
+it back on. On H700 the 8821cs driver ignores the nl80211 request, so the
+setting reloads the driver after a confirmation; that lasts until reboot, and
+the app clears the setting when it finds power save back on.
+
+### 5. Persistent hosting/session broker — Partial
+
+Hosting outlives the setup-app process. A small detached broker, started when a
+host arms, owns:
 
 - LAN announcements and ad-hoc session metadata;
 - compatibility negotiation;
-- game offers and replies;
 - peer admission, stable peer identity, capacity and `BUSY` replies;
-- broker status for Netplay.pak and a future NextUI/MinArch integration;
+- broker status for Netplay.pak;
 - clean shutdown when the session ends.
 
-The AP already survives the setup app and its beacon overhead already exists.
-A small UDP announcement and idle listener add negligible load; lifecycle,
-pairing/authentication, and stale-session cleanup are the real risks.
+The broker admits one compatibility peer for the current two-player transport,
+actively rejects a different address with `BUSY`, publishes its PID/network and
+guest table atomically, and is restarted by a reopened host UI if needed. The
+main menu reads durable session state: hosts see the network and connected
+guests, guests see the network and host, and Host/Join remain hidden until X
+ends the session.
 
-Pressing B on Hosting leaves the screen without ending the session. Hosting
-continues advertising where possible. Selecting Host for an already-hosting
-session re-enables advertising if necessary and displays connected peers.
+Sessions carry the kernel boot identity that created them. On a later boot the
+boot hook, game pre-launch path, or setup UI removes the leftover active-session
+record and its broker/Wi-Fi breadcrumbs while retaining the installed passthrough
+bindings. Guest count is never a staleness signal: an empty host remains a valid
+hot-seat lobby for as long as that boot and session continue. Older sessions
+without a boot identity are preserved rather than removed speculatively.
+
+Game offers/replies, authenticated pairing, authorization tied to gameplay
+sockets remain. A future NextUI/MinArch integration can consume the same status
+file rather than owning another network listener.
+
+The setup UI uses NextUI's normal menu CPU profile instead of retaining the
+performance setting used to launch paks. Gameplay remains separate: the shim
+pins performance only for the lifetime of an armed emulator process and restores
+the prior policy at teardown.
 
 ### 6. Compatibility cores — Implemented
 
@@ -137,23 +186,15 @@ installed builds differ and no common fallback is selected (including when the
 setting is disabled), both devices retain their installed build and display
 `Core builds differ. Desyncs may occur...` instead.
 
-Negotiation still needs non-blocking accepted sockets, continuous broker
-ownership, and broader cross-platform determinism testing—especially
+The broker owns negotiation for the whole armed session, and its accepted
+sockets carry send/receive deadlines (`CORE_SERVE_IO_MS`, 8 s). Broader
+cross-platform determinism testing is still needed, especially for
 pcsx_rearmed. Unresolved installed-build differences deliberately launch with
 the visible desync-risk warning rather than failing closed.
 
-### 7. Executable core sharing — Frozen
-
-The **Share cores** setting remains visible and defaults to false, but all code
-that transfers or adopts executable core files is compiled out. Unauthenticated
-binary transfer is not an acceptable compatibility mechanism.
-
-Reconsider only with an authenticated, signed manifest and a clear trust/update
-model. Packaged compatibility cores are the supported replacement.
-
 ## Game selection and lightweight guest UX
 
-### 8. Open-game invitation — Planned
+### 7. Open-game invitation — Planned
 
 Either paired device can choose a shared-screen game and offer it to the other:
 
@@ -179,9 +220,10 @@ The Netplay.pak UI can present an offer itself. Receiving/offering from the
 NextUI menu requires a narrow frontend IPC/modal and local-launch hook; the
 current `queueNext()` mechanism is internal to NextUI.
 
-### 9. Simple client — Needs decision
+### 8. Simple client — Needs decision (setting hidden)
 
-The existing setting and UI copy describe an appliance-like guest that stays in
+The setting is hidden from the Settings screen because nothing reads it; the
+value is still stored in the settings file. The design it was meant for describes an appliance-like guest that stays in
 Netplay.pak while the other device chooses a game. That UX is compatible with
 the broker and open-game invitation: the guest owns a matching local ROM and
 core, accepts the offer, and launches without browsing its library manually.
@@ -192,7 +234,7 @@ storage, and arbitrary-code-execution implications. It is not part of the
 current plan. Unless explicitly redesigned, **Simple client means simplified
 local matching/launch, not ROM or executable transfer**.
 
-### 10. Interactive netplay status and controls — Partial
+### 9. Interactive netplay status and controls — Partial
 
 Shim-owned Starting/Waiting/Recovery overlays already poll standard RetroPad
 input. The shared-screen failure overlay now provides explicit wait/retry,
@@ -206,7 +248,7 @@ button-test process or read `/dev/input` behind the frontend's back.
 
 ## Controller topology
 
-### 11. Swappable controller ports — Planned
+### 10. Swappable controller ports — Planned
 
 Negotiate a stable emulated controller slot independently of network role. A
 two-device session may map the guest to port 1, 2, 3, etc., and may transfer or
@@ -219,7 +261,7 @@ input cannot control two ports or disappear for different frames on each peer.
 This is the prerequisite for multi-controller sessions and is much smaller than
 multi-peer transport.
 
-### 12. Three or more simultaneous players — Planned, substantial refactor
+### 11. Three or more simultaneous players — Planned, substantial refactor
 
 Shared-screen play becomes a host-hub topology:
 
@@ -241,7 +283,7 @@ two-player. GBA RFU can potentially support more, but NetLink must first retain
 and route libretro client IDs/broadcasts instead of collapsing everything to one
 peer.
 
-### 13. Hotseat/drop-in sessions — Planned
+### 12. Hotseat/drop-in sessions — Planned
 
 “Hotseat” here means controller occupancy may be left and rejoined without
 ending the host's game—not traditional pass-the-handheld play. It builds on the
@@ -255,7 +297,7 @@ barrier. The host remains authoritative; this is not host migration.
 
 ## Local multi-instance mode
 
-### 14. Instanced cores — Partial; Gambatte implemented
+### 13. Instanced cores — Partial; Gambatte and mGBA implemented
 
 For Gambatte, each handheld runs a paired core (`gambatte_dual_libretro.so`)
 holding both logical consoles and the cable between them. One core call per
@@ -282,13 +324,34 @@ shared-screen sessions, with a reconnect re-pairing from scratch rather than
 resuming a timeline the peer cannot vouch for. Continue solo keeps the paired
 core and leaves the abandoned console on neutral input.
 
-gpSP and mGBA remain planned. This is core-specific orchestration, not a generic
-toggle over the existing one-core shim; their entries are visibly marked
-planned and cannot currently be enabled.
+mGBA uses the same mirrored-replica protocol and dual ABI, but its paired core
+drives two GBA `mCore`s cooperatively through mGBA's own cycle-based SIO
+lockstep coordinator. Builds cover tg5040, my282 and h700. Testing found that
+my282 cannot sustain the current same-thread dual implementation. Two Bricks
+completed Mario Kart: Super Circuit races with audio over both ad hoc and
+ordinary Wi-Fi, and a Brick host with an H700 guest completed one in the
+scripted `testing/devbridge/mkart.test` run. Phase profiling shows roughly 5ms of
+real frame headroom; the enclosing 16.2ms call includes presentation pacing. gpSP stays
+on its existing Wi-Fi link implementation: its multiplayer protocols are
+latency-tolerant enough that duplicating the core locally has no useful payoff.
+This is core-specific orchestration, not a generic toggle over the existing
+one-core shim.
+
+mGBA is disabled by default and managed as an optional installation. Netplay
+bundles an ordinary `MGBA.pak` for tg5040, h700 and my282 under
+`cores/mgba/<platform>/MGBA.pak`, while the paired core remains under
+`cores/override/<platform>`. Enabling it backs up any installed pak with a
+collision-free `.bak` name and copies saves/states into shared Netplay userdata
+before installing matched paks for every supported platform directory on the
+card. A per-platform SHA-256 check detects later core replacement; declining a
+reinstall is remembered only for that exact installed/expected hash pair.
+Disabling it—or turning off Netplay—offers independent pak, save and state
+restoration, preserving every overwritten destination file in a timestamped
+collision directory.
 
 ## Saves, reset, and authority
 
-### 15. Shared-screen save policy — Implemented
+### 14. Shared-screen save policy — Implemented
 
 - Frontend save/load/autosave/auto-resume are unavailable during the session.
 - Host SRAM/RTC is authoritative and remains persistent through the frontend.
@@ -300,7 +363,7 @@ planned and cannot currently be enabled.
 Link-mode games keep independent local saves because they are independent
 consoles.
 
-### 16. Reset policy — Implemented
+### 15. Reset policy — Implemented
 
 In shared-screen mode, a host reset becomes an explicit authoritative recovery
 transaction at a frame barrier: the host resets, sends its post-reset state,
@@ -308,7 +371,7 @@ and both peers remain paused until the guest adopts it and the host commits the
 new timeline. A guest reset request is rejected with a clear message. In link
 mode and solo play, reset affects only the local console.
 
-### 17. PSX guest memory card slot 2 — Needs decision
+### 16. PSX guest memory card slot 2 — Needs decision
 
 Current safety policy forces PCSX-ReARMed card 1 to libretro management and
 disables card 2 for the session, preventing core-managed files from bypassing
@@ -328,13 +391,13 @@ cached card state internally. Until then, card 2 remains disabled.
 
 ## Platform and release quality
 
-### 18. Five-platform builds — Implemented
+### 17. Five-platform builds — Implemented
 
 The app and shim target my282, my355, h700, tg5040 and tg5050 through the pinned
 build-platform environments. Dedicated cores are per platform; compatibility
 cores are shared at the ARMv7/AArch64 architecture level where verified.
 
-### 19. Compatibility/determinism qualification — In progress
+### 18. Compatibility/determinism qualification — In progress
 
 Every supported core/platform pairing needs an explicit result for load,
 initial sync, five-second agreement, authoritative resync, host/guest crash

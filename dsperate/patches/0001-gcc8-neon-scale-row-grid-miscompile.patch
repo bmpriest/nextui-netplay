@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bmpriest <benjamin.m.priest@gmail.com>
+Date: Fri, 23 Oct 2026 03:10:00 -0600
+Subject: [PATCH 1/3] gpu: Work around a GCC 8 miscompilation of the NEON
+ scale_row_grid kernel.
+
+Verified by bisection in the LoveRetro toolchain images, holding -mcpu constant
+at cortex-a53 so the compiler is the only variable:
+
+  GCC 8.3.0  -mcpu=cortex-a53   gpu FAIL, kernels FAIL
+  GCC 10.3.0 -mcpu=cortex-a53   gpu pass, kernels pass
+  GCC 10.3.0 -mcpu=cortex-a55   gpu pass, kernels pass
+
+Not an optimiser level: it reproduces at -O3, -O2 and -O1, with and without
+-flto, and with -fno-strict-aliasing. tests/kernels_test.cpp reports
+scale_row_grid diverging from kern::ref, and tests/gpu_test.cpp then fails every
+grid, cells and chunky case with all-zero output.
+
+Only GCC 8 falls back to the portable reference; GCC 9 and later keep the NEON
+path. tg5040 and h700 build with GCC 8.3.0, tg5050 with GCC 10.3.0, so this
+affects two of the three platforms and only the LCD-grid and chunky filters,
+which are off in the shipped default configuration.
+---
+ src/core/gpu/kernels_neon.cpp | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/core/gpu/kernels_neon.cpp b/src/core/gpu/kernels_neon.cpp
+index ec7a37a..7c347d6 100644
+--- a/src/core/gpu/kernels_neon.cpp
++++ b/src/core/gpu/kernels_neon.cpp
+@@ -861,6 +861,16 @@ void lerp_rows(const u32* a, const u32* b, u32 w, u32 n, u32* out) {
+ // store's last lane costs a second bus write. Runs of two and three (every
+ // scale the handhelds use) are one or two stores each.
+ void scale_row_grid(const u32* src, const u16* xrun, u32 f, u32 min_run, u32 pitch, bool seam_row, u32* dst) {
++#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 9
++  // GCC 8 miscompiles this kernel: tests/kernels_test.cpp's differential check
++  // against kern::ref finds it diverging from the portable reference, and
++  // tests/gpu_test.cpp then fails every grid, cells and chunky case. GCC 9 and
++  // later are correct, so the NEON path is kept for them and only GCC 8 falls
++  // back. The grid filter is off by default, so this costs nothing until a user
++  // turns it on, and then it is correct rather than fast.
++  ref::scale_row_grid(src, xrun, f, min_run, pitch, seam_row, dst);
++  return;
++#else
+   if (min_run < 2) min_run = 2;
+   if (pitch < 1) pitch = 1;
+   alignas(16) u32 dimmed[256];
+@@ -908,6 +918,7 @@ void scale_row_grid(const u32* src, const u16* xrun, u32 f, u32 min_run, u32 pit
+     }
+     }
+   }
++#endif
+ }
+ 
+ 

@@ -12,6 +12,8 @@ cores/*
 !cores/gambatte-dual/
 !cores/gambatte-dual/*.cpp
 !cores/gambatte-dual/*.h
+!cores/mgba/
+!cores/mgba/*.c
 !cores/tests/
 !cores/tests/*.cpp
 !cores/tests/*.sh
@@ -20,5 +22,9 @@ dist/
 logs/
 docs/evals
 devbridge-sessions/
+testing/results/*
+
 .cache/
+bin/*/*.elf
+bin/*/statecheck
 drastic-wifi/build*/obj/

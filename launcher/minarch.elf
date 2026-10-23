@@ -19,6 +19,8 @@ CORE="$1"
 
 NP="$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak"
 SHIM="$NP/bin/$PLATFORM/netplay_shim.so"
+NETPLAY_PAK="$NP"
+. "$NP/launcher/state-path.sh"
 
 # Two ways we can be reached, and they need different answers for "where is the
 # real minarch":
@@ -40,8 +42,8 @@ fi
 # game list are started by NextUI, so there is nowhere in that path for anyone
 # to set an environment variable - we have to find the file ourselves and export
 # it for the shim. Same reason the force flag is a file.
-if [ -z "$NETPLAY_SESSION" ] && [ -f "$NP/state/session" ]; then
-	NETPLAY_SESSION="$NP/state/session"
+if [ -z "$NETPLAY_SESSION" ] && [ -f "$NETPLAY_STATE/session" ]; then
+	NETPLAY_SESSION="$NETPLAY_STATE/session"
 	export NETPLAY_SESSION
 fi
 
@@ -58,7 +60,7 @@ GS_MARKER="$SDCARD_PATH/.userdata/shared/.minui/game_switcher.txt"
 
 gameswitcher_prepare() {
 	[ -n "$NETPLAY_SESSION" ] || return 0
-	grep -q '^add_gameswitcher=1$' "$NP/state/settings" 2>/dev/null || return 0
+	grep -q '^add_gameswitcher=1$' "$NETPLAY_STATE/settings" 2>/dev/null || return 0
 	ROM_PATH=$1
 	case "$ROM_PATH" in "$SDCARD_PATH/Roms/"*) ;; *) return 0 ;; esac
 
@@ -110,7 +112,7 @@ gameswitcher_prepare "$1"
 # passthrough gets verified on device.
 if [ -z "$NETPLAY_SESSION" ] &&
    [ "$NETPLAY_FORCE_SHIM" != "1" ] &&
-   [ ! -f "$NP/state/force-shim" ]; then
+   [ ! -f "$NETPLAY_STATE/force-shim" ]; then
 	exec "$REAL_MINARCH" "$CORE" "$@"
 fi
 
@@ -143,6 +145,7 @@ if [ "$CORE_ID" = "snes9x2005" ]; then
 fi
 NETPLAY_CORE="$NP/cores/override/$PLATFORM/$CORE_NAME"
 DUAL_GAMBATTE_CORE="$NP/cores/override/$PLATFORM/gambatte_dual_libretro.so"
+DUAL_MGBA_CORE="$NP/cores/override/$PLATFORM/mgba_dual_libretro.so"
 CORE_NOTICE=""
 
 # The stock gambatte has Game Link compiled out and stock gpSP lacks this
@@ -185,6 +188,17 @@ case "$CORE_ID" in
 			NETPLAY_COMPAT_CORE=1
 			export NETPLAY_COMPAT_CORE
 			CORE_NOTICE=netlink
+		fi
+		;;
+	mgba)
+		if [ -n "$NETPLAY_SESSION" ] &&
+		   [ "$NETPLAY_DUAL_DISABLE" != "1" ] &&
+		   grep -q '^instanced_mgba=1$' "$NETPLAY_SESSION" 2>/dev/null &&
+		   [ -f "$DUAL_MGBA_CORE" ]; then
+			REAL_CORE="$DUAL_MGBA_CORE"
+			NETPLAY_DUAL_CORE=1
+			export NETPLAY_DUAL_CORE
+			CORE_NOTICE=paired
 		fi
 		;;
 esac
@@ -297,14 +311,27 @@ run_minarch() {
 	"$REAL_MINARCH" "$SHIM_AS" "$@"
 }
 
-# Nothing to demote from and nothing to capture: hand the process straight over,
-# exactly as before. Anything else needs this shell to outlive minarch.
-if [ "$NETPLAY_DUAL_CORE" != "1" ] && [ "$VERBOSE_LOGS" != "1" ] && [ "$GS_WRAP" != "1" ]; then
-	exec "$REAL_MINARCH" "$SHIM_AS" "$@"
-fi
+# The shim pins the CPU governor for the session and records what it replaced
+# in this file. A clean exit restores it and removes the file; after a crash
+# the file is still here, and this is the only thing left to put it back.
+# That is why an armed session never execs minarch: this shell outlives it.
+CPU_RECORD=/tmp/netplay-cpu-restore
+cpu_restore_after_crash() {
+	[ -f "$CPU_RECORD" ] || return 0
+	while read -r dir gov min; do
+		case "$dir" in */cpufreq) ;; *) continue ;; esac
+		[ -n "$gov" ] && echo "$gov" > "$dir/scaling_governor" 2>/dev/null
+		[ -n "$min" ] && echo "$min" > "$dir/scaling_min_freq" 2>/dev/null
+	done < "$CPU_RECORD"
+	rm -f "$CPU_RECORD"
+	echo "[netplay] restored CPU scaling after an unclean exit" >&2
+}
+rm -f "$CPU_RECORD"
+
 if [ "$NETPLAY_DUAL_CORE" != "1" ]; then
 	run_minarch "$@"
 	rc=$?
+	cpu_restore_after_crash
 	gameswitcher_cleanup "$1"
 	exit "$rc"
 fi
@@ -335,5 +362,6 @@ if [ -f "$SERIAL_FALLBACK_MARKER" ]; then
 	run_minarch "$@"
 	rc=$?
 fi
+cpu_restore_after_crash
 gameswitcher_cleanup "$1"
 exit "$rc"

@@ -1,4 +1,4 @@
-# Copy to the pak root as session.conf, then launch the pak to arm it.
+# Copy to /mnt/SDCARD/.userdata/shared/Netplay/session.conf, then launch the pak to arm it.
 #
 # Host device - leave peer unset:
 role=host

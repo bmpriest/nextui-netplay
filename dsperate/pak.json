@@ -1,0 +1,15 @@
+{
+  "name": "DSP",
+  "type": "EMU",
+  "description": "Runs DSperate in standalone mode for the specified rom",
+  "author": "josegonzalez",
+  "repo_url": "https://github.com/josegonzalez/minui-nintendo-dsperate-pak",
+  "release_filename": "DSP.pak.zip",
+  "platforms": [
+    "tg5040",
+    "tg5050",
+    "h700"
+  ],
+  "launch": "launch.sh",
+  "version": "0.0.2"
+}

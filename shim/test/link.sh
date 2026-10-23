@@ -227,6 +227,35 @@ else
 fi
 
 echo
+echo "== a genuinely blocked core call trips the starvation watchdog"
+# Queue silence is normal in menus, but one retro_run call which does not return
+# is an actual core-side failure. Lower the field threshold for this regression.
+PORT19=$((PORT + 18))
+printf 'role=host\nport=%s\nmode=link\n'                  "$PORT19" > "$OUT/h19.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=link\n' "$PORT19" > "$OUT/c19.session"
+
+NETPLAY_LINK_STARVE_MS=500 \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h19.session" \
+	"$OUT/harness" "$SHIM" 250 10 > "$OUT/h19.log" 2>&1 &
+H19=$!
+sleep 0.3
+NETPLAY_LINK_STARVE_MS=500 FAKE_CORE_BLOCK_AT=100 FAKE_CORE_BLOCK_MS=1000 \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c19.session" \
+	"$OUT/harness" "$SHIM" 250 10 > "$OUT/c19.log" 2>&1 &
+C19=$!
+wait $H19 2>/dev/null || true
+wait $C19 2>/dev/null || true
+
+expect "$OUT/c19.log" "link starved: one core call blocked" "blocked call was identified"
+expect "$OUT/c19.log" "Other player's game stopped sending link data" "blocked call reached recovery UI"
+if grep -q "link starved:" "$OUT/h19.log"; then
+	echo "  MISS normally running host tripped the watchdog"
+	fail=1
+else
+	echo "  ok   normally running host did not trip the watchdog"
+fi
+
+echo
 echo "== menu still pauses the peer for a core that owns its own link"
 # gambatte never registers netpacket, but a menu on one device should still hold
 # the other - otherwise it sits blocked on a serial read with no idea why.
@@ -437,16 +466,83 @@ expect "$OUT/c13.log" "connection 2 requires an authoritative sync" "surviving g
 expect "$OUT/c13.log" "authoritative resync .* committed" "surviving guest adopted restored host state"
 
 echo
+echo "== a slow first echo does not size the input delay"
+# The first probe of a connection can be answered late by a peer still loading
+# its game. On hardware that one sample (280-800 ms) used to set 20 frames.
+PORT32=$((PORT + 31))
+printf 'role=host\nport=%s\nmode=netplay\ninput_delay=3\ninput_delay_auto=1\n' "$PORT32" > "$OUT/h32.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\ninput_delay=3\ninput_delay_auto=1\n' "$PORT32" > "$OUT/c32.session"
+NETLINK_TEST_SLOW_FIRST_RTT_MS=600 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h32.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/h32.log" 2>&1 &
+H32=$!
+sleep 0.2
+NETLINK_TEST_SLOW_FIRST_RTT_MS=600 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c32.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/c32.log" 2>&1 &
+C32=$!
+wait $H32 2>/dev/null || true
+wait $C32 2>/dev/null || true
+for side in h32 c32; do
+	n=$(sed -n 's/.*link rtt over \([0-9]*\) samples.*/\1/p' "$OUT/$side.log" | head -1)
+	[ -n "$n" ] && [ "$n" -ge 3 ] \
+		&& echo "  ok   $side proposed from $n samples, not the first alone" \
+		|| { echo "  MISS $side proposed from '${n:-no}' samples"; fail=1; }
+	delay=$(sed -n 's/.*agreed input delay \([0-9]*\).*/\1/p' "$OUT/$side.log" | tail -1)
+	[ "$delay" = "3" ] \
+		&& echo "  ok   $side kept its 3-frame delay" \
+		|| { echo "  MISS $side negotiated delay ${delay:-none} instead of 3"; fail=1; }
+done
+
+echo
+echo "== a checkpoint the relaunched core cannot load is discarded, not fatal"
+PORT31=$((PORT + 30))
+SID31=$(printf '%032x' "$PORT31")
+printf 'role=host\nport=%s\nmode=netplay\nsession_id=%s\n' "$PORT31" "$SID31" > "$OUT/h31.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\nsession_id=%s\n' "$PORT31" "$SID31" > "$OUT/c31.session"
+FAKE_NO_SAVE_RAM=1 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h31.session" "$OUT/harness" "$SHIM" 700 5 > "$OUT/h31a.log" 2>&1 &
+H31=$!
+sleep 0.3
+FAKE_NO_SAVE_RAM=1 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c31.session" "$OUT/harness" "$SHIM" 700 5 > "$OUT/c31a.log" 2>&1 &
+C31=$!
+wait $H31 2>/dev/null || true
+wait $C31 2>/dev/null || true
+HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h31.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/h31b.log" 2>&1 &
+H31=$!
+sleep 0.3
+HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c31.session" "$OUT/harness" "$SHIM" 400 5 > "$OUT/c31b.log" 2>&1 &
+C31=$!
+wait $H31 2>/dev/null || true
+wait $C31 2>/dev/null || true
+expect "$OUT/h31a.log" "confirmed host checkpoint promoted at frame [1-9][0-9]*" "first run left a checkpoint"
+expect "$OUT/h31b.log" "state rejected: sizes" "relaunched host named the mismatch"
+expect "$OUT/h31b.log" "discarded unusable host checkpoint" "relaunched host dropped the checkpoint"
+expect "$OUT/h31b.log" "authoritative initial state sent" "relaunched host synchronized live state"
+expect "$OUT/c31b.log" "authoritative resync .* committed" "relaunched guest joined"
+if grep -q "could not adopt synchronization state" "$OUT/h31b.log"; then
+	echo "  FAIL relaunched host still failed the barrier"; fail=1
+else
+	echo "  ok   no barrier failure after the discarded checkpoint"
+fi
+if [ "$(grep -c 'state rejected' "$OUT/h31b.log")" -le 1 ]; then
+	echo "  ok   the rejection was not retried every frame"
+else
+	echo "  FAIL rejection repeated $(grep -c 'state rejected' "$OUT/h31b.log") times"; fail=1
+fi
+
+echo
 echo "== ROM-content mismatch is rejected before state loading"
 PORT14=$((PORT + 13))
 printf 'role=host\nport=%s\nmode=netplay\n' "$PORT14" > "$OUT/h14.session"
 printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT14" > "$OUT/c14.session"
 HARNESS_ROM_ID=rom-a NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h14.session" \
-	"$OUT/harness" "$SHIM" 180 5 > "$OUT/h14.log" 2>&1 &
+	"$OUT/harness" "$SHIM" 400 5 > "$OUT/h14.log" 2>&1 &
 H14=$!
 sleep 0.2
 HARNESS_ROM_ID=rom-b NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c14.session" \
-	"$OUT/harness" "$SHIM" 180 5 > "$OUT/c14.log" 2>&1 &
+	"$OUT/harness" "$SHIM" 400 5 > "$OUT/c14.log" 2>&1 &
 C14=$!
 wait $H14 2>/dev/null || true
 wait $C14 2>/dev/null || true
@@ -549,6 +645,13 @@ for side in h2 c2; do
 	else
 		echo "  ok   $side stayed connected"
 	fi
+	if grep -q "link starved:\|Other player's game stopped sending link data" "$OUT/$side.log"; then
+		echo "  MISS $side treated a normally running quiet core as blocked"
+		grep -E "link starved:|Other player's game" "$OUT/$side.log" | sed 's/^/       /'
+		fail=1
+	else
+		echo "  ok   $side allowed normal zero-packet frames"
+	fi
 done
 # One clean teardown each at the end is expected; more means it flapped.
 flaps=$(grep -c "netpacket session started" "$OUT/c2.log" || true)
@@ -643,6 +746,31 @@ c15_sum=$(sed -n 's/.*core:inputsum frames=\([0-9]*\) sum=\(.*\)/\1 \2/p' "$OUT/
 	|| { echo "  MISS input streams differ (host='$h15_sum' client='$c15_sum')"; fail=1; }
 
 echo
+echo "== automatic RTT negotiation preserves the transport delay floor"
+# Loopback proposes the minimum of two frames. Ordinary Wi-Fi sessions are
+# intentionally written with a ten-frame floor because later jitter is much
+# worse than a couple of quiet startup probes can establish.
+PORT18=$((PORT + 17))
+printf 'role=host\nport=%s\nmode=netplay\ninput_delay=10\ninput_delay_auto=1\n' "$PORT18" > "$OUT/h18.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\ninput_delay=10\ninput_delay_auto=1\n' "$PORT18" > "$OUT/c18.session"
+NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h18.session" \
+	"$OUT/harness" "$SHIM" 400 5 > "$OUT/h18.log" 2>&1 &
+H18=$!
+sleep 0.2
+NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c18.session" \
+	"$OUT/harness" "$SHIM" 400 5 > "$OUT/c18.log" 2>&1 &
+C18=$!
+wait $H18 2>/dev/null || true
+wait $C18 2>/dev/null || true
+for side in h18 c18; do
+	expect "$OUT/$side.log" "keeping transport floor 10" "$side rejected an optimistic startup sample"
+	delay=$(sed -n 's/.*agreed input delay \([0-9]*\).*/\1/p' "$OUT/$side.log" | tail -1)
+	[ "$delay" = "10" ] \
+		&& echo "  ok   $side retained ten frames" \
+		|| { echo "  MISS $side negotiated delay $delay instead of 10"; fail=1; }
+done
+
+echo
 echo "== mode comes from the core, not the session"
 # A session is armed once and covers every system, so it cannot name a mode -
 # the core it ends up wrapping decides. No peer is needed to assert this: the
@@ -665,6 +793,7 @@ mode_case m2 Gambatte ''            link-cable    "from core"
 mode_case m3 gpSP     ''            link-cable    "from core"
 mode_case m4 FakeCore 'mode=link'   link-cable    "from session"
 mode_case m5 Gambatte 'mode=netplay' shared-screen "from session"
+mode_case m6 'mGBA Dual' ''         link-cable    "from core"
 
 # A serial exchange that fits inside one retro_run only works if a packet that
 # arrived mid-frame is delivered mid-frame. Before deliver_packets existed the

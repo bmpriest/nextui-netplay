@@ -20,15 +20,26 @@
 : "${NETPLAY_PAK:=$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak}"
 # Exported for the minarch shadow and any launcher helpers it invokes.
 export NETPLAY_PAK
+. "$NETPLAY_PAK/launcher/state-path.sh"
+. "$NETPLAY_PAK/launcher/wifi-platform.sh"
+
+# A session cannot retain process or network ownership across a reboot. Clean
+# that unambiguous leftover before deciding whether this launch is armed.
+if [ -x "$NETPLAY_PAK/launcher/session-cleanup.sh" ]; then
+	"$NETPLAY_PAK/launcher/session-cleanup.sh" || :
+fi
 
 # Nothing below costs anything without a session, so a stock launch is
 # untouched - which is the whole point of leaving the mounts up permanently.
-if [ -f "$NETPLAY_PAK/state/session" ]; then
+if [ -f "$NETPLAY_STATE/session" ]; then
 	# Wi-Fi power save parks the radio between beacons: tens of milliseconds of
 	# jitter on traffic as sparse as a few input bytes per frame. Re-applied
 	# here rather than only at arm time because it comes back whenever the
 	# interface reassociates. The app puts the prior value back on Turn off.
-	iw dev wlan0 set power_save off >/dev/null 2>&1
+	# Only with "Disable Wi-Fi Power Saving" on, which is off by default.
+	if grep -q '^disable_powersave=1$' "$NETPLAY_STATE/settings" 2>/dev/null; then
+		np_powersave off || :
+	fi
 
 	# The app joins the ad hoc network when you pick a peer, but the platform
 	# re-establishes its own WiFi once the app exits, so by the time a game
@@ -36,7 +47,7 @@ if [ -f "$NETPLAY_PAK/state/session" ]; then
 	# pointing at the host's ad hoc address. Re-join here; a no-op when the
 	# session is not ad hoc, or when we are already associated.
 	if [ -x "$NETPLAY_PAK/launcher/adhoc-join.sh" ]; then
-		"$NETPLAY_PAK/launcher/adhoc-join.sh" "$NETPLAY_PAK/state/session"
+		"$NETPLAY_PAK/launcher/adhoc-join.sh" "$NETPLAY_STATE/session"
 	fi
 fi
 

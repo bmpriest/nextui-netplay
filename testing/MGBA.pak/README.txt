@@ -1,42 +1,26 @@
-Baseline mGBA for my282 (Miyoo A30)
-===================================
+mGBA supplied by Netplay.pak
+============================
 
-What this is
-------------
-A standalone emulator pak that runs mGBA on the A30, so its cost can be
-measured before any instanced-link work is attempted. NextUI builds mgba for
-my282 (pinned at 925f0f0b) but does not ship it on the card, so without this
-there is no way to run it at all.
+This is the ordinary, single-player mGBA frontend installed by Netplay when
+instanced mGBA is enabled. Builds are supplied for tg5040, h700 and my282.
 
-It carries its own copy of the core. It does not touch the system cores, the
-GBA pak, or anything else; deleting this directory removes it completely.
+The pak intentionally contains only mgba_libretro.so, its launcher and config.
+The paired core and Netplay shim remain inside Netplay.pak at:
 
-Install
--------
-Copy to:      /mnt/SDCARD/Emus/my282/MGBA.pak
-ROMs go in:   /mnt/SDCARD/Roms/Game Boy Advance (MGBA)/
+  cores/override/<platform>/mgba_dual_libretro.so
+  bin/<platform>/netplay_shim.so
 
-An SD-card pak takes precedence over the system one, so the ordinary GBA.pak
-and gpSP are left alone and still work as before.
+During an armed paired session, this launcher enters Netplay's shared pre-launch
+path. Netplay's minarch wrapper selects the paired core and applies the normal
+verbose-log setting. Ordinary single-player launches retain the ordinary core.
 
-What to look at
----------------
-The debug HUD is on by default. It shows measured fps against requested fps,
-their ratio, audio buffer depth, and per-core CPU load.
+Installation and removal are managed from Netplay > Settings > Use instanced
+cores. Existing MGBA.paks receive collision-free .bak names; saves and states
+are copied beneath .userdata/shared/Netplay/mgba-save-backup. Disabling the
+feature offers to restore each category independently. Files that would be
+overwritten during restore are preserved beneath shared/Netplay.
 
-The number that matters for instanced link play is time per frame. Two consoles
-have to fit inside one 16.7ms frame along with the frontend's own work, so a
-single instance needs to cost well under 8ms. For comparison, the paired
-Gambatte core costs about 2.4ms per console on this device and reaches 60fps
-with room to spare.
-
-Worth measuring separately:
-
-  GBA content   the demanding case, and the reason mGBA is interesting
-  GB/GBC content  mGBA also emulates these, and this is the direct
-                  comparison against Gambatte on the same hardware
-
-A GB/GBC ROM placed in the MGBA folder will run under mGBA rather than
-Gambatte, which is the comparison worth having: if mGBA's Game Boy is close to
-Gambatte's, the lockstep cable it already has may be worth more than Gambatte's
-speed.
+The paired beta currently targets GBA cartridges. It has completed Mario Kart:
+Super Circuit races on two TrimUI Bricks. The A30 does not have enough sustained
+CPU headroom for the current same-thread dual implementation, and h700 remains
+compile-tested without a hardware tester.

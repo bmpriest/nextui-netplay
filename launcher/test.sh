@@ -15,18 +15,106 @@ export SYSTEM_PATH="$ROOT/.system/$PLATFORM"
 export USERDATA_PATH="$ROOT/.userdata/$PLATFORM"
 
 NP="$ROOT/Tools/$PLATFORM/Netplay.pak"
+STATE="$ROOT/.userdata/shared/Netplay"
 fail=0
 ok()   { echo "  ok   $1"; }
 bad()  { echo "  FAIL $1"; fail=1; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 # --- fake SD card ---------------------------------------------------------
-mkdir -p "$USERDATA_PATH" "$SYSTEM_PATH/bin" "$SYSTEM_PATH/cores" "$NP/launcher" "$NP/bin/$PLATFORM" "$NP/state"
+mkdir -p "$USERDATA_PATH" "$STATE" "$SYSTEM_PATH/bin" "$SYSTEM_PATH/cores" "$NP/launcher" "$NP/bin/$PLATFORM"
 cp "$HERE/launch-stub.sh" "$HERE/install-stubs.sh" "$HERE/minarch.elf" "$HERE/wrap-pak.sh" \
-   "$HERE/bind-mount.sh" "$HERE/mount-common.sh" "$HERE/pre-launch.sh" \
-   "$HERE/gameswitcher.sh" "$HERE/gameswitcher-launch.sh" "$NP/launcher/"
+	   "$HERE/bind-mount.sh" "$HERE/mount-common.sh" "$HERE/pre-launch.sh" \
+	   "$HERE/adhoc-join.sh" "$HERE/session-cleanup.sh" "$HERE/wifi-platform.sh" \
+	   "$HERE/state-path.sh" "$HERE/gameswitcher.sh" "$HERE/gameswitcher-launch.sh" "$NP/launcher/"
 chmod 755 "$NP/launcher"/*
 : > "$NP/bin/$PLATFORM/netplay_shim.so"
+
+echo "== shared state migration"
+mkdir -p "$NP/state"
+printf 'legacy\n' > "$NP/state/migration-probe"
+. "$NP/launcher/state-path.sh"
+[ -f "$STATE/migration-probe" ] && [ ! -e "$NP/state/migration-probe" ] \
+	&& ok "pak-local state migrated to shared userdata" \
+	|| bad "pak-local state was not migrated"
+
+echo "== ad-hoc launch role routing"
+mkdir -p "$ROOT/fake-bin"
+cat > "$ROOT/fake-bin/iw" <<EOF
+#!/bin/sh
+touch "$ROOT/host-ran-client-rejoin"
+exit 1
+EOF
+chmod 755 "$ROOT/fake-bin/iw"
+printf 'role=host\nadhoc_ssid=nextui-TEST\nadhoc_psk=playwithme\n' > "$STATE/session"
+PATH="$ROOT/fake-bin:$PATH" "$NP/launcher/adhoc-join.sh" "$STATE/session"
+[ ! -e "$ROOT/host-ran-client-rejoin" ] \
+	&& ok "host treats ad-hoc credentials as broker metadata" \
+	|| bad "host ran the client ad-hoc rejoin path"
+rm -f "$STATE/session"
+
+echo
+echo "== leftover session cleanup"
+printf 'boot-now\n' > "$ROOT/boot-id"
+printf 'role=host\nboot_id=boot-now\n' > "$STATE/session"
+printf 'guest_count=0\n' > "$STATE/broker.status"
+NETPLAY_BOOT_ID_PATH="$ROOT/boot-id" "$NP/launcher/session-cleanup.sh" || rc=$?
+[ -f "$STATE/session" ] \
+	&& ok "empty host remains armed during the same boot" \
+	|| bad "empty host was mistaken for a stale session"
+
+printf 'role=host\nboot_id=boot-before\n' > "$STATE/session"
+printf '123\n' > "$STATE/broker.pid"
+printf 'guest_count=0\n' > "$STATE/broker.status"
+rc=0
+NETPLAY_BOOT_ID_PATH="$ROOT/boot-id" "$NP/launcher/session-cleanup.sh" || rc=$?
+[ "$rc" = 10 ] && [ ! -e "$STATE/session" ] \
+	&& [ ! -e "$STATE/broker.pid" ] && [ ! -e "$STATE/broker.status" ] \
+	&& ok "previous-boot host session and broker artifacts removed" \
+	|| bad "previous-boot host session survived cleanup"
+
+printf 'role=host\n' > "$STATE/session"
+NETPLAY_BOOT_ID_PATH="$ROOT/boot-id" "$NP/launcher/session-cleanup.sh" || rc=$?
+[ -f "$STATE/session" ] \
+	&& ok "legacy session without boot identity is preserved" \
+	|| bad "legacy session was removed without proof it was stale"
+
+echo
+echo "== Wi-Fi power save setting"
+cat > "$ROOT/fake-bin/iw" <<EOF
+#!/bin/sh
+echo "iw \$*" >> "$ROOT/iw-calls"
+EOF
+chmod 755 "$ROOT/fake-bin/iw"
+prelaunch() {
+	rm -f "$ROOT/iw-calls"
+	( PATH="$ROOT/fake-bin:$PATH" NETPLAY_PAK="$NP" \
+		NETPLAY_BOOT_ID_PATH="$ROOT/boot-id" . "$NP/launcher/pre-launch.sh" ) >/dev/null 2>&1
+}
+printf 'role=host\n' > "$STATE/session"
+rm -f "$STATE/settings"
+prelaunch
+grep -q "power_save" "$ROOT/iw-calls" 2>/dev/null \
+	&& bad "power save touched by default" \
+	|| ok "power save left to the platform by default"
+printf 'disable_powersave=1\n' > "$STATE/settings"
+prelaunch
+grep -q "set power_save off" "$ROOT/iw-calls" 2>/dev/null \
+	&& ok "setting on disables power save for an armed launch" \
+	|| bad "setting on left power save alone"
+printf 'disable_powersave=0\n' > "$STATE/settings"
+prelaunch
+grep -q "power_save" "$ROOT/iw-calls" 2>/dev/null \
+	&& bad "power save touched with the setting off" \
+	|| ok "setting off leaves power save to the platform"
+printf 'disable_powersave=1\n' > "$STATE/settings"
+rm -f "$STATE/session"
+prelaunch
+grep -q "power_save" "$ROOT/iw-calls" 2>/dev/null \
+	&& bad "unarmed launch touched power save" \
+	|| ok "unarmed launch leaves power save alone"
+rm -f "$STATE/settings" "$ROOT/fake-bin/iw"
+rm -f "$STATE/session"
 
 # A stand-in minarch that just reports the arguments and env it was handed.
 cat > "$SYSTEM_PATH/bin/minarch.elf" <<'EOF'
@@ -159,12 +247,11 @@ mv "$NP/bin/$PLATFORM/hidden.so" "$NP/bin/$PLATFORM/netplay_shim.so"
 echo
 echo "== force-shim file routes without an env var"
 # Game-list launches are started by NextUI, so the force flag has to be a file.
-mkdir -p "$NP/state"
-: > "$NP/state/force-shim"
+: > "$STATE/force-shim"
 OUT=$("$ROOT/Emus/$PLATFORM/GBA.pak/launch.sh" /roms/game.gba 2>&1)
 echo "$OUT" | grep -q "core=$NP/cores/gpsp_libretro.so" \
 	&& ok "force file routes through shim" || bad "force file ignored: $OUT"
-rm -f "$NP/state/force-shim"
+rm -f "$STATE/force-shim"
 OUT=$("$ROOT/Emus/$PLATFORM/GBA.pak/launch.sh" /roms/game.gba 2>&1)
 check "clearing it restores stock" "$OUT" "minarch core=$SYSTEM_PATH/cores/gpsp_libretro.so rom=/roms/game.gba real= session="
 
@@ -221,6 +308,24 @@ echo "$OUT" | grep -q "real=$NP/cores/override/$PLATFORM/gambatte_libretro.so" \
 	&& ok "ordinary GB link retained the network-serial Gambatte core" \
 	|| bad "network-serial Gambatte fallback failed: $OUT"
 
+# mGBA's installed pak carries only the ordinary core. The common minarch
+# wrapper selects Netplay's paired artifact, keeping verbose logging and every
+# other launch policy in the same path as the built-in emulator paks.
+mkdir -p "$ROOT/Emus/$PLATFORM/MGBA.pak"
+cp "$PWD/testing/MGBA.pak/launch.sh" "$ROOT/Emus/$PLATFORM/MGBA.pak/launch.sh"
+echo "ordinary mGBA" > "$ROOT/Emus/$PLATFORM/MGBA.pak/mgba_libretro.so"
+echo "paired mGBA" > "$NP/cores/override/$PLATFORM/mgba_dual_libretro.so"
+chmod 755 "$ROOT/Emus/$PLATFORM/MGBA.pak/launch.sh"
+printf 'role=host\nport=55437\ninstanced_mgba=1\n' > "$ROOT/mgba-dual.session"
+OUT=$(NETPLAY_SESSION="$ROOT/mgba-dual.session" \
+	BIOS_PATH="$ROOT/bios" SAVES_PATH="$ROOT/saves" CHEATS_PATH="$ROOT/cheats" \
+	LOGS_PATH="$ROOT/logs" "$ROOT/Emus/$PLATFORM/MGBA.pak/launch.sh" /roms/game.gba 2>&1)
+MGBA_OUT=$(cat "$ROOT/logs/MGBA.txt")
+echo "$MGBA_OUT" | grep -q "real=$NP/cores/override/$PLATFORM/mgba_dual_libretro.so" \
+	&& echo "$MGBA_OUT" | grep -q "dual=1" \
+	&& ok "installed mGBA pak selected Netplay's paired override" \
+	|| bad "paired mGBA selection failed: $MGBA_OUT"
+
 echo
 echo "== verbose per-game process logs"
 printf 'role=host\nport=55437\nsession_id=0123456789abcdef0123456789abcdef\nverbose_logs=1\n' > "$ROOT/verbose.session"
@@ -276,14 +381,13 @@ echo "$OUT" | grep -q "real=$SYSTEM_PATH/cores/fceumm_libretro.so" \
 
 echo
 echo "== session file is discovered without an env var"
-mkdir -p "$NP/state"
-printf 'role=host\nport=55437\n' > "$NP/state/session"
+printf 'role=host\nport=55437\n' > "$STATE/session"
 OUT=$("$ROOT/Emus/$PLATFORM/GBA.pak/launch.sh" /roms/game.gba 2>&1)
 echo "$OUT" | grep -q "core=$NP/cores/gpsp_libretro.so" \
 	&& ok "session file routes through shim" || bad "session file ignored: $OUT"
-echo "$OUT" | grep -q "session=$NP/state/session" \
+echo "$OUT" | grep -q "session=$STATE/session" \
 	&& ok "NETPLAY_SESSION exported to minarch" || bad "session not exported: $OUT"
-rm -f "$NP/state/session"
+rm -f "$STATE/session"
 
 echo
 echo "== uninstall"
@@ -433,7 +537,7 @@ RECENTS="$SHARED/.minui/recent.txt"
 mkdir -p "$(dirname "$RECENTS")" "$ROOT/Roms/Game Boy Advance (GBA)"
 touch "$ROOT/Roms/Game Boy Advance (GBA)/old.gba" "$ROOT/Roms/Game Boy Advance (GBA)/game.gba"
 printf '/Roms/Game Boy Advance (GBA)/old.gba\tOld Game\n' > "$RECENTS"
-printf 'add_gameswitcher=1\n' > "$NP/state/settings"
+printf 'add_gameswitcher=1\n' > "$STATE/settings"
 "$NP/launcher/gameswitcher.sh" enable
 head -n 1 "$RECENTS" | grep -q '^/Roms/.Netplay (NETPLAY)/Netplay' \
 	&& ok "inactive shortcut is promoted" || bad "inactive shortcut missing"
@@ -442,11 +546,11 @@ head -n 1 "$RECENTS" | grep -q '^/Roms/.Netplay (NETPLAY)/Netplay' \
 [ -f "$ROOT/Roms/.Netplay (NETPLAY)/Netplay" ] \
 	&& ok "hidden redirect ROM installed" || bad "redirect ROM missing"
 
-: > "$NP/state/session"
+: > "$STATE/session"
 "$NP/launcher/gameswitcher.sh" active
 [ "$(wc -l < "$RECENTS")" = "1" ] \
 	&& ok "armed switcher contains one row" || bad "armed switcher leaked normal recents"
-grep -q 'old.gba' "$NP/state/gameswitcher-recents.txt" \
+grep -q 'old.gba' "$STATE/gameswitcher-recents.txt" \
 	&& ok "normal recents backed up" || bad "normal recents not backed up"
 
 # NextUI promotes the launched game before handing control to MinArch.
@@ -456,7 +560,7 @@ UI="$SHARED/.minui/GBA"
 mkdir -p "$UI"
 printf '3\n' > "$UI/game.gba.txt"
 printf 'original-preview\n' > "$UI/game.gba.3.bmp"
-OUT=$(NETPLAY_SESSION="$NP/state/session" FAKE_GAMESWITCHER=1 \
+OUT=$(NETPLAY_SESSION="$STATE/session" FAKE_GAMESWITCHER=1 \
 	"$NP/launcher/minarch.elf" "$SYSTEM_PATH/cores/gpsp_libretro.so" \
 	"$ROOT/Roms/Game Boy Advance (GBA)/game.gba" 2>&1)
 check "pre-existing slot marker restored" "$(cat "$UI/game.gba.txt")" "3"
@@ -465,16 +569,16 @@ check "pre-existing preview restored" "$(cat "$UI/game.gba.3.bmp")" "original-pr
 [ ! -e "$UI/game.gba.0.txt" ] && ok "false disc metadata removed" || bad "false disc metadata survived"
 [ "$(wc -l < "$RECENTS")" = "1" ] && ok "return-to-switcher view remains isolated" \
 	|| bad "game leaked into armed switcher"
-grep -q 'game.gba' "$NP/state/gameswitcher-recents.txt" \
+grep -q 'game.gba' "$STATE/gameswitcher-recents.txt" \
 	&& ok "netplay game retained in normal history" || bad "netplay game lost from normal history"
 
-rm -f "$NP/state/session"
+rm -f "$STATE/session"
 "$NP/launcher/gameswitcher.sh" idle
 head -n 1 "$RECENTS" | grep -q '^/Roms/.Netplay (NETPLAY)/Netplay' \
 	&& ok "inactive shortcut restored above history" || bad "inactive shortcut not restored"
 grep -q 'game.gba' "$RECENTS" && ok "normal history restored" || bad "normal history missing"
 
-printf 'add_gameswitcher=0\n' > "$NP/state/settings"
+printf 'add_gameswitcher=0\n' > "$STATE/settings"
 "$NP/launcher/gameswitcher.sh" disable
 grep -q '^/Roms/.Netplay (NETPLAY)/Netplay' "$RECENTS" \
 	&& bad "disabled shortcut remains in recents" || ok "disabled shortcut removed"

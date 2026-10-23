@@ -43,6 +43,10 @@ still carry serial traffic over Wi-Fi, not a redesign.
 | 3 | Bounded starvation instead of open-ended blocking | network serial | Medium | Turns an indefinite freeze into a reported, recoverable stall | **done** |
 | 4 | Negotiated input delay from measured RTT | instanced link, shared screen | Medium | 1–3 frames (17–50 ms) of input lag on ad hoc | **done** |
 
+All four are implemented. The "What is there now" sections below describe the
+code before these changes, and their `shim/shim.c` line numbers refer to that
+version, not the current file.
+
 Do them in that order. Item 2 is the cheapest and makes the rest arguable
 instead of speculative; it is listed second only because item 1 is the one worth
 doing regardless.
@@ -79,14 +83,13 @@ therefore derived from the **maximum** observed round trip over a rolling
 window, which reproduces both hand-tuned constants. The median is still
 measured and logged, because it is the honest description of the link.
 
-**`input_delay=N` became a proposal rather than a pin.** The plan wanted the
-session-file value to pin and skip negotiation. A one-sided pin would break the
-exact-agreement invariant, which is a desync rather than an override, so both
-sides still adopt the higher of the two proposals; a value pinned identically on
-both devices — which is what `NS_arm` writes — is unaffected. The app now also
-writes `input_delay_auto=1`, which enables negotiation while keeping its
-transport-aware number as the fallback for a link that never answers a probe.
-An old session file carrying only `input_delay=N` stays pinned.
+**`input_delay=N` is the transport floor when automatic measurement is on.** A
+one-sided pin would break the exact-agreement invariant, so both sides still
+adopt the higher of their two values. The app writes `input_delay_auto=1`, which
+allows measured RTT to raise its transport-aware baseline but never lower it.
+H700 testing showed why: two quiet startup samples proposed 2 frames on ordinary
+Wi-Fi, then the session averaged 54.7 FPS with roughly 2,400 stalls per device.
+An old session file carrying only `input_delay=N` remains an exact pin.
 
 The test that asserted mismatched delays are *refused* now asserts that they
 *converge*, and additionally that both peers then run an identical input stream
@@ -289,24 +292,21 @@ instead of into a frozen screen.
 
 ### Change
 
-- `shim/netlink.c:879` — record a timestamp when `setCoreRunning(true)` is
-  called and the netpacket queue is empty; clear it on any delivery.
-- `shim/shim.c:3565` — if that timer exceeds a threshold (start at 5000 ms,
-  matching `TIMEOUT_MS` at `shim/netlink.c` rather than inventing a new
-  constant), route into the same recoverable-failure path the other two modes
-  use, with a message naming the cause: the peer is connected but its core has
-  stopped exchanging serial data.
+- `shim/shim.c` — timestamp immediately before and after each link-core
+  `retro_run`; if one continuous call exceeds 5000 ms while the peer remains
+  connected, route into the existing recoverable-failure path with a message
+  naming the blocked call.
+- Do not inspect queue occupancy. H700 gpSP testing proved that an empty queue
+  can persist through normal 59.5 FPS menu navigation; accumulating that silence
+  produced a false failure every five seconds.
 - Do **not** send `CMD_PAUSE` on this path. The header's deadlock argument
   stands; this is detection and reporting only.
 
 ### Complexity
 
 **Medium.** The mechanism is small, but the threshold is a judgement call and
-needs device testing: a Gen 3 trade legitimately goes quiet while a player reads
-a menu, and a turn-based game can go quiet for minutes. The existing comment on
-`NetLink_markFrame` (`shim/netlink.h:72-76`) already makes this exact point about
-not inferring pause from silence. That is why the trigger here must be
-"core is blocked *and* queue is empty *and* peer is connected", not "quiet".
+needs device testing. Queue state is intentionally excluded: returning from
+`retro_run` proves the core was not blocked, even if no packet arrived.
 
 ### Gain
 
@@ -316,8 +316,9 @@ Item 2 is a prerequisite for choosing the threshold from data rather than taste.
 
 ### Risk
 
-Medium if the threshold is too tight: a false positive kills a healthy but
-legitimately quiet session. Start generous, instrument first, tighten later.
+Low for quiet games because silence no longer advances the watchdog. A core
+call that really takes longer than the threshold enters recovery after it
+returns; the shim cannot safely interrupt arbitrary core code mid-call.
 
 ---
 
@@ -368,9 +369,10 @@ a missing remote input correctly. We are missing the first.
   "must match" to "both propose, both adopt the higher" — which preserves the
   exact-agreement invariant that the timeline priming depends on, while letting
   the pair settle on a value neither had to be told.
-- Keep `input_delay=N` in the session file as an override that pins the value
-  and skips negotiation. The app writes it into both session files
-  (`shim/shim.c:648-649`), so a user or a test can still force a number.
+- Treat the app's `input_delay=N` as the transport floor when it also writes
+  `input_delay_auto=1`: measurement may raise but never lower it. A session file
+  without the automatic flag still pins the exact value for tests and manual
+  overrides.
 - Choose from measured RTT with a floor of 2 and the existing ceiling of 20:
   roughly `ceil(rtt_ms / 16.7) + 1`.
 
