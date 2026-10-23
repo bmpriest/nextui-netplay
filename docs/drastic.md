@@ -108,8 +108,23 @@ frontend on a PC, joining over the house Wi-Fi (`drastic-wifi/devbridge/peer/`):
 
 DraStic itself used 15% of the Brick's CPU during these races; the rest was
 waiting on the link. At those round trips DSperate itself only managed about
-a third of full speed (dsperate.md). The figure that matters, two handhelds on
-Netplay's ad hoc network (3 ms round trips), has not been measured yet.
+a third of full speed (dsperate.md).
+
+Two more measurements on the Brick alone bound what two handhelds can do:
+
+| | Result |
+|---|---|
+| DraStic alone, single-player race, session conditions (radio hooked, performance governor) | 60 fps; main thread 63.6% of a core (about 10.6 ms a frame), helpers about 30% more |
+| DraStic host + DSperate headless guest on the same Brick, over loopback | lobby 60 fps (one MP wait a frame, 6 ms with both emulators sharing the CPU); race 44-47 fps with the CPU saturated (11% idle) but only about 2 ms a frame waiting |
+
+So DraStic is only modestly cheaper than DSperate on Mario Kart (DSperate's
+headless median is 11.6 ms a frame), not the large margin assumed at the
+start. A race needs one MP exchange a frame. Over ad hoc (3 ms round trips,
+plus the other console catching up to the command's time) that adds a few
+milliseconds to DraStic's 10.6, close to the 16.7 ms budget. The two consoles
+run in lockstep, so a DraStic/DSperate pair goes at DSperate's pace (about
+50 fps in a race, dsperate.md). Two DraStic handhelds should do somewhat
+better. Neither pairing has been measured on two handhelds yet.
 
 ## Testing
 
