@@ -88,6 +88,9 @@ nds_netplay_env() {
         # Development: drastic/lan holds "host" or "join:<IPv4>" for a session
         # without the Netplay app.
         [ -f "$EMU_DIR/lan" ] && NDS_NET_LAN=$(cat "$EMU_DIR/lan")
+        [ -f "$EMU_DIR/lan_timeout_ms" ] &&
+            export DRASTIC_WIFI_LAN_TIMEOUT_MS="$(cat "$EMU_DIR/lan_timeout_ms")"
+        [ -n "$NDS_NET_LAN" ] && export DS_LAN_LOG=1
         return 0
     fi
     [ -f "$_np/launcher/pre-launch.sh" ] || {

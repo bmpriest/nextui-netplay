@@ -1,0 +1,73 @@
+diff --git a/src/frontend/headless/main.cpp b/src/frontend/headless/main.cpp
+index 7ec0863..2279a21 100644
+--- a/src/frontend/headless/main.cpp
++++ b/src/frontend/headless/main.cpp
+@@ -36,6 +36,8 @@
+ #include <vector>
+ #include <algorithm>
+ #include <chrono>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <thread>
+ #if DSPERATE_NET
+ #include "net/lan_mp.h"
+@@ -680,6 +682,7 @@ int main(int argc, char** argv) {
+   std::unique_ptr<ds::net::LanMp> lan;
+   if (lan_host || lan_join || netplay) {
+     lan = std::make_unique<ds::net::LanMp>();
++    if (const char* t = std::getenv("DS_LAN_TIMEOUT_MS")) lan->set_recv_timeout_ms(std::atoi(t));
+     if (!lan->ok()) { std::fprintf(stderr, "lan: %s\n", lan->error().c_str()); return 1; }
+     bool up;
+     if (netplay) {
+@@ -774,6 +777,33 @@ int main(int argc, char** argv) {
+         else if (k / cycle < tas_rep) nds.io.set_touch(0, 0, false);
+       }
+     }
++    // DS_CTL=<fifo>: a test harness drives this run from outside. Lines:
++    //   keys a+down 12      hold buttons for 12 frames
++    //   touch 128 96 10     hold the pen at (128,96) for 10 frames
++    //   shot /path.ppm      write both screens (256x384 PPM) after this frame
++    static int ctl_fd = [] { const char* p = std::getenv("DS_CTL"); return p ? ::open(p, O_RDONLY | O_NONBLOCK) : -1; }();
++    static std::string ctl_buf, ctl_shot;
++    static ds::u32 ctl_keys = 0; static int ctl_keys_until = -1, ctl_tx = 0, ctl_ty = 0, ctl_touch_until = -1;
++    if (ctl_fd >= 0) {
++      char rb[512]; ssize_t n;
++      while ((n = ::read(ctl_fd, rb, sizeof rb)) > 0) ctl_buf.append(rb, static_cast<size_t>(n));
++      size_t nl;
++      while ((nl = ctl_buf.find('\n')) != std::string::npos) {
++        std::string line = ctl_buf.substr(0, nl); ctl_buf.erase(0, nl + 1);
++        char a[64] = {}, b[256] = {}; int x = 0, y = 0, f = 0;
++        if (std::sscanf(line.c_str(), "keys %63s %d", a, &f) == 2) {
++          static const char* names[] = {"a", "b", "select", "start", "right", "left", "up", "down", "r", "l", "x", "y"};
++          ctl_keys = 0;
++          for (char* t = std::strtok(a, "+"); t; t = std::strtok(nullptr, "+"))
++            for (int k = 0; k < 12; ++k) if (!std::strcmp(t, names[k])) ctl_keys |= 1u << k;
++          ctl_keys_until = i + f;
++        } else if (std::sscanf(line.c_str(), "touch %d %d %d", &x, &y, &f) == 3) { ctl_tx = x; ctl_ty = y; ctl_touch_until = i + f; }
++        else if (std::sscanf(line.c_str(), "shot %255s", b) == 1) ctl_shot = b;
++        std::fprintf(stderr, "ctl %d: %s\n", i, line.c_str());
++      }
++      nds.io.set_buttons(i < ctl_keys_until ? ctl_keys : 0);
++      if (i < ctl_touch_until) nds.io.set_touch(ctl_tx, ctl_ty, true); else if (ctl_touch_until >= 0) { nds.io.set_touch(0, 0, false); ctl_touch_until = -1; }
++    }
+     // The 3D raster for frame i+1 runs during frame i, so this decides ahead.
+     if (frameskip > 0) {
+       // Skip/draw in whole display periods (display_phase_period), as a fixed pattern.
+@@ -799,6 +829,17 @@ int main(int argc, char** argv) {
+ #endif
+     nds.run_frame();
+     if (!write_state(i + 1)) return 1;
++    if (!ctl_shot.empty()) {
++      if (FILE* f = std::fopen(ctl_shot.c_str(), "wb")) {
++        std::fprintf(f, "P6\n256 384\n255\n");
++        for (int k = 0; k < 2; ++k) {
++          const ds::u32* px = nds.gpu.framebuffer(k);
++          for (ds::u32 j = 0; j < ds::SCREEN_W * ds::SCREEN_H; ++j) { const ds::u8 rgb[3] = {ds::u8(px[j] >> 16), ds::u8(px[j] >> 8), ds::u8(px[j])}; std::fwrite(rgb, 1, 3, f); }
++        }
++        std::fclose(f);
++      }
++      ctl_shot.clear();
++    }
+     if (static const bool fh = std::getenv("DS_FRAME_HASH") != nullptr; fh) {
+       auto fnv = [](const ds::u8* p, size_t n, ds::u64 h) { for (size_t k = 0; k < n; ++k) h = (h ^ p[k]) * 1099511628211ull; return h; };
+       ds::u64 h = 1469598103934665603ull;
