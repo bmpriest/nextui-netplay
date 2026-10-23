@@ -376,7 +376,8 @@ static void turn_off_now(void) {
  * guessing, as the mGBA-only version did. */
 static void turn_off_from(NS_ManagedPak from) {
 	for (int k = from; k < NS_PAK_COUNT; k++) {
-		if (!NS_pakAvailable((NS_ManagedPak)k)) continue;
+		/* Not gated on NS_pakAvailable: a card shared between platforms can
+		 * hold another platform's managed install, and status reads that. */
 		if (!NS_pakStatus((NS_ManagedPak)k, &pak_status)) {
 			snprintf(status, sizeof(status), "Could not check %s status - try again.", PAK_UI[k].name);
 			screen = SCREEN_TOOLS;
