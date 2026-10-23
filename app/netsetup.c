@@ -423,6 +423,7 @@ static NS_Settings ns_set = {
 	.add_gameswitcher = false,
 	.disable_powersave = false,
 	.dsperate = false,
+	.drastic = false,
 	.instanced     = NS_INST_OFF,
 	.inst_core     = { false, false },
 };
@@ -476,6 +477,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
 		else if (!strcmp(k, "dsperate")) ns_set.dsperate = v != 0;
+		else if (!strcmp(k, "drastic")) ns_set.drastic = v != 0;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -511,6 +513,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
 	fprintf(f, "dsperate=%d\n", ns_set.dsperate ? 1 : 0);
+	fprintf(f, "drastic=%d\n", ns_set.drastic ? 1 : 0);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -556,9 +559,9 @@ bool NS_coreInstalled(const char* core) {
 }
 
 /* pak-manage.sh's kind argument, and how an error names the pak. */
-static const char* const PAK_KIND[NS_PAK_COUNT] = { "mgba", "dsp" };
-static const char* const PAK_DIR[NS_PAK_COUNT]  = { "MGBA.pak", "DSP.pak" };
-static const char* const PAK_NAME[NS_PAK_COUNT] = { "mGBA", "DSP" };
+static const char* const PAK_KIND[NS_PAK_COUNT] = { "mgba", "dsp", "nds" };
+static const char* const PAK_DIR[NS_PAK_COUNT]  = { "MGBA.pak", "DSP.pak", "NDS.pak" };
+static const char* const PAK_NAME[NS_PAK_COUNT] = { "mGBA", "DSP", "NDS" };
 
 bool NS_pakAvailable(NS_ManagedPak pak) {
 	if (pak < 0 || pak >= NS_PAK_COUNT) return false;
@@ -601,6 +604,8 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
 		else if (!strcmp(line, "missing")) out->missing = atoi(eq) != 0;
 		else if (!strcmp(line, "mismatch")) out->mismatch = atoi(eq) != 0;
 		else if (!strcmp(line, "mismatch_ignored")) out->mismatch_ignored = atoi(eq) != 0;
+		else if (!strcmp(line, "base_installed")) out->base_installed = atoi(eq) != 0;
+		else if (!strcmp(line, "unsupported")) out->unsupported = atoi(eq) != 0;
 		else if (!strcmp(line, "backup_date")) snprintf(out->backup_date, sizeof(out->backup_date), "%s", eq);
 	}
 	fclose(f);

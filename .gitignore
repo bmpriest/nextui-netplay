@@ -28,3 +28,4 @@ testing/results/*
 bin/*/*.elf
 bin/*/statecheck
 drastic-wifi/build*/obj/
+drastic-wifi/build*/*.stripped.so

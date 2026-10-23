@@ -171,6 +171,7 @@ typedef struct {
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
 	bool        disable_powersave; /* radio power save off while a session is armed */
 	bool        dsperate;      /* DSP.pak installed by this pak for DS local wireless */
+	bool        drastic;       /* local wireless added to the user's NDS.pak (DraStic) */
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
@@ -188,6 +189,7 @@ bool NS_coreInstalled(const char* core);
 typedef enum {
 	NS_PAK_MGBA = 0,   /* MGBA.pak, paired with the instanced mGBA core */
 	NS_PAK_DSP,        /* DSP.pak (DSperate), Nintendo DS local wireless */
+	NS_PAK_NDS,        /* an overlay on the user's NDS.pak (DraStic): radio + launcher */
 	NS_PAK_COUNT
 } NS_ManagedPak;
 
@@ -197,6 +199,10 @@ typedef struct {
 	bool missing;
 	bool mismatch;
 	bool mismatch_ignored;
+	/* NS_PAK_NDS only: an NDS.pak to add to exists, and its DraStic is a
+	 * build the radio does not support. */
+	bool base_installed;
+	bool unsupported;
 	char backup_date[32];
 } NS_PakStatus;
 

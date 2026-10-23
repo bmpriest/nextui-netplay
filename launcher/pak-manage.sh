@@ -3,6 +3,8 @@
 #
 #   pak-manage.sh mgba ...   MGBA.pak, paired with the instanced mGBA core
 #   pak-manage.sh dsp ...    DSP.pak (DSperate), for Nintendo DS local wireless
+#   pak-manage.sh nds ...    local wireless added to the user's own NDS.pak
+#                            (DraStic): an overlay, not a replacement
 #
 # All mutable metadata lives below .userdata/shared/Netplay.  The installed pak
 # carries a matching marker as a second ownership check: restore/remove never
@@ -27,8 +29,18 @@ case $KIND in
 		SNAP_STATES=States/DSP-dsperate
 		ROMS_REL="Roms/Nintendo DS (DSP)"
 		;;
-	*) printf 'usage: %s mgba|dsp status|install|reinstall|ignore|restore [pak saves states]\n' "$0" >&2; exit 2 ;;
+	nds)
+		# DraStic is closed and the user's NDS.pak carries their own settings,
+		# so this one is not shipped whole: Netplay adds its files (the radio
+		# library and a session-aware launch.sh) to the NDS.pak already there,
+		# keeps whatever they replace, and only for the DraStic build the radio
+		# hook was made for (cores/nds/<p>/drastic.sha256).
+		PAK=NDS
+		OVERLAY=1
+		;;
+	*) printf 'usage: %s mgba|dsp|nds status|install|reinstall|ignore|restore [pak saves states]\n' "$0" >&2; exit 2 ;;
 esac
+OVERLAY=${OVERLAY:-0}
 MARKER="netplay-$KIND-v1"
 
 # The file whose hash says "this is the build Netplay shipped": the core for
@@ -37,6 +49,7 @@ core_rel() {
 	case $KIND in
 		mgba) printf 'mgba_libretro.so\n' ;;
 		dsp) printf '%s/dsperate\n' "$1" ;;
+		nds) printf 'drastic/libs/libdrastic_wifi.so\n' ;;
 	esac
 }
 
@@ -266,6 +279,153 @@ restore() {
 	fi
 	say "ok=1"
 }
+
+# ---- overlay (nds) ------------------------------------------------------------
+# The base pak must already be on the card with a DraStic this radio supports.
+# Per platform the manifest records each overlaid file as either backed up
+# (it existed; the original is kept under $KIND_STATE/originals/<p>/) or added
+# (it did not; restore removes it).
+
+overlay_src() { printf '%s\n' "$NETPLAY_PAK/cores/$KIND/$1/$PAK.pak"; }
+
+overlay_supported() {
+	_bin="$SDCARD_PATH/Emus/$1/$PAK.pak/drastic/drastic"
+	_want="$NETPLAY_PAK/cores/$KIND/$1/drastic.sha256"
+	[ -f "$_bin" ] && [ -f "$_want" ] || return 1
+	grep -qx "$(hash_file "$_bin")" "$_want"
+}
+
+overlay_files() { (cd "$(overlay_src "$1")" && find . -type f | sed 's|^\./||'); }
+
+overlay_status() {
+	_any=0; _mismatch=0; _ignored=1; _missing=0; _base=0; _unsupported=0
+	for _p in $(platform_dirs); do
+		if [ ! -f "$SDCARD_PATH/Emus/$_p/$PAK.pak/drastic/drastic" ]; then
+			say "platform.$_p=no-base"
+			continue
+		fi
+		_base=1
+		if ! overlay_supported "$_p"; then
+			_unsupported=1
+			say "platform.$_p=unsupported"
+			continue
+		fi
+		_core=$(core_rel "$_p")
+		_expected="$(overlay_src "$_p")/$_core"
+		_installed="$SDCARD_PATH/Emus/$_p/$PAK.pak/$_core"
+		if [ ! -f "$_installed" ]; then
+			_missing=1; _ignored=0
+			say "platform.$_p=missing"
+			continue
+		fi
+		_any=1
+		_eh=$(hash_file "$_expected"); _ih=$(hash_file "$_installed")
+		if [ -n "$_eh" ] && [ "$_eh" = "$_ih" ]; then
+			say "platform.$_p=ok"
+		elif [ -f "$IGNORE_DIR/$_p" ] &&
+		     [ "$(cat "$IGNORE_DIR/$_p" 2>/dev/null)" = "$_ih:$_eh" ]; then
+			_mismatch=1
+			say "platform.$_p=ignored"
+		else
+			_mismatch=1; _ignored=0
+			say "platform.$_p=mismatch"
+		fi
+	done
+	# Nothing to add to: report it as missing so the app explains why.
+	[ "$_any" = 0 ] && [ "$_missing" = 0 ] && _missing=1 && _ignored=0
+	[ -f "$MANIFEST" ] && _managed=1 || _managed=0
+	say "installed=$_any"
+	say "managed=$_managed"
+	say "missing=$_missing"
+	say "mismatch=$_mismatch"
+	say "mismatch_ignored=$_ignored"
+	say "base_installed=$_base"
+	say "unsupported=$_unsupported"
+	_date=$(manifest_value installed_at 2>/dev/null || true)
+	say "backup_date=$_date"
+}
+
+overlay_install() {
+	mkdir -p "$KIND_STATE" "$IGNORE_DIR" || exit 1
+	_human=$(date '+%Y-%m-%d %H:%M')
+	_tmp_manifest="$MANIFEST.tmp.$$"
+	if [ -f "$MANIFEST" ]; then
+		# Reinstalling must not take Netplay's own files for the originals.
+		cp "$MANIFEST" "$_tmp_manifest" || exit 1
+	else
+		{ say "version=1"; say "installed_at=$_human"; } > "$_tmp_manifest" || exit 1
+	fi
+	_installed=""
+	for _p in $(platform_dirs); do
+		overlay_supported "$_p" || continue
+		_dst="$SDCARD_PATH/Emus/$_p/$PAK.pak"
+		_src=$(overlay_src "$_p")
+		_originals="$KIND_STATE/originals/$_p"
+		for _rel in $(overlay_files "$_p"); do
+			if ! grep -qx "file.$_p=$_rel" "$_tmp_manifest"; then
+				if [ -e "$_dst/$_rel" ]; then
+					mkdir -p "$(dirname "$_originals/$_rel")" || exit 1
+					cp -p "$_dst/$_rel" "$_originals/$_rel" || exit 1
+					say "backup.$_p=$_rel" >> "$_tmp_manifest"
+				else
+					say "added.$_p=$_rel" >> "$_tmp_manifest"
+				fi
+				say "file.$_p=$_rel" >> "$_tmp_manifest"
+			fi
+			mkdir -p "$(dirname "$_dst/$_rel")" || exit 1
+			cp -p "$_src/$_rel" "$_dst/$_rel.netplay.tmp.$$" &&
+				mv "$_dst/$_rel.netplay.tmp.$$" "$_dst/$_rel" || exit 1
+		done
+		_core=$(core_rel "$_p")
+		_actual=$(hash_file "$_dst/$_core")
+		[ -n "$_actual" ] && [ "$_actual" = "$(hash_file "$_src/$_core")" ] || exit 1
+		{
+			say "$MARKER"
+			say "platform=$_p"
+			say "core_sha256=$_actual"
+			say "installed_at=$_human"
+		} > "$_dst/.netplay-installed" || exit 1
+		grep -q "^platform=$_p\$" "$_tmp_manifest" || say "platform=$_p" >> "$_tmp_manifest"
+		rm -f "$IGNORE_DIR/$_p"
+		_installed="$_installed $_p"
+	done
+	[ -n "$_installed" ] || { rm -f "$_tmp_manifest"; say "no NDS.pak with a supported DraStic to add local wireless to"; exit 1; }
+	mv "$_tmp_manifest" "$MANIFEST" || exit 1
+	say "ok=1"
+}
+
+overlay_restore() {
+	[ "${2:-1}" = 1 ] || { say "ok=1"; return 0; }
+	[ -f "$MANIFEST" ] || { say "ok=1"; return 0; }
+	_stamp=$(date '+%Y-%m-%d_%H-%M-%S')
+	_manifest_content=$(cat "$MANIFEST" 2>/dev/null)
+	for _p in $(printf '%s\n' "$_manifest_content" | sed -n 's/^platform=//p'); do
+		_dst="$SDCARD_PATH/Emus/$_p/$PAK.pak"
+		# A pak replaced since (no marker of ours) is the user's now: leave it.
+		[ -f "$_dst/.netplay-installed" ] && grep -qx "$MARKER" "$_dst/.netplay-installed" || continue
+		for _rel in $(printf '%s\n' "$_manifest_content" | sed -n "s/^backup.$_p=//p"); do
+			cp -p "$KIND_STATE/originals/$_p/$_rel" "$_dst/$_rel" || exit 1
+		done
+		for _rel in $(printf '%s\n' "$_manifest_content" | sed -n "s/^added.$_p=//p"); do
+			rm -f "$_dst/$_rel"
+		done
+		rm -f "$_dst/.netplay-installed"
+	done
+	mv "$MANIFEST" "$KIND_STATE/restored-$_stamp.manifest"
+	rm -rf "$IGNORE_DIR" "$KIND_STATE/originals"
+	say "ok=1"
+}
+
+if [ "$OVERLAY" = 1 ]; then
+	case ${1:-status} in
+		status) overlay_status ;;
+		install|reinstall) overlay_install ;;
+		ignore) ignore ;;
+		restore) overlay_restore "$@" ;;
+		*) say "usage: $0 $KIND status|install|reinstall|ignore|restore" >&2; exit 2 ;;
+	esac
+	exit $?
+fi
 
 case ${1:-status} in
 	status) status ;;

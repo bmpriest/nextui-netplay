@@ -161,7 +161,7 @@ enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
 /* "Use simple client" (NS_Settings.simple_client) is hidden: it was planned
  * but never implemented, so the row only toggled a stored value. The setting
  * is still read and written, so restoring the row is all it takes. */
-enum { SET_COMPAT, SET_INSTANCED, SET_DSPERATE, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
+enum { SET_COMPAT, SET_INSTANCED, SET_DSPERATE, SET_DRASTIC, SET_GAMESWITCHER, SET_POWERSAVE, SET_COUNT };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
 
 static const char* menu_label(int item) {
@@ -221,9 +221,10 @@ static const struct {
 } PAK_UI[NS_PAK_COUNT] = {
 	{ "mGBA", "MGBA", "mgba_libretro.so", "Install instanced mGBA?", "Instanced MGBA requires installation." },
 	{ "DSperate", "DSP", "dsperate", "Install DSperate?", "DS local wireless needs DSP.pak (DSperate)." },
+	{ "DraStic", "NDS", "libdrastic_wifi.so", "Add DS local wireless?", "Netplay adds its radio and launcher to NDS.pak." },
 };
 
-/* mGBA is reached from the instanced-core picker, DSperate from Settings. */
+/* mGBA is reached from the instanced-core picker, the DS emulators from Settings. */
 static Screen pak_back_screen(void) {
 	return pak_kind == NS_PAK_MGBA ? SCREEN_INSTANCED : SCREEN_SETTINGS;
 }
@@ -280,6 +281,10 @@ static void setting_row(char* out, int len, int item) {
 	case SET_DSPERATE:
 		snprintf(out, len, "Nintendo DS (DSperate):  %s",
 		         !NS_pakAvailable(NS_PAK_DSP) ? "Not available" : c->dsperate ? "Yes" : "No");
+		break;
+	case SET_DRASTIC:
+		snprintf(out, len, "Nintendo DS (DraStic):  %s",
+		         !NS_pakAvailable(NS_PAK_NDS) ? "Not available" : c->drastic ? "Yes" : "No");
 		break;
 	case SET_GAMESWITCHER:
 		snprintf(out, len, "Add Netplay to GameSwitcher:  %s", c->add_gameswitcher ? "Yes" : "No");
@@ -402,6 +407,9 @@ static void pak_restore_done(bool pak_restored) {
 	} else if (pak_kind == NS_PAK_DSP && (!restore_then_off || pak_restored)) {
 		NS_settings()->dsperate = false;
 		NS_settingsSave();
+	} else if (pak_kind == NS_PAK_NDS && (!restore_then_off || pak_restored)) {
+		NS_settings()->drastic = false;
+		NS_settingsSave();
 	}
 	if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
 	else screen = SCREEN_SETTINGS;
@@ -513,7 +521,16 @@ static void render(SDL_Surface* s) {
 		draw_title(s, "Settings");
 		int y = SCALE1(PADDING + 44);
 		char row[128];
-		for (int i = 0; i < SET_COUNT; i++) {
+		/* Six rows push the hint under the button bar on 4:3 screens, so the
+		 * list scrolls: as many rows as leave room for the hint and status. */
+		int bottom = s->h - SCALE1(PADDING + PILL_SIZE);
+		int text_h = TTF_FontLineSkip(font.small) + SCALE1(4);
+		int visible = (bottom - y - SCALE1(6) - (status[0] ? 2 : 1) * text_h) / SCALE1(PILL_SIZE);
+		if (visible < 1) visible = 1;
+		if (visible > SET_COUNT) visible = SET_COUNT;
+		int first = settings_sel - visible + 1;
+		if (first < 0) first = 0;
+		for (int i = first; i < first + visible; i++) {
 			setting_row(row, sizeof(row), i);
 			y = draw_row(s, row, y, i == settings_sel);
 		}
@@ -528,6 +545,8 @@ static void render(SDL_Surface* s) {
 			hint = "Both devices, and both carts on each. Else link cable."; break;
 		case SET_DSPERATE:
 			hint = "Installs DSP.pak. Each device runs its own DS."; break;
+		case SET_DRASTIC:
+			hint = "Adds local wireless to your NDS.pak (DraStic)."; break;
 		case SET_POWERSAVE:
 			hint = "Lower latency while armed. Uses more battery."; break;
 		}
@@ -581,6 +600,17 @@ static void render(SDL_Surface* s) {
 		int y = SCALE1(PADDING + 44);
 		char line[128];
 		y = draw_line(s, PAK_UI[pak_kind].needs, y, COLOR_WHITE, true);
+		if (pak_kind == NS_PAK_NDS) {
+			/* An overlay: the user's DraStic and its settings stay. */
+			y = draw_line(s, "Your DraStic settings stay as they are, and", y, COLOR_WHITE, true);
+			y = draw_line(s, "the files it replaces are kept for later.", y, COLOR_WHITE, true);
+			y = draw_line(s, "Continue?", y, COLOR_WHITE, true);
+			y += SCALE1(5);
+			y = draw_row(s, "Continue", y, prompt_sel == 0);
+			draw_row(s, "Cancel", y, prompt_sel == 1);
+			GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
+			break;
+		}
 		if (pak_status.installed) {
 			snprintf(line, sizeof(line), "Your current %s.pak, saves and savestates", PAK_UI[pak_kind].pak);
 			y = draw_line(s, line, y, COLOR_WHITE, true);
@@ -623,6 +653,18 @@ static void render(SDL_Surface* s) {
 	}
 	case SCREEN_PAK_RESTORE: {
 		char line[128];
+		if (pak_kind == NS_PAK_NDS) {
+			/* Nothing but NDS.pak's own files to put back: no saves, no states. */
+			draw_title(s, "Remove DS local wireless?");
+			int y = SCALE1(PADDING + 44);
+			y = draw_line(s, "NDS.pak gets its own launcher back. DraStic,", y, COLOR_WHITE, true);
+			y = draw_line(s, "its settings and your saves are not touched.", y, COLOR_WHITE, true);
+			y += SCALE1(5);
+			y = draw_row(s, "Remove from NDS.pak", y, restore_sel == 0);
+			draw_row(s, "Keep it", y, restore_sel == 1);
+			GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
+			break;
+		}
 		snprintf(line, sizeof(line), "Restore %s backup?", PAK_UI[pak_kind].name);
 		draw_title(s, line);
 		int y = SCALE1(PADDING + 42);
@@ -864,6 +906,12 @@ int main(int argc, char* argv[]) {
 		pak_kind = NS_PAK_DSP;
 		prompt_sel = 0;
 		screen = SCREEN_PAK_MISMATCH;
+	} else if (startup_settings->drastic && NS_pakAvailable(NS_PAK_NDS) &&
+	           NS_pakStatus(NS_PAK_NDS, &pak_status) &&
+	           pak_status.mismatch && !pak_status.mismatch_ignored) {
+		pak_kind = NS_PAK_NDS;
+		prompt_sel = 0;
+		screen = SCREEN_PAK_MISMATCH;
 	}
 
 	int dirty = 1;
@@ -1094,6 +1142,28 @@ int main(int argc, char* argv[]) {
 						screen = SCREEN_PAK_RESTORE;
 					} else c->dsperate = false;
 					break;
+				case SET_DRASTIC:
+					if (!NS_pakAvailable(NS_PAK_NDS)) {
+						snprintf(status, sizeof(status), "DraStic local wireless is not built for this device.");
+						break;
+					}
+					pak_kind = NS_PAK_NDS;
+					if (!NS_pakStatus(NS_PAK_NDS, &pak_status)) {
+						snprintf(status, sizeof(status), "Could not check NDS.pak status - try again.");
+					} else if (!c->drastic) {
+						if (!pak_status.base_installed)
+							snprintf(status, sizeof(status), "Install NDS.pak (DraStic) first.");
+						else if (pak_status.unsupported && !pak_status.installed)
+							snprintf(status, sizeof(status), "This NDS.pak's DraStic build is not supported.");
+						else if (!pak_status.managed || pak_status.missing || pak_status.mismatch) {
+							prompt_sel = 0;
+							screen = SCREEN_PAK_INSTALL;
+						} else c->drastic = true;
+					} else if (pak_status.managed) {
+						restore_sel = 0; restore_then_off = false;
+						screen = SCREEN_PAK_RESTORE;
+					} else c->drastic = false;
+					break;
 				}
 				if (settings_sel != SET_INSTANCED) NS_settingsSave();
 				dirty = 1;
@@ -1170,10 +1240,14 @@ int main(int argc, char* argv[]) {
 						if (pak_kind == NS_PAK_MGBA) {
 							commit_instanced();
 							snprintf(status, sizeof(status), "Instanced mGBA installed.");
-						} else {
+						} else if (pak_kind == NS_PAK_DSP) {
 							NS_settings()->dsperate = true;
 							NS_settingsSave();
 							snprintf(status, sizeof(status), "DSperate installed.");
+						} else {
+							NS_settings()->drastic = true;
+							NS_settingsSave();
+							snprintf(status, sizeof(status), "DS local wireless added to NDS.pak.");
 						}
 						screen = SCREEN_SETTINGS;
 					} else screen = pak_back_screen();
@@ -1224,6 +1298,24 @@ int main(int argc, char* argv[]) {
 			break;
 
 		case SCREEN_PAK_RESTORE:
+			if (pak_kind == NS_PAK_NDS) {
+				if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { restore_sel = !restore_sel; dirty = 1; }
+				if (PAD_justPressed(BTN_B)) {
+					if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
+					else screen = pak_back_screen();
+					dirty = 1;
+				}
+				if (PAD_justPressed(BTN_A)) {
+					if (restore_sel == 0) {
+						set_progress("Removing DS local wireless", "Putting NDS.pak's own files back.");
+						if (NS_pakRestore(pak_kind, true, false, false, status, sizeof(status)))
+							pak_restore_done(true);
+						else screen = SCREEN_PAK_RESTORE;
+					} else pak_restore_done(false);
+					dirty = 1;
+				}
+				break;
+			}
 			if (PAD_justPressed(BTN_UP))   { restore_sel = (restore_sel + 4) % 5; dirty = 1; }
 			if (PAD_justPressed(BTN_DOWN)) { restore_sel = (restore_sel + 1) % 5; dirty = 1; }
 			if (PAD_justPressed(BTN_B)) {
