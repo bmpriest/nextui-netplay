@@ -472,7 +472,7 @@ check-dsp:
 # (launcher/pak-manage.sh nds): the radio library and a session-aware
 # launch.sh, plus the hash of the DraStic build the radio hooks (2.5.2.0, as
 # minui-nintendo-ds-pak ships it). DraStic itself is never copied.
-NDS_PLATFORMS  := tg5040 tg5050
+NDS_PLATFORMS  := tg5040 tg5050 h700
 NDS_OVERLAY    := dist/nds
 DRASTIC_SHA256 := 6e11511907f2188863f68434484d8e1fb70c6c4b597512bed02d38f60370ac11
 

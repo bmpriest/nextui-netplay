@@ -16,7 +16,7 @@ DS radio built from DSperate's port of melonDS's Wi-Fi block and LAN code.
 | `drastic-wifi/src/radio/` | this repo | DSperate's `Wifi` (cut loose from its core), `LanMp`, vendored ENet, and the C glue (`radio.cpp`) |
 | `drastic-wifi/src/radio_hook.c` | this repo | Attaches the radio to DraStic 2.5.2.0 (AArch64) |
 | `drastic-wifi/pak/launch.sh` | this repo | minui-nintendo-ds-pak's launcher plus the Netplay session |
-| `make cores-nds` | Makefile | Builds the overlay for tg5040 and tg5050 into `dist/nds/<p>/` |
+| `make cores-nds` | Makefile | Builds the overlay for tg5040, tg5050 and h700 into `dist/nds/<p>/` |
 | `cores/nds/<p>/` | in Netplay.pak | `NDS.pak/{launch.sh, drastic/libs/libdrastic_wifi.so}` and `drastic.sha256` |
 | `launcher/pak-manage.sh nds` | in Netplay.pak | Adds the overlay to `Emus/<p>/NDS.pak`, keeps what it replaces, puts it back |
 | Settings > Nintendo DS (DraStic) | the app | Turns the overlay on and off |
@@ -39,8 +39,9 @@ DraStic is another build, "This NDS.pak's DraStic build is not supported".
 
 ### What the launcher does
 
-Without `.userdata/shared/Netplay/session` it is minui-nintendo-ds-pak's
-launcher, unchanged. With one:
+It is minui-nintendo-ds-pak 0.14.1's launcher (the release that added h700)
+with a Netplay block added. Without `.userdata/shared/Netplay/session` it
+behaves exactly like that launcher. With one:
 
 1. Sources Netplay's `pre-launch.sh` (stale-session cleanup, power save, the
    host's ad hoc network).
@@ -99,8 +100,28 @@ patched individually in the old model.
 
 ## Measured
 
-Only one handheld was reachable, so the other console was DSperate's headless
-frontend on a PC, joining over the house Wi-Fi (`drastic-wifi/devbridge/peer/`):
+### Two handhelds, both DraStic
+
+A TrimUI Brick (tg5040) and an RG35XXH (h700), both on NDS.pak 0.14.1 with
+the overlay installed through Settings, raced Mario Kart DS (Figure-8 Circuit,
+Mario vs Luigi, a minute of random input). Both screens agreed on positions at
+30 and 60 seconds. `check.sh dsp mariokart` passed on both logs.
+
+| Session | Link | Race speed | Session average (log) |
+|---|---|---|---|
+| Brick hosts an ad hoc network, RG35XXH joins | 2 ms RTT, 25 ms waits | 55-58 fps on both, about 2.5-3.5 s of each 10 s waiting | host 46.1, guest 57.7 |
+| RG35XXH hosts over WiFi, Brick joins | house AP, 20 ms average RTT, 60 ms spikes, 100 ms waits | 31-38 fps | host 46.3, guest 44.6 |
+
+The H700 cannot create an ad hoc network, so on ad hoc the Brick hosts. The
+group (Mario Kart's own host) can be on either device in both cases. The
+session averages include menus at 60 fps and, for the Brick, time after the
+other device had quit.
+
+### One handheld against a PC
+
+The second handheld was asleep at first, so the other console was DSperate's
+headless frontend on a PC, joining over the house Wi-Fi
+(`drastic-wifi/devbridge/peer/`):
 
 | DraStic (Brick) | Peer | Link | Result |
 |---|---|---|---|
@@ -122,12 +143,11 @@ Two more measurements on the Brick alone bound what two handhelds can do:
 
 So DraStic is only modestly cheaper than DSperate on Mario Kart (DSperate's
 headless median is 11.6 ms a frame), not the large margin assumed at the
-start. A race needs one MP exchange a frame. Over ad hoc (3 ms round trips,
-plus the other console catching up to the command's time) that adds a few
-milliseconds to DraStic's 10.6, close to the 16.7 ms budget. The two consoles
-run in lockstep, so a DraStic/DSperate pair goes at DSperate's pace (about
-50 fps in a race, dsperate.md). Two DraStic handhelds should do somewhat
-better. Neither pairing has been measured on two handhelds yet.
+start. A race needs one MP exchange a frame. Over ad hoc that adds a few
+milliseconds to DraStic's 10.6, close to the 16.7 ms budget, and two DraStic
+handhelds measured 55-58 fps (above). The two consoles run in lockstep, so a
+DraStic/DSperate pair goes at DSperate's pace (about 50 fps in a race,
+dsperate.md); that pairing has not been run on two handhelds.
 
 ## Testing
 
@@ -140,14 +160,17 @@ better. Neither pairing has been measured on two handhelds yet.
 
 DevBridge input into DraStic: use `BTN` with gaps of a second or more and
 check the screen before each A. Mario Kart drops the first D-pad press after
-its menu settles, and `keys.sh`'s short holds are missed.
+its menu settles, and `keys.sh`'s short holds are missed. Through an SSH
+tunnel (ad hoc guests) a `BTN` is held long enough to auto-repeat in DraStic's
+own menu. Mario Kart falls into its attract demo after about 30 s on the main
+menu, so script menu-to-group as one run. On h700, DraStic only sees
+DevBridge's virtual pad with DevBridge's game-launch remap for ANBERNIC-keys
+and the virtual pad posing as the built-in one (DevBridge.pak, 2026-10-23).
 
 ## Not done / known gaps
 
-- Two handhelds over ad hoc: not yet measured.
 - tg5050: the overlay is built (same DraStic binary) but never run.
-- H700: no NDS.pak for NextUI-h700, so no overlay. An H700 can still be the
-  other console with DSP.pak.
+- DraStic on one handheld against DSperate on another: not run.
 - The A30 (DraStic 2.5.0.4, ARMv7) still has only the old diagnostic library;
   the radio hook is AArch64 only.
 - DraStic's own save states know nothing of the radio; loading one mid-session

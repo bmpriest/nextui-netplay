@@ -1,0 +1,115 @@
+# Mario Kart DS - DraStic on both devices (NDS.pak + Netplay's radio overlay),
+# over the Netplay session.
+#
+# Both need Settings > Nintendo DS (DraStic) on, the ROM at
+# Roms/Nintendo DS (NDS)/mariokart.nds and a Mario Kart save made once by hand.
+# The host device creates the Mario Kart group and the guest joins it. The
+# references were recorded with a Brick hosting an ad hoc network and an
+# RG35XXH joining (an H700 cannot create one); on h700, DraStic sees DevBridge's
+# virtual pad only with DevBridge's ANBERNIC-keys remap (2026-10-23).
+#
+# DraStic is driven with BTN and second-long gaps (see nds-mkds.test). Mario
+# Kart falls into its attract demo about 30 s after its menu settles, so the
+# first presses follow the launch closely.
+
+all:WAIT_FOR devbridge 30000
+all:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+all:WAIT_FOR game 30000
+
+WAIT 11000
+host:VERIFY_WAIT {host_refs}/nds-mk-menu.png 8000
+
+# MULTIPLAYER on both. Mario Kart drops the first D-pad press.
+all:BTN RIGHT
+WAIT 1000
+all:BTN DOWN
+WAIT 1500
+host:VERIFY_WAIT {host_refs}/nds-mk-menu-multiplayer.png 3000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-menu-multiplayer.png 3000
+all:BTN A
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/nds-mk-groups.png 6000
+
+# The host creates a Normal group.
+host:BTN UP
+WAIT 1200
+host:BTN A
+WAIT 2500
+host:VERIFY_WAIT {host_refs}/nds-mk-normal-host.png 6000
+host:BTN A
+host:VERIFY_WAIT {host_refs}/nds-mk-seeking-host.png 10000
+
+# The guest's browser lists the group once a beacon arrives; then it joins.
+guest:VERIFY_WAIT {guest_refs}/nds-mk-rooms-guest.png 20000
+guest:BTN A
+WAIT 6000
+host:VERIFY_WAIT {host_refs}/nds-mk-lobby-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-lobby-guest.png 10000
+
+# The lobby has to hold.
+WAIT 15000
+host:VERIFY {host_refs}/nds-mk-lobby-host.png
+guest:VERIFY {guest_refs}/nds-mk-lobby-guest.png
+
+# CUT OFF: the MP command/reply exchange starts. Mario Kart saves first.
+host:BTN A
+WAIT 12000
+host:VERIFY_WAIT {host_refs}/nds-mk-select-game.png 15000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-select-game.png 15000
+
+# VS; host Mario, guest Luigi; karts.
+host:BTN A
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/nds-mk-character.png 8000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-character.png 8000
+guest:BTN RIGHT
+WAIT 800
+guest:BTN A
+WAIT 3000
+guest:BTN A
+host:BTN A
+WAIT 4000
+host:BTN A
+WAIT 8000
+host:VERIFY_WAIT {host_refs}/nds-mk-settings-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-settings-guest.png 10000
+
+# Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK.
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 700
+host:BTN DOWN
+WAIT 1200
+host:BTN A
+WAIT 4000
+host:BTN A
+WAIT 3000
+host:BTN A
+WAIT 3000
+host:BTN A
+WAIT 15000
+all:SCREEN nds-nds-mk-race-start
+
+# A minute of racing. The random input stops before the quit, so a late press
+# cannot move DraStic's menu cursor; both quit through that menu (MENU, UP, UP,
+# A) so each launcher archives its log.
+all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
+WAIT 30000
+all:SCREEN nds-nds-mk-race-30s
+WAIT 32000
+all:SCREEN nds-nds-mk-race-60s
+WAIT 5000
+all:BTN MENU
+WAIT 3000
+all:BTN UP
+WAIT 700
+all:BTN UP
+WAIT 700
+all:BTN A
+all:WAIT_FOR devbridge 45000
+all:TRM sh {helpers}/check.sh dsp mariokart 45

@@ -12,6 +12,7 @@ the netplay logs afterwards say the devices did not play together.
 | `aw2.test` | networked GBA link cable (gpSP) | Advance Wars 2: Multi-Pak battle, a full turn each way (the guest builds a tank) |
 | `dsp-mkds.test` | DS local wireless (DSP.pak on both) | Mario Kart DS: group, lobby, VS race on Figure-8 Circuit |
 | `nds-mkds.test` | DS local wireless, DraStic hosting, DSperate joining | the same race between the two emulators |
+| `nds-nds-mkds.test` | DS local wireless, DraStic on both | the same race, Brick and RG35XXH both on NDS.pak |
 
 Gameplay is random input from both devices (`device/gameplay.sh`). After play,
 `device/check.sh` reads each device's own netplay log and fails on divergence,

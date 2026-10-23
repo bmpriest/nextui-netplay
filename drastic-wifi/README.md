@@ -6,11 +6,12 @@ The shipped library is now the **radio**: DSperate's port of melonDS's Wi-Fi
 block and LAN transport (`src/radio/`), attached to DraStic 2.5.2.0 on AArch64
 by `src/radio_hook.c`. It speaks melonDS's LAN protocol, so DraStic plays DS
 local wireless against DraStic, DSperate or melonDS. Mario Kart DS races in
-both roles. See `docs/drastic.md` for the design, measurements and how Netplay
+both roles, and two handhelds both running DraStic (Brick and RG35XXH) race at
+55-58 fps over Netplay's ad hoc network. See `docs/drastic.md` for the design, measurements and how Netplay
 installs it (an overlay on the user's NDS.pak).
 
     make drastic-radio   build/../build-brick/libdrastic_wifi.so (pinned tg5040 toolchain)
-    make cores-nds       the NDS.pak overlay for tg5040 and tg5050
+    make cores-nds       the NDS.pak overlay for tg5040, tg5050 and h700
 
 `DRASTIC_WIFI_LAN=host|join:<IPv4>` turns it on (the overlay's launch.sh sets
 it from the Netplay session); without it nothing is hooked.
