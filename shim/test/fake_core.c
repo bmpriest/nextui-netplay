@@ -272,18 +272,36 @@ void retro_run(void) {
 	cb_audio_sample(0, 0);
 }
 
-size_t retro_serialize_size(void) { HIT("serialize_size"); return sizeof(state_blob); }
+/* FAKE_STATE_PAD grows the state by that many bytes of a fixed, mostly empty
+ * pattern, the shape of a console with megabytes of RAM; a load checks every
+ * byte of it came back. */
+static size_t state_pad(void) {
+	const char* v = getenv("FAKE_STATE_PAD");
+	return v ? (size_t)strtoul(v, NULL, 10) : 0;
+}
+
+static unsigned char pad_byte(size_t i) { return (i % 4096) < 64 ? (unsigned char)(i * 7) : 0; }
+
+size_t retro_serialize_size(void) { HIT("serialize_size"); return sizeof(state_blob) + state_pad(); }
 
 bool retro_serialize(void* data, size_t size) {
 	HIT("serialize");
-	if (size < sizeof(state_blob)) return false;
+	size_t pad = state_pad();
+	if (size < sizeof(state_blob) + pad) return false;
 	memcpy(data, state_blob, sizeof(state_blob));
+	for (size_t i = 0; i < pad; i++) ((unsigned char*)data)[sizeof(state_blob) + i] = pad_byte(i);
 	return true;
 }
 
 bool retro_unserialize(const void* data, size_t size) {
 	HIT("unserialize");
-	if (size < sizeof(state_blob)) return false;
+	size_t pad = state_pad();
+	if (size < sizeof(state_blob) + pad) return false;
+	for (size_t i = 0; i < pad; i++)
+		if (((const unsigned char*)data)[sizeof(state_blob) + i] != pad_byte(i)) {
+			printf("core:state_pad_corrupt at=%zu\n", i);
+			return false;
+		}
 	memcpy(state_blob, data, sizeof(state_blob));
 	/* Both the initialized and post-reset machine states are states produced by
 	 * this core. Rejecting the latter made the host-authoritative reset test

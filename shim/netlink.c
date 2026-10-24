@@ -14,14 +14,16 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #define NETLINK_MAGIC    0x4E504C4BU /* 'NPLK' */
 /* 10: CMD_STATE carries a transfer kind and completed transfers are queued
  *     rather than overwritten; CMD_SESSION_IDENTITY carries rom_size;
  *     CMD_LINK_VERDICT added.
  * 11: CMD_RTT_PROBE/CMD_RTT_ECHO added; input delay is negotiated from the
- *     measured round trip above the session's transport-specific floor. */
-#define NETLINK_PROTOCOL 13
+ *     measured round trip above the session's transport-specific floor.
+ * 14: large CMD_STATE transfers may be deflated (STATE_DEFLATED in the kind). */
+#define NETLINK_PROTOCOL 14
 
 #define QUEUE_SIZE    512
 /* Inputs are indexed by frame; the ring only has to outlast the input delay
@@ -31,6 +33,12 @@
 #define STATE_CHUNK   1024
 /* {total, offset, kind} ahead of every chunk's bytes. */
 #define STATE_HEADER    12
+/* A deflated transfer: the kind carries this bit and the payload is the
+ * inflated length (network order) followed by the zlib stream. A PlayStation
+ * state is 4.4MB, mostly empty RAM and VRAM, and took ~9s to cross WiFi raw;
+ * small states are sent as they are. */
+#define STATE_DEFLATED  0x80000000u
+#define STATE_DEFLATE_MIN (64u * 1024u)
 /* Completed state transfers waiting for the emulator thread. One transfer is
  * reassembled at a time, but a finished one is queued rather than overwritten:
  * the instanced-link bootstrap sends two payloads back to back (peer save
@@ -1045,15 +1053,35 @@ bool NetLink_getRemoteInput(uint32_t frame, uint32_t* buttons) {
 	return ok;
 }
 
+static bool send_state_chunks(uint32_t kind, const void* data, size_t len);
+
 bool NetLink_sendState(NetLinkStateKind kind, const void* data, size_t len) {
 	if (!len || len > NETLINK_MAX_STATE) return false;
+	if (len >= STATE_DEFLATE_MIN) {
+		uLongf packed = compressBound(len);
+		uint8_t* out = malloc(4 + packed);
+		if (out && compress2(out + 4, &packed, data, len, 1) == Z_OK && packed + 4 < len) {
+			uint32_t raw = htonl((uint32_t)len);
+			memcpy(out, &raw, 4);
+			nl_log("state kind=%u deflated %zu -> %lu bytes\n", (unsigned)kind, len,
+			       (unsigned long)packed + 4);
+			bool ok = send_state_chunks((uint32_t)kind | STATE_DEFLATED, out, packed + 4);
+			free(out);
+			return ok;
+		}
+		free(out);
+	}
+	return send_state_chunks((uint32_t)kind, data, len);
+}
+
+static bool send_state_chunks(uint32_t kind, const void* data, size_t len) {
 	const uint8_t* p = data;
 	for (size_t off = 0; off < len; off += STATE_CHUNK) {
 		size_t n = len - off;
 		if (n > STATE_CHUNK) n = STATE_CHUNK;
 
 		uint8_t pkt[STATE_HEADER + STATE_CHUNK];
-		uint32_t hdr[3] = { htonl((uint32_t)len), htonl((uint32_t)off), htonl((uint32_t)kind) };
+		uint32_t hdr[3] = { htonl((uint32_t)len), htonl((uint32_t)off), htonl(kind) };
 		memcpy(pkt, hdr, STATE_HEADER);
 		memcpy(pkt + STATE_HEADER, p + off, n);
 
@@ -1109,9 +1137,12 @@ bool NetLink_takeLinkVerdict(bool* can_pair, uint32_t* reason) {
  * back: a payload of the wrong kind stays queued rather than being handed to a
  * caller that would reject it and fail the session. */
 bool NetLink_takeState(NetLinkStateKind kind, void** data, size_t* len) {
+	uint32_t stored = 0;
 	pthread_mutex_lock(&nl.lock);
-	bool ok = nl.state_done_count && nl.state_done[nl.state_done_head].kind == (uint32_t)kind;
+	bool ok = nl.state_done_count &&
+	          (nl.state_done[nl.state_done_head].kind & ~STATE_DEFLATED) == (uint32_t)kind;
 	if (ok) {
+		stored = nl.state_done[nl.state_done_head].kind;
 		*data = nl.state_done[nl.state_done_head].buf;
 		*len  = nl.state_done[nl.state_done_head].len;
 		nl.state_done[nl.state_done_head].buf = NULL;
@@ -1119,7 +1150,32 @@ bool NetLink_takeState(NetLinkStateKind kind, void** data, size_t* len) {
 		nl.state_done_count--;
 	}
 	pthread_mutex_unlock(&nl.lock);
-	return ok;
+	if (!ok || !(stored & STATE_DEFLATED)) return ok;
+
+	/* Inflated here, on the emulator thread, so the receive thread never holds
+	 * the lock through it. A stream that does not inflate to exactly the size
+	 * it announced is dropped like any other bad transfer. */
+	uint8_t* packed = *data;
+	uint32_t raw = 0;
+	uint8_t* out = NULL;
+	if (*len > 4) {
+		memcpy(&raw, packed, 4);
+		raw = ntohl(raw);
+	}
+	uLongf got = raw;
+	if (raw && raw <= NETLINK_MAX_STATE && (out = malloc(raw)) &&
+	    uncompress(out, &got, packed + 4, *len - 4) == Z_OK && got == raw) {
+		free(packed);
+		*data = out;
+		*len = raw;
+		return true;
+	}
+	nl_log("deflated state kind=%u did not inflate - dropping\n", (unsigned)kind);
+	free(out);
+	free(packed);
+	*data = NULL;
+	*len = 0;
+	return false;
 }
 
 bool NetLink_sendHash(uint32_t frame, uint32_t hash) {

@@ -1985,6 +1985,7 @@ static void netplay_handshake(void) {
 			return;
 		}
 		connection_identity_checked = 1;
+		recovery_clock_start();
 		shim_log("ROM and core identity match peer; agreed input delay %d\n",
 		         input_delay);
 	}
@@ -2265,12 +2266,16 @@ static bool peer_pause_tick(unsigned frame) {
 static bool netplay_recovery_tick(void) {
 	if (recovery_failed) return true;
 
-	if (connection_sync_pending && !connection_identity_checked && recovery_timed_out()) {
-		recovery_fail("Peer identity handshake timed out.");
-		return true;
-	}
-
-	if (recovery_phase != RECOVERY_IDLE && recovery_timed_out()) {
+	/* Each side sends its identity once its own ROM hash is done, and a disc
+	 * image hashes in seconds on one device and well over ten on another, so
+	 * the identity gets the peer wait. The sync itself gets a fresh window once
+	 * both sides are known to be ready. */
+	if (connection_sync_pending && !connection_identity_checked) {
+		if (elapsed_ms(&recovery_started) > peer_wait_timeout_ms()) {
+			recovery_fail("Peer identity handshake timed out.");
+			return true;
+		}
+	} else if (recovery_phase != RECOVERY_IDLE && recovery_timed_out()) {
 		recovery_fail("Authoritative synchronization timed out.");
 		return true;
 	}

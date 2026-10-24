@@ -411,6 +411,56 @@ else
 fi
 
 echo
+echo "== a guest slow to load its content still joins"
+# The host is ready at once and the guest only after 12 s, longer than the
+# 10 s a sync may take: the identity wait must allow for the slower device.
+PORT20=$((PORT + 19))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT20" > "$OUT/h20.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT20" > "$OUT/c20.session"
+HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h20.session" \
+	"$OUT/harness" "$SHIM" 2000 10 > "$OUT/h20.log" 2>&1 &
+H20=$!
+sleep 0.3
+HARNESS_LOAD_DELAY_MS=12000 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c20.session" "$OUT/harness" "$SHIM" 300 10 > "$OUT/c20.log" 2>&1 &
+C20=$!
+wait $H20 2>/dev/null || true
+wait $C20 2>/dev/null || true
+
+expect "$OUT/h20.log" "ROM and core identity match peer" "host waited for the slow guest's identity"
+expect "$OUT/c20.log" "authoritative resync .* committed" "slow guest synchronized"
+expect "$OUT/c20.log" "core:ports p0=17 p1=34" "slow guest plays shared inputs"
+if grep -q "timed out" "$OUT/h20.log" "$OUT/c20.log"; then
+	echo "  MISS a side timed out"; grep -h "timed out" "$OUT/h20.log" "$OUT/c20.log" | sed 's/^/       /'; fail=1
+else
+	echo "  ok   neither side timed out"
+fi
+
+echo
+echo "== a large state crosses deflated and loads intact"
+PORT21=$((PORT + 20))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT21" > "$OUT/h21.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT21" > "$OUT/c21.session"
+FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h21.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/h21.log" 2>&1 &
+H21=$!
+sleep 0.3
+FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c21.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/c21.log" 2>&1 &
+C21=$!
+wait $H21 2>/dev/null || true
+wait $C21 2>/dev/null || true
+
+expect "$OUT/h21.log" "deflated [0-9]* -> [0-9]* bytes" "host deflated the state"
+expect "$OUT/c21.log" "authoritative resync .* committed" "guest loaded the inflated state"
+expect "$OUT/c21.log" "core:ports p0=17 p1=34" "guest plays shared inputs"
+if grep -q "state_pad_corrupt\|did not inflate" "$OUT/c21.log"; then
+	echo "  MISS the state arrived damaged"; fail=1
+else
+	echo "  ok   every byte arrived"
+fi
+
+echo
 echo "== a restarted guest rejoins the live host"
 PORT12=$((PORT + 11))
 SID12=$(printf '%032x' "$PORT12")
