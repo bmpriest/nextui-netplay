@@ -1,8 +1,8 @@
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 5f02c09..80969b3 100644
+index ed2a7d2..b822b61 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
-@@ -512,7 +512,13 @@ static bool netpacket_connected(uint16_t client_id) {
+@@ -539,7 +539,13 @@ static bool netpacket_connected(uint16_t client_id) {
    return true;
  }
  

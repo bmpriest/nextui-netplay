@@ -69,7 +69,7 @@ GPSP_SRC     := $(CORE_SRC_ROOT)/gpsp
 GAMBATTE_REPO := https://github.com/bmpriest/gambatte-libretro.git
 GAMBATTE_REV  := b3803b3dd27a2a7f28ce39a426e1453eee7376c9
 GPSP_REPO     := https://github.com/libretro/gpsp.git
-GPSP_REV      := 69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4
+GPSP_REV      := 5819380c2ffb0900219d700a382ee68c464ebb99
 GPSP_PATCHES := cores/patches/gpsp-platforms.patch cores/patches/gpsp-001-rfu-disconnect.patch cores/patches/gpsp-002-rfu-queue-size.patch cores/patches/gpsp-003-netplay-version.patch
 GAMBATTE_STAMP := $(GAMBATTE_SRC)/.netplay-fork-$(GAMBATTE_REV)
 GAMBATTE_DUAL_STAMP := $(GAMBATTE_DUAL_SRC)/.netplay-fork-$(GAMBATTE_REV)
@@ -77,15 +77,14 @@ GPSP_STAMP := $(GPSP_SRC)/.netplay-patched-$(GPSP_REV)
 
 #  mgba - carries a working lockstep cable in core code, but the libretro build
 #         does not compile the two SIO drivers that use it. We add them; that is
-#         the whole of this change so far. Pinned to the same revision NextUI
-#         builds (925f0f0b) so our core and the shipped one are the same mGBA:
-#         later revisions moved the libretro build out of the repo root and the
-#         platform patch no longer applies.
+#         the whole of this change for the single core. Pinned to the revision
+#         NextUI 6.15.0 ships (0.11-1-7a12d6d, read from its cores) and built the
+#         way it builds it: CMake, with its per-CPU flags (cores/build-mgba.sh).
 MGBA_SRC  := $(CORE_SRC_ROOT)/mgba
 MGBA_REPO := https://github.com/libretro/mgba
-MGBA_REV  := 925f0f0bc1f51c79ca5446d7427512c653e615b3
+MGBA_REV  := 7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6
 MGBA_DUAL_FRONTEND := cores/mgba/libretro_dual.c
-MGBA_PATCHES := cores/patches/mgba-platforms.patch cores/patches/mgba-001-build-lockstep-drivers.patch cores/patches/mgba-002-dual-frontend.patch
+MGBA_PATCHES := cores/patches/mgba-001-build-lockstep-drivers.patch cores/patches/mgba-002-dual-frontend.patch
 MGBA_STAMP := $(MGBA_SRC)/.netplay-patched-$(MGBA_REV)
 
 FCEUMM_SRC := $(CORE_SRC_ROOT)/fceumm
@@ -164,7 +163,6 @@ $(MGBA_STAMP): $(MGBA_PATCHES) $(MGBA_DUAL_FRONTEND) shim/include/gambatte_dual.
 	@mkdir -p "$(CORE_SRC_ROOT)"
 	@git clone -q "$(MGBA_REPO)" "$(MGBA_SRC)"
 	@git -C "$(MGBA_SRC)" checkout -q "$(MGBA_REV)"
-	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-platforms.patch
 	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-001-build-lockstep-drivers.patch
 	@cp "$(MGBA_DUAL_FRONTEND)" "$(MGBA_SRC)/src/platform/libretro/libretro_dual.c"
 	@cp "shim/include/gambatte_dual.h" "$(MGBA_SRC)/src/platform/libretro/gambatte_dual.h"
@@ -222,19 +220,9 @@ cores-gambatte-dual: $(GAMBATTE_DUAL_STAMP)
 			"$$(strings -n 6 dist/cores-experimental/$$p/gambatte_dual_libretro.so | grep -m1 '^v0\.5\.0-netdual')"; \
 	done
 
-# Only tg5040 (and h700, which core_build maps onto it) has an mGBA platform
-# branch - ours is NextUI's, and NextUI only ever added that one. Building the
-# others would hit the `else` at the bottom of mGBA's Makefile.libretro and
-# silently produce a Windows target, exactly the failure the comment above
-# core_build warns about. Restrict the loop rather than trust the caller.
-# mGBA's `platform=` strings are its own, and do not line up with ours or with
-# core_build's mapping. tg5040 gets a branch from the platform patch; my282 has
-# none and uses the generic unix branch with CC from the toolchain, which is
-# exactly what NextUI does for it. Anything else selects no branch and the build
-# dies with "no makefile found" - or worse, falls through to Windows.
+# The platforms Netplay ships MGBA.pak for. cores/build-mgba.sh also knows
+# tg5050 and my355 (NextUI 6.15.0's flags), so adding them here is all it takes.
 MGBA_PLATFORMS := tg5040 h700 my282
-
-mgba_platform = $(if $(filter tg5040 h700,$(1)),tg5040,$(if $(filter my282,$(1)),unix,))
 
 cores-mgba: $(MGBA_STAMP)
 	@bad=""; for p in $(PLATFORMS); do \
@@ -246,13 +234,9 @@ cores-mgba: $(MGBA_STAMP)
 		exit 1; \
 	fi
 	@for p in $(PLATFORMS); do \
-		mp=$$(case $$p in tg5040|h700) echo tg5040 ;; my282) echo unix ;; esac); \
-		echo "== mgba $$p (mgba platform=$$mp)"; \
-		mkdir -p dist/cores/$$p; \
+		echo "== mgba $$p"; \
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
-			CMD="make -C $(MGBA_SRC) -f Makefile.libretro platform=$$mp clean >/dev/null 2>&1 && \
-			make -C $(MGBA_SRC) -f Makefile.libretro platform=$$mp -j4 && \
-			cp $(MGBA_SRC)/mgba_libretro.so dist/cores/$$p/" || exit 1; \
+			CMD="sh cores/build-mgba.sh $$p $(MGBA_SRC) dist/cores/$$p/mgba_libretro.so" || exit 1; \
 	done
 
 cores-mgba-dual: $(MGBA_STAMP)
@@ -265,18 +249,14 @@ cores-mgba-dual: $(MGBA_STAMP)
 		exit 1; \
 	fi
 	@for p in $(PLATFORMS); do \
-		mp=$$(case $$p in tg5040|h700) echo tg5040 ;; my282) echo unix ;; esac); \
-		echo "== mgba-dual $$p (mgba platform=$$mp)"; \
-		mkdir -p dist/cores-experimental/$$p; \
+		echo "== mgba-dual $$p"; \
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
-			CMD="make -C $(MGBA_SRC) -f Makefile.libretro NETPLAY_DUAL_INSTANCE=1 platform=$$mp clean >/dev/null 2>&1 && \
-			make -C $(MGBA_SRC) -f Makefile.libretro NETPLAY_DUAL_INSTANCE=1 platform=$$mp -j4 && \
-			cp $(MGBA_SRC)/mgba_libretro.so dist/cores-experimental/$$p/mgba_dual_libretro.so" || exit 1; \
+			CMD="sh cores/build-mgba.sh $$p $(MGBA_SRC) dist/cores-experimental/$$p/mgba_dual_libretro.so dual" || exit 1; \
 	done
 	@for p in $(PLATFORMS); do \
 		printf "   %-7s abi=%s scheduler=%s\n" "$$p" \
 			"$$(nm -D --defined-only dist/cores-experimental/$$p/mgba_dual_libretro.so 2>/dev/null | grep -c retro_dual_get_abi_version)" \
-			"$$(strings dist/cores-experimental/$$p/mgba_dual_libretro.so | grep -c 0.11-dev-netdual1)"; \
+			"$$(strings dist/cores-experimental/$$p/mgba_dual_libretro.so | grep -c 0.11-1-netdual2)"; \
 	done
 	@for p in $(PLATFORMS); do \
 		printf "   %-7s lockstep symbols: gb=%s gba=%s\n" "$$p" \

@@ -45,14 +45,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * libretro.c defines these and we deliberately exclude that translation unit -
- * it owns a single global mCore and the retro_* entry points, which is the very
- * assumption this harness exists to get out from under. The core's serializer
- * still references them, so supply the same values it would have.
- */
-const char* const projectName = "mGBA";
-const char* const projectVersion = "0.11-dev";
+/* projectName/projectVersion, which the core's serializer references, come
+ * from mGBA's generated version.c in the host library; libretro.c, which owns
+ * a single global mCore, is deliberately left out of it. */
 
 #define NCONSOLES 2
 #define ROM_SIZE  (1024 * 32)

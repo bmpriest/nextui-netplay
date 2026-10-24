@@ -9,6 +9,7 @@ bin/*/netplay_shim.so
 cores/*
 !cores/patches/
 !cores/patches/*.patch
+!cores/build-mgba.sh
 !cores/gambatte-dual/
 !cores/gambatte-dual/*.cpp
 !cores/gambatte-dual/*.h
