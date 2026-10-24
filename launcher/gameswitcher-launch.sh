@@ -5,7 +5,8 @@
 #
 # With the quick menu running, picking Netplay in the Game Switcher opens that
 # menu over NextUI rather than the full app: this leaves it a request and
-# exits, and the menu appears once NextUI is back in front.
+# exits, and the menu appears once NextUI is back in front and settled
+# (app/quickmenu.c, in_nextui_menus).
 
 : "${SDCARD_PATH:=/mnt/SDCARD}"
 : "${PLATFORM:=tg5040}"
@@ -17,11 +18,6 @@ _pid=$(cat "$NETPLAY_STATE/quick-menu.pid" 2>/dev/null)
 if grep -q '^quick_menu=1$' "$NETPLAY_STATE/settings" 2>/dev/null &&
    [ -n "$_pid" ] && grep -q netplay-quickmenu "/proc/$_pid/cmdline" 2>/dev/null; then
 	: > "$NETPLAY_STATE/quick-menu.open"
-	# Not straight back: NextUI builds without its CFG_init fix (fa065aa) rewrite
-	# minuisettings.txt while loading it, and a NextUI restarted the instant a
-	# pak exits raced that and saved wifi=0 on a Brick (2026-10-23). A pak that
-	# runs for a moment never did.
-	sleep 2
 	exit 0
 fi
 exec "$NP/launch.sh" --quick

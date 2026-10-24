@@ -185,10 +185,50 @@ static bool process_running(const char* name) {
 	return found;
 }
 
+/* Seconds since nextui.elf started, or -1 when it is not running. */
+static double nextui_age(void) {
+	DIR* d = opendir("/proc");
+	struct dirent* e;
+	double age = -1;
+	while (d && age < 0 && (e = readdir(d))) {
+		if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+		char path[288], buf[512];
+		snprintf(path, sizeof(path), "/proc/%s/stat", e->d_name);
+		FILE* f = fopen(path, "r");
+		if (!f) continue;
+		size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+		fclose(f);
+		buf[n] = '\0';
+		char* close_paren = strrchr(buf, ')');
+		if (!strstr(buf, "(nextui.elf)") || !close_paren) continue;
+		/* starttime is field 22; the fields after "comm)" start at 3. */
+		unsigned long long start = 0;
+		char* p = close_paren + 2;
+		for (int field = 3; field < 22 && p; field++) {
+			p = strchr(p, ' ');
+			if (p) p++;
+		}
+		if (p) start = strtoull(p, NULL, 10);
+		double uptime = 0;
+		FILE* u = fopen("/proc/uptime", "r");
+		if (u) { if (fscanf(u, "%lf", &uptime) != 1) uptime = 0; fclose(u); }
+		age = uptime - (double)start / sysconf(_SC_CLK_TCK);
+	}
+	if (d) closedir(d);
+	return age;
+}
+
 /* NextUI in front: its menus, not a game (minarch) or a pak, which replace
- * nextui.elf while they run. */
+ * nextui.elf while they run. And settled: for its first seconds NextUI is
+ * loading minuisettings.txt, which on builds without its CFG_init fix means
+ * rewriting it with defaults for the keys not yet read. Drawing then makes
+ * Varnish reload its theme, through nextval.elf, which loads and saves that
+ * half-written file: a Game Switcher open did exactly that and reset Wi-Fi
+ * and the sleep timeouts on a Brick (2026-10-23). */
+#define NEXTUI_SETTLE_S 3.0
+
 static bool in_nextui_menus(void) {
-	return process_running("nextui.elf") && !process_running("minarch.elf");
+	return nextui_age() >= NEXTUI_SETTLE_S && !process_running("minarch.elf");
 }
 
 /* The chosen combination as evdev key codes; none means START. Re-read with
