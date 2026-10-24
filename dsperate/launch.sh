@@ -312,6 +312,30 @@ dsp_cpu_pin() {
     done
 }
 
+# On the fbdev tier DSperate triple-buffers /dev/fb0 (640x1440 on H700) and
+# leaves it that way. The next app's menu then pans anywhere in 1440 lines, and
+# DraStic's Mali driver crashes on a NULL when it starts with the pan at 960
+# and shrinks the buffer back to 960 lines under it (2026-10-24: one H700
+# DraStic launch in three after a DSP.pak race). Put the geometry back on the
+# way out; like the CPU record, a crash leaves it for the next launch.
+DSP_FB=/sys/class/graphics/fb0
+DSP_FB_RECORD=/tmp/dsp-fb-restore
+
+dsp_fb_restore() {
+    [ -f "$DSP_FB_RECORD" ] || return 0
+    read -r _size _pan <"$DSP_FB_RECORD"
+    # Size first: the old pan is only valid inside the old size.
+    [ -n "$_size" ] && echo "$_size" >"$DSP_FB/virtual_size" 2>/dev/null
+    [ -n "$_pan" ] && echo "$_pan" >"$DSP_FB/pan" 2>/dev/null
+    rm -f "$DSP_FB_RECORD"
+}
+
+dsp_fb_save() {
+    dsp_fb_restore
+    [ -w "$DSP_FB/virtual_size" ] && [ -w "$DSP_FB/pan" ] || return 0
+    echo "$(cat "$DSP_FB/virtual_size") $(cat "$DSP_FB/pan")" >"$DSP_FB_RECORD"
+}
+
 # NextUI truncates this pak's log on every launch, so with Netplay's verbose
 # logs on, keep a copy per process the way Netplay.pak's minarch wrapper does:
 # logs/netplay-games/<game>/<session id>/<time>-<role>-<pid>.log.
@@ -338,6 +362,7 @@ cleanup() {
     killall -q -9 dsperate 2>/dev/null || true
 
     dsp_cpu_restore
+    dsp_fb_restore
     dsp_archive_netplay_log
     sync
 }
@@ -399,6 +424,7 @@ main() {
     dsp_cpu_restore
     dsp_netplay_args
     [ -n "$DSP_NET_ARGS" ] && dsp_cpu_pin
+    dsp_fb_save
 
     # No --config: the seeded file is already at the default path DSperate
     # computes from XDG_CONFIG_HOME. No layout or performance flags either --

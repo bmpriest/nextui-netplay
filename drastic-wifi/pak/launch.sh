@@ -534,6 +534,10 @@ main() {
     # Trigger custom minui-power-control and launch the emulator, make sure to be in the current directory
     cd "$EMU_DIR"
     nds_start_power_control
+    # A pan past the end of the buffer DraStic's Mali driver sets up crashes it
+    # (H700, after an app that triple-buffered fb0 - see DSP.pak's launch.sh).
+    # The top of the buffer is valid at any size.
+    [ -w /sys/class/graphics/fb0/pan ] && echo 0,0 >/sys/class/graphics/fb0/pan 2>/dev/null
     if [ -n "$NDS_NET_LAN" ] && [ -f "$EMU_DIR/libs/libdrastic_wifi.so" ]; then
         # The auto state is where this console last quit, not where the other
         # one is: a session boots the game fresh (slots 1+ are kept).
