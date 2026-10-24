@@ -10,6 +10,8 @@ cores/*
 !cores/patches/
 !cores/patches/*.patch
 !cores/build-mgba.sh
+!cores/build-compat.sh
+!cores/compatibility-platforms.txt
 !cores/gambatte-dual/
 !cores/gambatte-dual/*.cpp
 !cores/gambatte-dual/*.h
