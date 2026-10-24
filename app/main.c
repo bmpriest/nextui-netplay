@@ -1142,9 +1142,13 @@ static void render(SDL_Surface* s) {
 			y = draw_wifi_line(s, y + SCALE1(8));
 			if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
 		} else {
-			/* A one-line hint and the WiFi line, plus any status. */
-			y = draw_rows(s, menu_sel, &menu_top, y, status[0] ? 3 : 2);
-			y = draw_footer(s, menu_sel, y);
+			/* Three rows, then one line - a status message, or the hint when
+			 * there is none - and the WiFi line: on 640x480 there is room for
+			 * no more, and Configuration must not scroll out of sight. */
+			y = draw_rows(s, menu_sel, &menu_top, y, 2);
+			y += SCALE1(2);
+			if (status[0]) y = draw_wrapped(s, status, y, COLOR_GRAY, 1);
+			else if (rows[menu_sel].hint[0]) y = draw_wrapped(s, rows[menu_sel].hint, y, COLOR_GRAY, 1);
 			draw_wifi_line(s, y + SCALE1(2));
 		}
 		GFX_blitButtonGroup(armed

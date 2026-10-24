@@ -3655,6 +3655,12 @@ static bool dual_check_agreement(void) {
 			dual_recoverable_fail("Could not verify the linked consoles.");
 			return true;
 		}
+		/* Asked every time, not once at bootstrap: a core's state can grow
+		 * mid-session (mGBA's does once the game first writes its save), and
+		 * serializing into the old size then fails. Both replicas hold the
+		 * same state, so they agree on the size too. */
+		size_t now = core.dual_serialize_size();
+		if (now) dual_state_size = now;
 		if (dual_state_size && dual_state_size != dual_hash_buf_len) {
 			free(dual_hash_buf);
 			dual_hash_buf = malloc(dual_state_size);
@@ -3662,7 +3668,13 @@ static bool dual_check_agreement(void) {
 		}
 		if (dual_hash_buf) {
 			memset(dual_hash_buf, 0, dual_hash_buf_len);
-			if (core.dual_serialize(dual_hash_buf, dual_hash_buf_len)) {
+			if (!core.dual_serialize(dual_hash_buf, dual_hash_buf_len)) {
+				static bool reported;
+				if (!reported)
+					shim_log("paired state could not be serialized at frame %u (%zu bytes); "
+					         "this check is skipped\n", dual_frame, dual_hash_buf_len);
+				reported = true;
+			} else {
 				uint32_t mine = hash_bytes(dual_hash_buf, dual_hash_buf_len);
 				unsigned slot = (dual_frame / HASH_INTERVAL) % HASH_HISTORY;
 				own_hashes[slot] = (StateHash){ dual_frame, mine, 1 };

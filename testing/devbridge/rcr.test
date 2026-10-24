@@ -1,0 +1,34 @@
+# River City Ransom - shared-screen lockstep (FCEUmm), two players.
+#
+# Title -> 2 PLAYERS (each device drives its own player) -> 90 seconds of
+# random brawling from both -> both logs must show agreement.
+#
+# Presses are held 0.3 s: one that begins and ends inside a link stall is never
+# sampled by the game. Run with run.sh.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME FC "Nintendo Entertainment System (FC)/River City Ransom (USA).zip"
+WAIT 3000
+guest:OPEN_GAME FC "Nintendo Entertainment System (FC)/River City Ransom (USA).zip"
+all:WAIT_FOR game 30000
+WAIT 10000
+all:SCREEN rcr-title
+
+# Title -> mode list; Player 1 picks 2 PLAYERS.
+host:TRM sh {helpers}/keys.sh start:0.3:2.5
+all:SCREEN rcr-modes
+host:TRM sh {helpers}/keys.sh down:0.3:1 start:0.3:4
+all:SCREEN rcr-start
+host:TRM sh {helpers}/keys.sh start:0.3:3
+all:SCREEN rcr-play
+
+host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+b right+a left b b a a up down up+right down+right a+b
+guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+b right+a left b b a a up down up+right down+right a+b
+WAIT 93000
+all:SCREEN rcr-after-play
+
+host:TRM sh {helpers}/check.sh shared River_City_Ransom 50
+guest:TRM sh {helpers}/check.sh shared River_City_Ransom 50
+
+all:QUIT_GAME
+all:WAIT_FOR devbridge 30000
