@@ -7,6 +7,9 @@ the netplay logs afterwards say the devices did not play together.
 | Test | Mode | What it plays |
 | --- | --- | --- |
 | `sor2.test` | shared screen (PicoDrive) | Streets of Rage 2: 2 PLAYERS, each device picks its own fighter, 90 s of brawling |
+| `rcr.test` | shared screen (FCEUmm) | River City Ransom: 2P PLAY, 90 s of brawling from both |
+| `contra3.test` | shared screen (Snes9x) | Contra III: 2 PLAYERS A, 90 s of running and shooting |
+| `ctr.test` | shared screen (PCSX ReARMed) | Crash Team Racing: VS. single race, each device picks its racer, 90 s on Crash Cove; the 4.4MB state makes it the large-sync test |
 | `tetris.test` | instanced GB link (paired Gambatte) | Tetris: 2PLAYER, Mario vs Luigi at different heights, 60 s of play |
 | `mkart.test` | instanced GBA link (paired mGBA) | Mario Kart: Super Circuit: Multi-Pak VS, 100cc, Mario vs Yoshi, 2 min on Peach Circuit |
 | `aw2.test` | networked GBA link cable (gpSP) | Advance Wars 2: Multi-Pak battle, a full turn each way (the guest builds a tank) |
@@ -17,7 +20,9 @@ the netplay logs afterwards say the devices did not play together.
 Gameplay is random input from both devices (`device/gameplay.sh`). After play,
 `device/check.sh` reads each device's own netplay log and fails on divergence,
 a missing link agreement, dropped link packets or a session average under the
-test's minimum frame rate.
+test's minimum frame rate. It also prints the stall share, the longest stall
+and the slowest 10 s window: lockstep never drops input, so a poor link shows
+up as frames held waiting for the peer.
 
 ## Before running
 
