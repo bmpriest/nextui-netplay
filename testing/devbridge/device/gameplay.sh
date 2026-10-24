@@ -16,12 +16,21 @@ if [ "$1" = --bg ]; then
 	exit 0
 fi
 
+# A menu in front means the game is gone (crashed or quit): pressing on would
+# walk the device through NextUI or toggle DevBridge's own settings.
+in_menu() {
+	# Brackets keep grep from finding its own command line.
+	grep -qs -e 'nextui[.]elf' -e 'DevBridge[.]pak/launch[.]sh' /proc/[0-9]*/cmdline
+}
+
 IN=$(ls /mnt/SDCARD/Tools/*/DevBridge.pak/bin/input 2>/dev/null | head -1)
 [ -x "$IN" ] || { echo "gameplay.sh: DevBridge input helper not found" >&2; exit 1; }
 
 end=$(( $(date +%s) + $1 )); shift
 n=$#
-while [ "$(date +%s)" -lt "$end" ]; do
+next=0
+while now=$(date +%s); [ "$now" -lt "$end" ]; do
+	if [ "$now" -ge "$next" ]; then in_menu && break; next=$((now + 5)); fi
 	r=$(hexdump -n2 -e '1/2 "%u"' /dev/urandom)
 	i=$(( r % n + 1 )); eval chord=\${$i}
 	for b in $(echo "$chord" | tr + ' '); do "$IN" press "$b" >/dev/null; done
