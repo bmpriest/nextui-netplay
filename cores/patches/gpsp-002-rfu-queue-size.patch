@@ -1,11 +1,11 @@
-diff --git forkSrcPrefix/rfu.c forkDstPrefix/rfu.c
-index 31a515c..a5e0b8f 100644
---- forkSrcPrefix/rfu.c
-+++ forkDstPrefix/rfu.c
+diff --git a/rfu.c b/rfu.c
+index 2b7a8c0..69a0e85 100644
+--- a/rfu.c
++++ b/rfu.c
 @@ -19,6 +19,10 @@
-
+ 
  #include "common.h"
-
+ 
 +// Packet queue size for buffering network packets
 +// Increased from 4 to handle TCP batching that delivers packets faster than game reads
 +#define RFU_PKT_QUEUE_SIZE 16
@@ -13,7 +13,7 @@ index 31a515c..a5e0b8f 100644
  // Debug print logic:
  #ifdef RFU_DEBUG
    #define RFU_DEBUG_LOG(...) printf(__VA_ARGS__)
-@@ -138,7 +142,7 @@ static struct {
+@@ -141,7 +145,7 @@ static struct {
      struct {
        u32 datalen;   // Byte count of data waiting to be polled.
        u8  data[16];  // Data received from client.
@@ -21,8 +21,8 @@ index 31a515c..a5e0b8f 100644
 +    } pkts[RFU_PKT_QUEUE_SIZE];
    } clients[4];      // Connected clients IDs (zero means empty slot).
  } rfu_host;
-
-@@ -146,11 +150,11 @@ static struct {
+ 
+@@ -149,11 +153,11 @@ static struct {
    u16 devid;         // Device ID assigned to the client (by the host?)
    u16 clnum;         // Client number (0 to 3)
    u16 host_id;       // Client ID for the host device.
@@ -34,9 +34,9 @@ index 31a515c..a5e0b8f 100644
 -  } pkts[4];
 +  } pkts[RFU_PKT_QUEUE_SIZE];
  } rfu_client;
-
+ 
  typedef struct {
-@@ -498,8 +502,8 @@ static s32 rfu_process_command() {
+@@ -527,8 +531,8 @@ static s32 rfu_process_command() {
            rfu_buf[0] |= dlen << (8 + i * 5);
            // Discard front packet
            memmove(&rfu_host.clients[i].pkts[0], &rfu_host.clients[i].pkts[1],
@@ -47,9 +47,9 @@ index 31a515c..a5e0b8f 100644
          }
        }
        // Copy data into words into the RFU buffer.
-@@ -516,8 +520,8 @@ static s32 rfu_process_command() {
+@@ -545,8 +549,8 @@ static s32 rfu_process_command() {
          rfu_buf[cnt++] = leupack32(&rfu_client.pkts[0].hdata[j*4]);
-
+ 
        // Move to the next packet
 -      memmove(&rfu_client.pkts[0], &rfu_client.pkts[1], sizeof(rfu_client.pkts[0]) * 3);
 -      rfu_client.pkts[3].hblen = 0;
@@ -58,7 +58,7 @@ index 31a515c..a5e0b8f 100644
        return cnt;
      }
      break;
-@@ -810,8 +814,8 @@ void rfu_net_receive(const void* buf, size_t len, uint16_t client_id) {
+@@ -847,8 +851,8 @@ void rfu_net_receive(const void* buf, size_t len, uint16_t client_id) {
            // ACK the reception (so they know we are alive!)
            rfu_net_send_cmd(client_id, NET_RFU_CLIENT_ACK,
                             rfu_client.devid | (rfu_client.clnum << 16));
@@ -69,7 +69,7 @@ index 31a515c..a5e0b8f 100644
              if (!rfu_client.pkts[i].hblen) {
                memcpy(&rfu_client.pkts[i].hdata, payl, blen);
                rfu_client.pkts[i].hblen = blen;
-@@ -835,7 +839,7 @@ void rfu_net_receive(const void* buf, size_t len, uint16_t client_id) {
+@@ -872,7 +876,7 @@ void rfu_net_receive(const void* buf, size_t len, uint16_t client_id) {
          // Validate the slot with device ID
          if (rfu_host.clients[clid].devid == cdevid) {
            rfu_host.clients[clid].clttl = 0;   // Account for packet reception

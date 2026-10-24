@@ -1,20 +1,18 @@
-diff --git a/libretro-build/Makefile.common b/libretro-build/Makefile.common
-index 8266a6a4f..8b388158f 100644
---- a/libretro-build/Makefile.common
-+++ b/libretro-build/Makefile.common
-@@ -78,6 +78,7 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
- 					$(CORE_DIR)/src/gb/renderers/software.c \
- 					$(CORE_DIR)/src/gb/serialize.c \
- 					$(CORE_DIR)/src/gb/sio.c \
-+					$(CORE_DIR)/src/gb/sio/lockstep.c \
- 					$(CORE_DIR)/src/gb/timer.c \
- 					$(CORE_DIR)/src/gb/video.c \
- 					$(CORE_DIR)/src/gba/audio.c \
-@@ -108,6 +109,7 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
- 					$(CORE_DIR)/src/gba/serialize.c \
- 					$(CORE_DIR)/src/gba/sio.c \
- 					$(CORE_DIR)/src/gba/sio/gbp.c \
-+					$(CORE_DIR)/src/gba/sio/lockstep.c \
- 					$(CORE_DIR)/src/gba/timer.c \
- 					$(CORE_DIR)/src/gba/cart/vfame.c \
- 					$(CORE_DIR)/src/gba/video.c \
+Build mGBA's lockstep SIO drivers into the libretro core. The paired (dual
+instance) frontend links its two consoles through them; the libretro target
+compiles the core sources only.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9d528e790..04abc2e6b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1031,6 +1031,9 @@ if(BUILD_LIBRETRO)
+ 	list(APPEND LIBRETRO_CORE_SRC ${VFS_SRC})
+ 	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/core/(scripting|library|mem-search|rewind|input)\\.c$")
+ 	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/util/(audio-resampler|interpolator)\\.c$")
++	# Netplay.pak: the lockstep SIO drivers, which link two consoles in one
++	# process, are left out of the libretro core list.
++	list(APPEND LIBRETRO_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/gba/sio/lockstep.c ${CMAKE_CURRENT_SOURCE_DIR}/src/gb/sio/lockstep.c)
+ 	if(CMAKE_TRY_COMPILE_TARGET_TYPE STREQUAL "STATIC_LIBRARY" AND NOT APPLE)
+ 		# Link-based function probes always succeed under static try-compile,
+ 		# so every find_function result above is untrustworthy; use the set

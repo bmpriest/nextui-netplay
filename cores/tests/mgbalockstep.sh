@@ -36,27 +36,35 @@ FLAGFILE="$HOSTDIR/cflags"
 if [ ! -f "$LIB" ] || [ "$CORE/src/gba/sio/lockstep.c" -nt "$LIB" ]; then
 	mkdir -p "$HOSTDIR"
 	echo "  .... building mGBA for the host (once; cached in $HOSTDIR)"
-	( cd "$CORE" && make -f Makefile.libretro platform=unix clean >/dev/null 2>&1 || true )
-	( cd "$CORE" && make -f Makefile.libretro platform=unix -j"$(nproc 2>/dev/null || echo 4)" ) \
+	# The same CMake libretro target the devices get, out of tree, with the
+	# compile commands kept so the harness can reuse the exact defines.
+	rm -rf "$HOSTDIR/build"
+	{ cmake -S "$CORE" -B "$HOSTDIR/build" -DCMAKE_BUILD_TYPE=Release \
+		-DLIBMGBA_ONLY=ON -DBUILD_LIBRETRO=ON -DLIBRETRO_STATIC=OFF \
+		-DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_C_COMPILER="$CC" &&
+	  cmake --build "$HOSTDIR/build" --target mgba_libretro -- -j"$(nproc 2>/dev/null || echo 4)"; } \
 		> "$HOSTDIR/build.log" 2>&1 || {
 			echo "  MISS mGBA host build failed"; tail -20 "$HOSTDIR/build.log"; exit 1; }
 
 	# Everything except the libretro entry points: that translation unit owns a
 	# single global mCore, which is the assumption the paired core has to shed.
-	find "$CORE" -name '*.o' | grep -v 'platform/libretro/libretro.o' > "$HOSTDIR/objs"
+	find "$HOSTDIR/build/CMakeFiles/mgba_libretro.dir" -name '*.o' \
+		| grep -v 'platform/libretro/libretro\.c\.o' > "$HOSTDIR/objs"
 	ar rcs "$LIB" $(cat "$HOSTDIR/objs")
 
-	grep -m1 'core/core\.c' "$HOSTDIR/build.log" \
-		| tr ' ' '\n' | grep -E '^-D' | grep -v GIT_VERSION | tr '\n' ' ' > "$FLAGFILE"
-
-	# Leave the tree neutral so the next cross build does not link host objects.
-	( cd "$CORE" && make -f Makefile.libretro platform=unix clean >/dev/null 2>&1 || true )
+	python3 - "$HOSTDIR/build/compile_commands.json" > "$FLAGFILE" <<'PY'
+import json, shlex, sys
+for entry in json.load(open(sys.argv[1])):
+    if entry["file"].endswith("/core/core.c") and "mgba_libretro.dir" in entry["command"]:
+        print(" ".join(a for a in shlex.split(entry["command"]) if a.startswith("-D") and "GIT" not in a))
+        break
+PY
 fi
 
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
-INC="-I$CORE/src -I$CORE/src/arm -I$CORE/include -I$CORE/src/platform/libretro"
+INC="-I$CORE/src -I$CORE/src/arm -I$CORE/include -I$CORE/src/platform/libretro -I$HOSTDIR/build/include"
 $CC -O1 -g -o "$OUT/mgbalockstep" cores/tests/mgbalockstep.c "$LIB" \
 	$(cat "$FLAGFILE") $INC -lm
 

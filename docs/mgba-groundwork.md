@@ -106,12 +106,13 @@ are already solved upstream, by the person who wrote the emulator.
 
 **The revision this was written against is not the one we ship, and it does not
 matter.** The notes above were taken from `cores/mgba-libretro` at `e31759b24`.
-NextUI pins mGBA at `925f0f0b` — deliberately, because commit `89404771`
-(2026-08-04) moved the libretro build out of the repo root. We build the pinned
-revision, and `src/core/lockstep.c`, `src/gb/sio/lockstep.c`,
+NextUI 6.15.0 ships mGBA `7a12d6d4b` (0.11-1), built with the CMake libretro
+target that commit `89404771` introduced, and Netplay now builds the same
+revision the same way (`cores/build-mgba.sh`; it built `925f0f0b` with the old
+Makefile until 2026-10-23). `src/core/lockstep.c`, `src/gb/sio/lockstep.c`,
 `src/gba/sio/lockstep.c` and `include/mgba/internal/gba/sio/lockstep.h` are
-byte-identical between the two, so every reading below transfers. `925f0f0b`
-also carries the same `-DDISABLE_THREADING -DMINIMAL_CORE=2`.
+byte-identical across all three revisions, so every reading below transfers.
+The CMake target still sets `DISABLE_THREADING` and `MINIMAL_CORE=2`.
 
 **Question 1 above — is lockstep resolution a pure function of emulated state? —
 now looks answered yes, for the GBA driver.** Three findings, all in
