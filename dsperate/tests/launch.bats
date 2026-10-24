@@ -201,6 +201,16 @@ setup_session() {
     [ -z "${DS_LAN_TIMEOUT_MS:-}" ]
 }
 
+@test "DSperate taken out of Netplay plays offline in a session" {
+    setup_session role=host adhoc_ssid=nextui-TEST
+    printf 'dsperate=0\n' >"$NETPLAY_STATE/settings"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+    printf 'dsperate=1\n' >"$NETPLAY_STATE/settings"
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
+}
+
 @test "a guest session joins the host by address" {
     setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
     dsp_netplay_args

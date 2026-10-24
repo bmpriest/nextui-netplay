@@ -184,6 +184,7 @@ void NS_init(void) {
 
 const char* NS_platform(void) { return ns_platform; }
 const char* NS_pakPath(void)  { return ns_pak; }
+const char* NS_sdPath(void)   { return ns_sd; }
 const char* NS_statePath(void) { return ns_state; }
 
 /* Read the first non-loopback IPv4 from `ip addr`. Cheaper and more portable
@@ -540,6 +541,16 @@ void NS_settingsLoad(void) {
 		const char* k = line;
 		int v = atoi(eq + 1);
 
+		/* The two text settings first; everything else is a number. */
+		if (!strcmp(k, "quick_menu_keys")) {
+			snprintf(ns_set.quick_keys, sizeof(ns_set.quick_keys), "%s", eq + 1);
+			continue;
+		}
+		if (!strcmp(k, "quick_menu_label")) {
+			snprintf(ns_set.quick_label, sizeof(ns_set.quick_label), "%s", eq + 1);
+			continue;
+		}
+
 		if      (!strcmp(k, "share_cores"))   ns_set.share_cores = v != 0;
 		else if (!strcmp(k, "compatibility_cores")) ns_set.compatibility_cores = v != 0;
 		else if (!strcmp(k, "force_compatibility")) ns_set.force_compatibility = v != 0;
@@ -590,6 +601,8 @@ void NS_settingsSave(void) {
 	fprintf(f, "drastic=%d\n", ns_set.drastic ? 1 : 0);
 	fprintf(f, "status_icon=%d\n", (int)ns_set.status_icon);
 	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
+	fprintf(f, "quick_menu_keys=%s\n", ns_set.quick_keys);
+	fprintf(f, "quick_menu_label=%s\n", ns_set.quick_label);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -634,6 +647,71 @@ bool NS_coreInstalled(const char* core) {
 	snprintf(cmd, sizeof(cmd),
 	         "ls '%s/Emus/%s'/*.pak/%s_libretro.so >/dev/null 2>&1", ns_sd, ns_platform, core);
 	return system(cmd) == 0;
+}
+
+/* Cores the shim drives, as install-stubs.sh's NETPLAY_CORES lists them. */
+static const char* const SHIM_CORES[] = {
+	"fbneo", "fceumm", "snes9x", "snes9x2005", "mednafen_supafaust",
+	"picodrive", "pcsx_rearmed", "gpsp", "gambatte",
+};
+
+/* A launch.sh that names the system's core: Netplay's bind-mount wrapper
+ * keeps the original beside it as launch.sh.old; a legacy stub (no .old)
+ * delegates to NextUI's own pak, so it names nothing here. */
+static bool resolve_launcher(const char* path, char* out, int len) {
+	FILE* f = fopen(path, "r");
+	if (!f) return false;
+	char line[256];
+	bool ours = false;
+	for (int i = 0; i < 4 && fgets(line, sizeof(line), f); i++)
+		if (strstr(line, "Installed by Netplay.pak")) ours = true;
+	fclose(f);
+	if (!ours) { snprintf(out, len, "%s", path); return true; }
+	char old[660];
+	snprintf(old, sizeof(old), "%s.old", path);
+	if (!file_exists(old)) return false;
+	snprintf(out, len, "%s", old);
+	return true;
+}
+
+/* The launch.sh that runs a system: a pak on the card overrides NextUI's own. */
+static bool system_launcher(const char* tag, char* out, int len) {
+	char p[640];
+	snprintf(p, sizeof(p), "%s/Emus/%s/%s.pak/launch.sh", ns_sd, ns_platform, tag);
+	if (resolve_launcher(p, out, len)) return true;
+	snprintf(p, sizeof(p), "%s/.system/%s/paks/Emus/%s.pak/launch.sh", ns_sd, ns_platform, tag);
+	return resolve_launcher(p, out, len);
+}
+
+NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len) {
+	char path[700], line[256], first[32] = "";
+	if (core && core_len) core[0] = '\0';
+	if (!system_launcher(tag, path, sizeof(path))) return NS_SYS_ABSENT;
+	FILE* f = fopen(path, "r");
+	if (!f) return NS_SYS_ABSENT;
+	/* EMU_EXE=name, at the top level (arm64) or inside a case over EMU_TAG
+	 * (my282), so anywhere on the line - as install-stubs.sh matches it. */
+	NS_SystemState state = NS_SYS_PRESENT;
+	while (state != NS_SYS_READY && fgets(line, sizeof(line), f)) {
+		char* at = strstr(line, "EMU_EXE=");
+		if (!at) continue;
+		char name[32];
+		int n = 0;
+		for (at += 8; n < (int)sizeof(name) - 1 && (isalnum((unsigned char)*at) || *at == '_'); at++)
+			name[n++] = *at;
+		name[n] = '\0';
+		if (!n) continue;
+		if (!first[0]) snprintf(first, sizeof(first), "%s", name);
+		for (size_t i = 0; i < sizeof(SHIM_CORES) / sizeof(SHIM_CORES[0]); i++) {
+			if (strcmp(name, SHIM_CORES[i])) continue;
+			snprintf(first, sizeof(first), "%s", name);
+			state = NS_SYS_READY;
+			break;
+		}
+	}
+	fclose(f);
+	if (core && core_len) snprintf(core, core_len, "%s", first);
+	return state;
 }
 
 /* pak-manage.sh's kind argument, and how an error names the pak. */
@@ -684,6 +762,9 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
 		else if (!strcmp(line, "mismatch_ignored")) out->mismatch_ignored = atoi(eq) != 0;
 		else if (!strcmp(line, "base_installed")) out->base_installed = atoi(eq) != 0;
 		else if (!strcmp(line, "unsupported")) out->unsupported = atoi(eq) != 0;
+		else if (!strcmp(line, "base_bundled")) out->base_bundled = atoi(eq) != 0;
+		else if (!strcmp(line, "present")) out->present = atoi(eq) != 0;
+		else if (!strcmp(line, "backup")) out->has_backup = atoi(eq) != 0;
 		else if (!strcmp(line, "backup_date")) snprintf(out->backup_date, sizeof(out->backup_date), "%s", eq);
 	}
 	fclose(f);
@@ -692,6 +773,7 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
 
 bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "install", err, errlen); }
 bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "ignore", err, errlen); }
+bool NS_pakRemove(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "remove", err, errlen); }
 bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen) {
 	char args[64];
 	snprintf(args, sizeof(args), "restore %d %d %d", restore_pak ? 1 : 0, saves ? 1 : 0, states ? 1 : 0);
@@ -1121,6 +1203,13 @@ static bool write_compat_file(const char* path,
 /* Whether this device can offer each paired core: its setting is on and its
  * paired artifact is actually staged. Each bit must be present on both devices,
  * so the masks are exchanged with the manifest and intersected. */
+bool NS_gambatteDualAvailable(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/cores/override/%s/gambatte_dual_libretro.so",
+	         ns_pak, ns_platform);
+	return file_exists(path);
+}
+
 static uint32_t instanced_available_mask(void) {
 	char path[512];
 	uint32_t mask = 0;

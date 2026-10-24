@@ -40,6 +40,7 @@ typedef struct {
 void NS_init(void);                  /* resolve pak path, platform, sd root */
 const char* NS_platform(void);
 const char* NS_pakPath(void);
+const char* NS_sdPath(void);
 const char* NS_statePath(void); /* durable state in .userdata/shared/Netplay */
 bool NS_localIP(char* out, int len);
 
@@ -182,6 +183,10 @@ typedef struct {
 	bool        drastic;       /* local wireless added to the user's NDS.pak (DraStic) */
 	NS_IconMode status_icon;    /* Varnish.pak overlay icon: dim, half lit hosting, lit connected */
 	bool        quick_menu;     /* START in NextUI's menus opens a Varnish-drawn menu */
+	/* The quick menu's button combination as evdev key codes ("314,315"), and
+	 * how the app names it ("SELECT+START"). Empty means START. */
+	char        quick_keys[32];
+	char        quick_label[32];
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
@@ -228,6 +233,9 @@ typedef struct {
 	 * build the radio does not support. */
 	bool base_installed;
 	bool unsupported;
+	bool base_bundled;     /* NS_PAK_NDS: Netplay can install NDS.pak itself */
+	bool present;          /* a <pak>.pak is on the card, whoever put it there */
+	bool has_backup;       /* restoring would put a pre-Netplay copy back */
 	char backup_date[32];
 } NS_PakStatus;
 
@@ -237,6 +245,20 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out);
 bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen);
 bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen);
 bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen);
+/* Deletes the pak from the card without putting a backup back. */
+bool NS_pakRemove(NS_ManagedPak pak, char* err, int errlen);
+
+/* Whether a system's pak is here and would play over Netplay: its launch.sh
+ * picks a core the shim drives. core gets the core it picks ("snes9x2005"),
+ * or "" when the pak is absent. */
+typedef enum {
+	NS_SYS_ABSENT = 0,
+	NS_SYS_PRESENT,      /* the pak is here, but not with a core Netplay drives */
+	NS_SYS_READY,
+} NS_SystemState;
+NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len);
+/* The paired Gambatte core that dual-instance link play needs is staged. */
+bool NS_gambatteDualAvailable(void);
 
 /* --- core manifest ------------------------------------------------------
  *

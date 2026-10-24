@@ -38,7 +38,7 @@ case $KIND in
 		PAK=NDS
 		OVERLAY=1
 		;;
-	*) printf 'usage: %s mgba|dsp|nds status|install|reinstall|ignore|restore [pak saves states]\n' "$0" >&2; exit 2 ;;
+	*) printf 'usage: %s mgba|dsp|nds status|install|reinstall|ignore|restore [pak saves states]|remove\n' "$0" >&2; exit 2 ;;
 esac
 OVERLAY=${OVERLAY:-0}
 MARKER="netplay-$KIND-v1"
@@ -66,12 +66,39 @@ say() { printf '%s\n' "$*"; }
 hash_file() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
 platform_dirs() {
-	for _d in "$SDCARD_PATH"/Emus/*; do
-		[ -d "$_d" ] || continue
-		_p=${_d##*/}
+	# The running platform counts even before its Emus directory exists: a
+	# card with no extras installed has none.
+	_seen=" "
+	for _p in ${PLATFORM:-} $(cd "$SDCARD_PATH/Emus" 2>/dev/null && ls); do
+		case $_seen in *" $_p "*) continue ;; esac
+		_seen="$_seen$_p "
+		[ "$_p" = "${PLATFORM:-}" ] || [ -d "$SDCARD_PATH/Emus/$_p" ] || continue
 		[ -d "$NETPLAY_PAK/cores/$KIND/$_p/$PAK.pak" ] || continue
 		printf '%s\n' "$_p"
 	done
+}
+
+# A pak by this name on the card for any platform Netplay builds for.
+pak_present() {
+	for _p in $(platform_dirs); do
+		[ -d "$SDCARD_PATH/Emus/$_p/$PAK.pak" ] && return 0
+	done
+	return 1
+}
+
+# Restore has a pre-Netplay copy of the pak to put back.
+has_backup() {
+	[ -f "$MANIFEST" ] || return 1
+	for _b in $(sed -n 's/^backup\.[^=]*=//p' "$MANIFEST"); do
+		[ -e "$_b" ] && return 0
+	done
+	return 1
+}
+
+retire_manifest() {
+	[ -f "$MANIFEST" ] || return 0
+	mv "$MANIFEST" "$KIND_STATE/$1-$(date '+%Y-%m-%d_%H-%M-%S').manifest"
+	rm -rf "$IGNORE_DIR"
 }
 
 managed_platforms() {
@@ -122,6 +149,8 @@ status() {
 	say "mismatch_ignored=$_ignored"
 	_date=$(manifest_value installed_at 2>/dev/null || true)
 	say "backup_date=$_date"
+	pak_present && say "present=1" || say "present=0"
+	has_backup && say "backup=1" || say "backup=0"
 }
 
 next_backup() {
@@ -280,6 +309,16 @@ restore() {
 	say "ok=1"
 }
 
+# Deletes the pak outright; any backup stays where install moved it (and is no
+# longer offered for restore).
+remove() {
+	for _p in $(platform_dirs); do
+		rm -rf "$SDCARD_PATH/Emus/$_p/$PAK.pak"
+	done
+	retire_manifest removed
+	say "ok=1"
+}
+
 # ---- overlay (nds) ------------------------------------------------------------
 # The base pak must already be on the card with a DraStic this radio supports.
 # Per platform the manifest records each overlaid file as either backed up
@@ -287,6 +326,20 @@ restore() {
 # (it did not; restore removes it).
 
 overlay_src() { printf '%s\n' "$NETPLAY_PAK/cores/$KIND/$1/$PAK.pak"; }
+
+# minui-nintendo-ds-pak's release, unmodified, for a card with no NDS.pak yet.
+# One copy serves every platform: the pak itself is platform-neutral.
+BASE_SRC="$NETPLAY_PAK/cores/$KIND/base/$PAK.pak"
+base_bundled() { [ -f "$BASE_SRC/drastic/drastic" ]; }
+
+base_install() {
+	_dst="$SDCARD_PATH/Emus/$1/$PAK.pak"
+	_tmp="$_dst.netplay.tmp.$$"
+	rm -rf "$_tmp"
+	mkdir -p "$_tmp" && cp -Rp "$BASE_SRC"/. "$_tmp"/ && mv "$_tmp" "$_dst" || {
+		rm -rf "$_tmp"; return 1; }
+	mkdir -p "$SDCARD_PATH/Roms/Nintendo DS (NDS)"
+}
 
 overlay_supported() {
 	_bin="$SDCARD_PATH/Emus/$1/$PAK.pak/drastic/drastic"
@@ -341,6 +394,9 @@ overlay_status() {
 	say "mismatch_ignored=$_ignored"
 	say "base_installed=$_base"
 	say "unsupported=$_unsupported"
+	base_bundled && say "base_bundled=1" || say "base_bundled=0"
+	say "present=$_base"
+	say "backup=0"
 	_date=$(manifest_value installed_at 2>/dev/null || true)
 	say "backup_date=$_date"
 }
@@ -357,6 +413,10 @@ overlay_install() {
 	fi
 	_installed=""
 	for _p in $(platform_dirs); do
+		if [ ! -f "$SDCARD_PATH/Emus/$_p/$PAK.pak/drastic/drastic" ] && base_bundled; then
+			base_install "$_p" || exit 1
+			say "base.$_p=1" >> "$_tmp_manifest"
+		fi
 		overlay_supported "$_p" || continue
 		_dst="$SDCARD_PATH/Emus/$_p/$PAK.pak"
 		_src=$(overlay_src "$_p")
@@ -416,13 +476,24 @@ overlay_restore() {
 	say "ok=1"
 }
 
+# NDS.pak goes entirely, DraStic's settings with it; saves live in Saves/NDS.
+overlay_remove() {
+	for _p in $(platform_dirs); do
+		rm -rf "$SDCARD_PATH/Emus/$_p/$PAK.pak"
+	done
+	retire_manifest removed
+	rm -rf "$KIND_STATE/originals"
+	say "ok=1"
+}
+
 if [ "$OVERLAY" = 1 ]; then
 	case ${1:-status} in
 		status) overlay_status ;;
 		install|reinstall) overlay_install ;;
 		ignore) ignore ;;
 		restore) overlay_restore "$@" ;;
-		*) say "usage: $0 $KIND status|install|reinstall|ignore|restore" >&2; exit 2 ;;
+		remove) overlay_remove ;;
+		*) say "usage: $0 $KIND status|install|reinstall|ignore|restore|remove" >&2; exit 2 ;;
 	esac
 	exit $?
 fi
@@ -432,5 +503,6 @@ case ${1:-status} in
 	install|reinstall) install ;;
 	ignore) ignore ;;
 	restore) restore "$@" ;;
-	*) say "usage: $0 $KIND status|install|reinstall|ignore|restore [pak saves states]" >&2; exit 2 ;;
+	remove) remove ;;
+	*) say "usage: $0 $KIND status|install|reinstall|ignore|restore [pak saves states]|remove" >&2; exit 2 ;;
 esac

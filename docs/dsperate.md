@@ -18,7 +18,7 @@ hardware.
 | `make cores-dsp` | Makefile | Builds tg5040, tg5050 and h700, stages `dist/dsp/<platform>/DSP.pak` (one platform's binaries each) |
 | `cores/dsp/<platform>/DSP.pak` | in Netplay.pak | The payload `pak-manage.sh` installs |
 | `launcher/pak-manage.sh dsp` | in Netplay.pak | Install / status / ignore / restore, shared with MGBA.pak (`pak-manage.sh mgba`) |
-| Settings > Nintendo DS (DSperate) | the app | Turns the install on (with backups) and off (with restore choices) |
+| Configuration > Cores > Extras > DSP | the app | Installs (with backups); then takes it out of Netplay, deletes it (`pak-manage.sh dsp remove`) or restores the backup |
 | `Emus/<platform>/DSP.pak/launch.sh` | on the card | With a session armed: re-joins the session network, then starts DSperate as `--lan-host Netplay` or `--lan-join <host>` |
 
 DSperate speaks melonDS's LAN protocol (UDP discovery on 7063, ENet on 7064).

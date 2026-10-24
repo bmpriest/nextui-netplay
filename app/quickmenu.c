@@ -1,5 +1,6 @@
 /*
- * Netplay quick menu - START in NextUI's menus opens a small Netplay menu
+ * Netplay quick menu - START (or the buttons chosen in Settings) in NextUI's
+ * menus opens a small Netplay menu
  * drawn over NextUI by Varnish.pak, so hosting does not mean leaving the menu
  * you are in to open the Netplay app.
  *
@@ -38,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -189,9 +191,44 @@ static bool in_nextui_menus(void) {
 	return process_running("nextui.elf") && !process_running("minarch.elf");
 }
 
+/* The chosen combination as evdev key codes; none means START. Re-read with
+ * the setting, so a change in the app applies within seconds. */
+static int chord[4];
+static int chord_count;
+
 static bool setting_enabled(void) {
 	NS_settingsLoad();
+	chord_count = 0;
+	const char* p = NS_settings()->quick_keys;
+	while (*p && chord_count < 4) {
+		int code = atoi(p);
+		if (code > 0 && code < KEY_CNT) chord[chord_count++] = code;
+		while (*p && *p != ',') p++;
+		if (*p == ',') p++;
+	}
 	return NS_settings()->quick_menu;
+}
+
+static bool chord_held(void) {
+	for (int i = 0; i < chord_count; i++)
+		if (!key_held[chord[i]]) return false;
+	return chord_count > 0;
+}
+
+/* The Game Switcher's Netplay entry asks for the menu by leaving this file
+ * (launcher/gameswitcher-launch.sh); it opens once NextUI is back in front. */
+static char open_path[512];
+
+static bool open_requested(void) {
+	struct stat st;
+	if (stat(open_path, &st) != 0) return false;
+	if (time(NULL) - st.st_mtime > 15) {   /* stale: NextUI never came back */
+		remove(open_path);
+		return false;
+	}
+	if (!in_nextui_menus()) return false;
+	remove(open_path);
+	return true;
 }
 
 static double now_s(void) {
@@ -423,6 +460,8 @@ int main(void) {
 	layout = !strcmp(NS_platform(), "my355") ? LAYOUT_KEYBOARD
 	       : !strcmp(NS_platform(), "h700") ? LAYOUT_H700 : LAYOUT_GAMEPAD;
 	snprintf(pid_path, sizeof(pid_path), "%s/quick-menu.pid", NS_statePath());
+	snprintf(open_path, sizeof(open_path), "%s/quick-menu.open", NS_statePath());
+	setting_enabled();
 	write_pid(pid_path);
 	NS_setProgressCallback(on_progress);
 	/* A previous instance killed mid-menu may have left its parts up. */
@@ -430,8 +469,9 @@ int main(void) {
 
 	open_devices();
 	double reopened = now_s(), checked = now_s();
+	bool latched = false;   /* the combination is still held from last time */
 	while (!stopping) {
-		wait_input(2000);
+		wait_input(500);
 		Button b = read_press();
 
 		if (now_s() - checked > 5) {
@@ -442,8 +482,16 @@ int main(void) {
 			reopened = now_s();
 			open_devices();
 		}
-		if (b == QB_START && in_nextui_menus())
+		bool fire;
+		if (chord_count) {
+			bool held = chord_held();
+			fire = held && !latched;
+			latched = held;
+		} else fire = b == QB_START;
+		if ((fire && in_nextui_menus()) || open_requested()) {
 			run_menu();
+			latched = chord_held();
+		}
 	}
 
 	varnish_hide(CLIENT);

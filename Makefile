@@ -483,8 +483,25 @@ check-dsp:
 NDS_PLATFORMS  := tg5040 tg5050 h700
 NDS_OVERLAY    := dist/nds
 DRASTIC_SHA256 := 6e11511907f2188863f68434484d8e1fb70c6c4b597512bed02d38f60370ac11
+# For a card with no NDS.pak, Netplay installs minui-nintendo-ds-pak's own
+# release, unmodified, then adds the overlay. Its DraStic is DRASTIC_SHA256.
+NDS_BASE_URL    := https://github.com/josegonzalez/minui-nintendo-ds-pak/releases/download/0.14.1/NDS.pak.zip
+NDS_BASE_ZIP    := .cache/nds/NDS-0.14.1.pak.zip
+NDS_BASE_SHA256 := ac4c957592e0856cb4c559cb8a9c29795baec961a789d2e4edcf26cbf06a9a65
 
-cores-nds: drastic-radio
+$(NDS_BASE_ZIP):
+	@mkdir -p $(dir $@)
+	@curl -fL "$(NDS_BASE_URL)" -o "$@.tmp"
+	@printf '%s  %s\n' "$(NDS_BASE_SHA256)" "$@.tmp" | sha256sum -c -
+	@mv "$@.tmp" "$@"
+
+cores-nds: drastic-radio $(NDS_BASE_ZIP)
+	@printf '%s  %s\n' "$(NDS_BASE_SHA256)" "$(NDS_BASE_ZIP)" | sha256sum -c - >/dev/null
+	@rm -rf "$(NDS_OVERLAY)/base" && mkdir -p "$(NDS_OVERLAY)/base/NDS.pak"
+	@unzip -q "$(NDS_BASE_ZIP)" -d "$(NDS_OVERLAY)/base/NDS.pak"
+	@test "$$(sha256sum $(NDS_OVERLAY)/base/NDS.pak/drastic/drastic | cut -d' ' -f1)" = "$(DRASTIC_SHA256)" || { \
+		echo "NDS.pak release carries a different DraStic" >&2; exit 1; }
+	@printf "   %-7s %s\n" base "$$(du -sh $(NDS_OVERLAY)/base | cut -f1)"
 	@for p in $(NDS_PLATFORMS); do \
 		rm -rf "$(NDS_OVERLAY)/$$p"; \
 		mkdir -p "$(NDS_OVERLAY)/$$p/NDS.pak/drastic/libs"; \
@@ -499,6 +516,7 @@ check-nds:
 	@for p in $(NDS_PLATFORMS); do \
 		test -f "$(NDS_OVERLAY)/$$p/NDS.pak/drastic/libs/libdrastic_wifi.so" || { echo "missing NDS overlay $$p - run 'make cores-nds' first"; exit 1; }; \
 	done
+	@test -f "$(NDS_OVERLAY)/base/NDS.pak/drastic/drastic" || { echo "missing bundled NDS.pak - run 'make cores-nds' first"; exit 1; }
 
 app:
 	@for p in $(PLATFORMS); do \
@@ -520,6 +538,7 @@ test:
 	@./testing/test-mgba-manage.sh
 	@./testing/test-dsp-manage.sh
 	@./testing/test-nds-manage.sh
+	@./testing/test-hints.sh
 	@./testing/test-instanced-ui.sh
 	@./testing/test-wifi-platform.sh
 	@./testing/test-log-rotation.sh
@@ -559,7 +578,7 @@ dist-base: $(BASE_DIST_CHECKS)
 	@rm -rf "$(BASE_STAGE)" "$(BASE_ARCHIVE)"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" dist
 
-	@cp pak.json "$(BASE_STAGE)/$(PAK)/"
+	@cp pak.json pak_hints.json "$(BASE_STAGE)/$(PAK)/"
 	@cp launcher/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
 	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
@@ -602,6 +621,7 @@ dist-base: $(BASE_DIST_CHECKS)
 		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/nds"; \
 		cp -R "$(NDS_OVERLAY)/$$p" "$(BASE_STAGE)/$(PAK)/cores/nds/"; \
 	done
+	@cp -R "$(NDS_OVERLAY)/base" "$(BASE_STAGE)/$(PAK)/cores/nds/"
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/bin/$$p"; \
 		cp bin/$$p/netplay_shim.so "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \

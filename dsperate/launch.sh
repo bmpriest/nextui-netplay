@@ -222,6 +222,11 @@ dsp_netplay_args() {
     _np="${NETPLAY_PAK:-$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak}"
     _state="${NETPLAY_STATE:-$SDCARD_PATH/.userdata/shared/Netplay}"
     [ -f "$_state/session" ] || return 0
+    # Netplay > Cores > Extras > DSP > "Remove from Netplay" keeps the pak.
+    if grep -q '^dsperate=0$' "$_state/settings" 2>/dev/null; then
+        echo "netplay: DSperate is off in Netplay; playing offline"
+        return 0
+    fi
     [ -f "$_np/launcher/pre-launch.sh" ] || {
         echo "netplay: a session is armed but $_np is missing; playing offline"
         return 0

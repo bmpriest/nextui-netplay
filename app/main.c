@@ -19,18 +19,25 @@
 #include "api.h"
 #include "utils.h"
 
+#include "chordcap.h"
+#include "hints.h"
 #include "netsetup.h"
 
 typedef enum {
 	SCREEN_MENU,
 	SCREEN_HOST_MENU,
-	SCREEN_TOOLS,
+	SCREEN_CONFIG,
+	SCREEN_CORES,
+	SCREEN_CORE_LIST,       /* Base or Extras, per cores_extras */
+	SCREEN_CORE_OPTIONS,    /* Gambatte's or mGBA's, per opt_core */
 	SCREEN_SETTINGS,
 	SCREEN_DEBUG,
-	SCREEN_INSTANCED,
-	SCREEN_PAK_INSTALL,     /* the three managed-pak screens serve pak_kind */
+	SCREEN_CHORD,
+	SCREEN_PAK_INSTALL,     /* the managed-pak screens serve pak_kind */
 	SCREEN_PAK_MISMATCH,
 	SCREEN_PAK_RESTORE,
+	SCREEN_PAK_REMOVE,
+	SCREEN_REMOVE_CONFIRM,
 	SCREEN_POWERSAVE_CONFIRM,
 	SCREEN_VARNISH_CONFIRM,
 	SCREEN_VARNISH_REBOOT,
@@ -97,6 +104,7 @@ static char hs_ssid[NS_SSID_LEN];
 static char hs_psk[NS_PSK_LEN];
 static int  hosting_hotspot;
 
+
 //////////////////////////////////////////////////////////////////////////////
 // drawing helpers
 //////////////////////////////////////////////////////////////////////////////
@@ -121,31 +129,202 @@ static int draw_line(SDL_Surface* screen_s, const char* text, int y, SDL_Color c
 	return y;
 }
 
-static int draw_row(SDL_Surface* screen_s, const char* text, int y, bool selected) {
-	SDL_Color color = selected ? COLOR_BLACK : COLOR_WHITE;
-	SDL_Surface* t = TTF_RenderUTF8_Blended(font.large, text, color);
-	if (t) {
-		/* Pill caps are atlas assets with the platform's fixed PILL_SIZE.
-		 * Deriving their height from TTF metrics can request a source rectangle
-		 * larger than the asset; SDL then clips its right cap and bottom edge.
-		 * Use NextUI's standard row geometry and center the rendered glyphs. */
-		int row_h = SCALE1(PILL_SIZE);
-		int x = SCALE1(PADDING);
-		int text_x = x + SCALE1(BUTTON_PADDING);
-		int pill_w = t->w + SCALE1(BUTTON_PADDING * 2);
-		int max_w = screen_s->w - x - SCALE1(PADDING);
-		if (pill_w > max_w) pill_w = max_w;
-		if (selected) {
-			SDL_Rect pill = {x, y, pill_w, row_h};
-			GFX_blitPill(ASSET_WHITE_PILL, screen_s, &pill);
+/* Text with its vertical centre at cy; returns its width. */
+static int blit_text(SDL_Surface* s, TTF_Font* f, const char* text, int x, int cy, SDL_Color color) {
+	if (!text[0]) return 0;
+	SDL_Surface* t = TTF_RenderUTF8_Blended(f, text, color);
+	if (!t) return 0;
+	int w = t->w;
+	SDL_BlitSurface(t, NULL, s, &(SDL_Rect){x, cy - t->h / 2, 0, 0});
+	SDL_FreeSurface(t);
+	return w;
+}
+
+static int text_w(TTF_Font* f, const char* text) {
+	int w = 0;
+	if (text[0]) TTF_SizeUTF8(f, text, &w, NULL);
+	return w;
+}
+
+/* Small text wrapped to the screen width, at most max_lines lines. With
+ * lines non-NULL nothing is drawn; *lines gets how many it would take. */
+static int wrap_text(SDL_Surface* s, const char* text, int y, SDL_Color color, int max_lines, int* lines) {
+	int x = SCALE1(PADDING + BUTTON_PADDING);
+	int width = s->w - x - SCALE1(PADDING);
+	char line[256];
+	const char* p = text;
+	for (int n = 0; *p && n < max_lines; n++) {
+		int len = 0, fit = 0;
+		while (p[len]) {
+			int next = len;
+			while (p[next] && p[next] != ' ') next++;
+			snprintf(line, sizeof(line), "%.*s", next, p);
+			if (fit && text_w(font.small, line) > width) break;
+			fit = next;
+			len = next;
+			if (!p[len]) break;
+			len++;
 		}
-		SDL_BlitSurface(t, NULL, screen_s,
-		                &(SDL_Rect){text_x, y + (row_h - t->h) / 2, 0, 0});
-		y += row_h;
-		SDL_FreeSurface(t);
+		if (!fit) fit = (int)strlen(p);
+		snprintf(line, sizeof(line), "%.*s", fit, p);
+		if (lines) ++*lines;
+		else y = draw_line(s, line, y, color, true);
+		p += fit;
+		while (*p == ' ') p++;
 	}
 	return y;
 }
+
+static int draw_wrapped(SDL_Surface* s, const char* text, int y, SDL_Color color, int max_lines) {
+	return wrap_text(s, text, y, color, max_lines, NULL);
+}
+
+static int wrapped_lines(SDL_Surface* s, const char* text, int max_lines) {
+	int n = 0;
+	wrap_text(s, text, 0, COLOR_GRAY, max_lines, &n);
+	return n;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// two-column rows
+//
+// A label on the left and, on the right, what it is set to: a value, status
+// marks, ">" for more behind it. The selection pill sits on the right column
+// when the row has options to step through, and on the label when the row is
+// something to do or somewhere to go.
+//////////////////////////////////////////////////////////////////////////////
+
+typedef enum { ROW_ACTION, ROW_SUBMENU, ROW_VALUE } RowKind;
+enum { MARK_NONE = 0, MARK_CHECK = 1, MARK_DOUBLE = 2, MARK_CIRCLE = -1, MARK_DASH = -2 };
+
+typedef struct {
+	RowKind     kind;
+	int         id;
+	char        label[64];
+	char        value[40];
+	int         mark;
+	bool        more;      /* ">" after the value */
+	bool        dim;
+	const char* hint;
+} Row;
+
+#define MAX_ROWS 16
+static Row rows[MAX_ROWS];
+static int row_count;
+
+static Row* add_row(RowKind kind, int id, const char* label, const char* hint) {
+	if (row_count >= MAX_ROWS) return &rows[MAX_ROWS - 1];
+	Row* r = &rows[row_count++];
+	memset(r, 0, sizeof(*r));
+	r->kind = kind;
+	r->id = id;
+	snprintf(r->label, sizeof(r->label), "%s", label);
+	r->hint = hint ? hint : "";
+	if (kind == ROW_SUBMENU) r->more = true;
+	return r;
+}
+
+static void fill(SDL_Surface* s, int x, int y, int w, int h, SDL_Color c) {
+	SDL_FillRect(s, &(SDL_Rect){x, y, w, h}, SDL_MapRGB(s->format, c.r, c.g, c.b));
+}
+
+static void segment(SDL_Surface* s, int x0, int y0, int x1, int y1, int t, SDL_Color c) {
+	int dx = abs(x1 - x0), dy = abs(y1 - y0);
+	int steps = dx > dy ? dx : dy;
+	if (steps < 1) steps = 1;
+	for (int i = 0; i <= steps; i++)
+		fill(s, x0 + (x1 - x0) * i / steps - t / 2, y0 + (y1 - y0) * i / steps - t / 2, t, t, c);
+}
+
+/* Drawn rather than typeset: NextUI's fonts need not carry these glyphs. */
+static void draw_mark(SDL_Surface* s, int mark, int x, int cy, int size, SDL_Color c) {
+	int t = SCALE1(2);
+	if (mark == MARK_CHECK) {
+		segment(s, x + t, cy, x + size * 2 / 5, cy + size * 2 / 5 - t, t, c);
+		segment(s, x + size * 2 / 5, cy + size * 2 / 5 - t, x + size - t, cy - size / 2 + t, t, c);
+	} else if (mark == MARK_CIRCLE) {
+		int r = size / 2 - t / 2, cx = x + size / 2;
+		for (int py = -r - t; py <= r + t; py++)
+			for (int px = -r - t; px <= r + t; px++) {
+				int d2 = px * px + py * py;
+				if (d2 <= (r + t / 2) * (r + t / 2) && d2 >= (r - t / 2 - 1) * (r - t / 2 - 1))
+					fill(s, cx + px, cy + py, 1, 1, c);
+			}
+	} else if (mark == MARK_DASH) {
+		fill(s, x + size / 4, cy - t / 2, size / 2, t, c);
+	}
+}
+
+static int draw_two_col(SDL_Surface* s, const Row* r, int y, bool selected) {
+	int row_h = SCALE1(PILL_SIZE);
+	int pad = SCALE1(BUTTON_PADDING);
+	int x = SCALE1(PADDING);
+	int right = s->w - SCALE1(PADDING);
+	int cy = y + row_h / 2;
+	int gap = SCALE1(4);
+	SDL_Color base = r->dim ? COLOR_GRAY : COLOR_WHITE;
+
+	/* The right column, measured first: marks, value, ">". */
+	int size = TTF_FontHeight(font.large) * 3 / 5;
+	int marks = r->mark == MARK_DOUBLE ? 2 : r->mark ? 1 : 0;
+	int mw = marks ? marks * size + (marks - 1) * gap : 0;
+	int vw = text_w(font.large, r->value);
+	int gw = r->more ? text_w(font.large, ">") : 0;
+	int group = mw + vw + gw;
+	if (mw && vw) group += gap * 2;
+	if (gw && (mw || vw)) group += gap * 2;
+	int gx = right - pad - group;
+
+	bool pill_right = selected && r->kind == ROW_VALUE && group;
+	bool pill_left = selected && !pill_right;
+
+	/* The label shrinks to the medium font rather than run into the value. */
+	TTF_Font* lf = font.large;
+	int lw = text_w(lf, r->label);
+	if (x + pad + lw + SCALE1(8) > gx - (pill_right ? pad : 0)) {
+		lf = font.medium;
+		lw = text_w(lf, r->label);
+	}
+	if (pill_left) {
+		int pw = lw + pad * 2;
+		if (pw > right - x) pw = right - x;
+		GFX_blitPill(ASSET_WHITE_PILL, s, &(SDL_Rect){x, y, pw, row_h});
+	}
+	blit_text(s, lf, r->label, x + pad, cy, pill_left ? COLOR_BLACK : base);
+
+	if (pill_right)
+		GFX_blitPill(ASSET_WHITE_PILL, s, &(SDL_Rect){gx - pad, y, group + pad * 2, row_h});
+	SDL_Color rc = pill_right ? COLOR_BLACK : base;
+	int cx = gx;
+	for (int i = 0; i < marks; i++) {
+		draw_mark(s, r->mark == MARK_DOUBLE ? MARK_CHECK : r->mark, cx, cy, size, rc);
+		cx += size + gap;
+	}
+	if (marks) cx += gap - (vw ? 0 : gap);
+	if (vw) cx += blit_text(s, font.large, r->value, cx, cy, rc) + gap * 2;
+	if (gw) blit_text(s, font.large, ">", cx, cy, rc);
+	return y + row_h;
+}
+
+/* The rows, scrolled so the selection is visible above footer_lines lines of
+ * small text (hint, status) and the button bar. */
+static int draw_rows(SDL_Surface* s, int sel, int* top, int y, int footer_lines) {
+	int line_h = TTF_FontHeight(font.small) + SCALE1(4);
+	int bottom = s->h - SCALE1(PADDING + PILL_SIZE + PADDING) - SCALE1(6) - line_h * footer_lines;
+	int visible = (bottom - y) / SCALE1(PILL_SIZE);
+	if (visible < 1) visible = 1;
+	if (visible > row_count) visible = row_count;
+	if (sel < *top) *top = sel;
+	if (sel >= *top + visible) *top = sel - visible + 1;
+	if (*top > row_count - visible) *top = row_count - visible;
+	if (*top < 0) *top = 0;
+	for (int i = *top; i < *top + visible; i++)
+		y = draw_two_col(s, &rows[i], y, i == sel);
+	return y;
+}
+
+/* Hint for the selected row and the status line, under the list. */
+static int draw_footer(SDL_Surface* s, int sel, int y);
 
 //////////////////////////////////////////////////////////////////////////////
 // screens
@@ -157,23 +336,16 @@ static int draw_row(SDL_Surface* screen_s, const char* text, int y, bool selecte
  * the bottom, with no way to scroll to it - which is precisely the information
  * you need to tell an ad hoc session from a failed one. Submenus keep the top
  * level short enough that the status line is always visible. */
-enum { MENU_HOST, MENU_JOIN, MENU_TOOLS, MENU_COUNT };
+enum { MENU_HOST, MENU_JOIN, MENU_CONFIG, MENU_COUNT };
 enum { HOST_ADHOC, HOST_WIFI, HOST_COUNT };
-enum { TOOL_SETTINGS, TOOL_DEBUG, TOOL_FIXWIFI, TOOL_OFF, TOOL_COUNT };
-/* "Use simple client" (NS_Settings.simple_client) is hidden: it was planned
- * but never implemented, so the row only toggled a stored value. The setting
- * is still read and written, so restoring the row is all it takes. */
-enum { SET_COMPAT, SET_INSTANCED, SET_DSPERATE, SET_DRASTIC, SET_GAMESWITCHER, SET_POWERSAVE, SET_STATUS_ICON, SET_QUICK_MENU, SET_COUNT };
-enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_COUNT };
-
-static const char* menu_label(int item) {
-	switch (item) {
-	case MENU_HOST:  return "Host";
-	case MENU_JOIN:  return "Join";
-	case MENU_TOOLS: return "Tools";
-	}
-	return "";
-}
+enum { CONF_CORES, CONF_SETTINGS, CONF_DEBUG, CONF_OFF };
+enum { CORES_BASE, CORES_EXTRAS };
+/* "Use simple client" (NS_Settings.simple_client) stays hidden: it was planned
+ * but never implemented. The setting is still read and written. */
+enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE };
+enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
+enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE };
+enum { REM_NETPLAY, REM_DEVICE, REM_BACKUP, REM_CANCEL };
 
 /* Creating our own network needs an AP-capable interface. Offering it on a
  * device that cannot do it produces a failure the user cannot act on, so the
@@ -189,22 +361,19 @@ static const char* host_label(int item) {
 	return "";
 }
 
-static const char* tool_label(int item) {
-	switch (item) {
-	case TOOL_SETTINGS: return "Settings";
-	case TOOL_DEBUG:    return "Debug";
-	case TOOL_FIXWIFI: return "Restore WiFi";
-	case TOOL_OFF:     return "Turn off Netplay (Remove Bindings)";
-	}
-	return "";
-}
-
-/* Rendered as "Name: value" on one row, because these are toggles rather than
- * destinations - a submenu per setting would be three button presses to flip a
- * boolean. Instanced cores is the exception: it has a third state that opens a
- * picker, shown as ">" so it reads as "there is more behind this". */
-static int settings_sel = 0;
-static int settings_top = 0;   /* first visible row once the list outgrows the screen */
+static int config_sel = 0, config_top = 0;
+static int cores_sel = 0, cores_top = 0;
+static int list_sel = 0, list_top = 0;
+static int settings_sel = 0, settings_top = 0;
+static int debug_sel = 0, debug_top = 0;
+static int opt_sel = 0, opt_top = 0;
+static int remove_sel = 0, remove_top = 0;
+static int menu_top = 0;
+static int prompt_sel = 0;
+static int restore_sel = 0;
+static bool restore_choice[3] = { true, true, true };
+static bool restore_then_off = false;
+static NS_PakStatus pak_status;
 
 /* The status icon and quick menu are drawn by Varnish.pak. Switching either on
  * offers to install (or update) the copy Netplay carries; the setting changes
@@ -223,16 +392,11 @@ static bool needs_varnish(int setting) {
 	screen = SCREEN_VARNISH_CONFIRM;
 	return true;
 }
-static int debug_sel = 0;
-static int inst_sel = 0;
-static bool inst_staged[NS_INST_CORES];
-static int prompt_sel = 0;
-static int restore_sel = 0;
-static bool restore_choice[3] = { true, true, true };
-static bool restore_then_off = false;
-static NS_PakStatus pak_status;
-/* Which managed pak the install, mismatch and restore screens are about. */
+
+/* Which managed pak the install, mismatch, restore and remove screens are
+ * about, and where they go back to. */
 static NS_ManagedPak pak_kind = NS_PAK_MGBA;
+static Screen pak_return = SCREEN_MENU;
 static const struct {
 	const char* name;      /* in sentences */
 	const char* pak;       /* the Emus/<p>/<pak>.pak directory */
@@ -240,104 +404,479 @@ static const struct {
 	const char* install_title;
 	const char* needs;
 } PAK_UI[NS_PAK_COUNT] = {
-	{ "mGBA", "MGBA", "mgba_libretro.so", "Install instanced mGBA?", "Instanced MGBA requires installation." },
+	{ "mGBA", "MGBA", "mgba_libretro.so", "Install instanced mGBA?", "Instanced mGBA needs Netplay's MGBA.pak." },
 	{ "DSperate", "DSP", "dsperate", "Install DSperate?", "DS local wireless needs DSP.pak (DSperate)." },
 	{ "DraStic", "NDS", "libdrastic_wifi.so", "Add DS local wireless?", "Netplay adds its radio and launcher to NDS.pak." },
 };
 
-/* mGBA is reached from the instanced-core picker, the DS emulators from Settings. */
-static Screen pak_back_screen(void) {
-	return pak_kind == NS_PAK_MGBA ? SCREEN_INSTANCED : SCREEN_SETTINGS;
+//////////////////////////////////////////////////////////////////////////////
+// cores
+//
+// What each system's row shows: a check when it plays over Netplay here, two
+// when it plays in instanced (dual) mode, a hollow circle when its pak is here
+// but not set up for Netplay, a dash when there is no pak. Status only, except
+// where Netplay installs or configures something (">" or a pak to add).
+//////////////////////////////////////////////////////////////////////////////
+
+typedef enum { CK_SHIM, CK_GAMBATTE, CK_DSP, CK_MGBA, CK_NDS } CoreKind;
+
+typedef struct {
+	const char* tag;        /* the pak, and the key into pak_hints.json */
+	const char* tag2;       /* a second pak the row covers (GBC) */
+	const char* label;      /* when the row's name is not the tag */
+	const char* core;       /* the core it names when its pak is absent */
+	CoreKind    kind;
+} CoreDef;
+
+static const CoreDef BASE_CORES[] = {
+	{ "FC",  NULL,  NULL,     "fceumm",       CK_SHIM },
+	{ "GB",  "GBC", "GB/GBC", "gambatte",     CK_GAMBATTE },
+	{ "GBA", NULL,  NULL,     "gpsp",         CK_SHIM },
+	{ "MD",  NULL,  NULL,     "picodrive",    CK_SHIM },
+	{ "PS",  NULL,  NULL,     "pcsx_rearmed", CK_SHIM },
+	{ "SFC", NULL,  NULL,     "snes9x",       CK_SHIM },
+};
+static const CoreDef EXTRA_CORES[] = {
+	{ "32X",    NULL, NULL, "picodrive",          CK_SHIM },
+	{ "DSP",    NULL, NULL, "dsperate",           CK_DSP },
+	{ "FBN",    NULL, NULL, "fbneo",              CK_SHIM },
+	{ "FDS",    NULL, NULL, "fceumm",             CK_SHIM },
+	{ "GG",     NULL, NULL, "picodrive",          CK_SHIM },
+	{ "MGBA",   NULL, NULL, "mgba",               CK_MGBA },
+	{ "NDS",    NULL, NULL, "drastic",            CK_NDS },
+	{ "SEGACD", NULL, NULL, "picodrive",          CK_SHIM },
+	{ "SG1000", NULL, NULL, "picodrive",          CK_SHIM },
+	{ "SMS",    NULL, NULL, "picodrive",          CK_SHIM },
+	{ "SUPA",   NULL, NULL, "mednafen_supafaust", CK_SHIM },
+};
+#define BASE_COUNT  (int)(sizeof(BASE_CORES) / sizeof(BASE_CORES[0]))
+#define EXTRA_COUNT (int)(sizeof(EXTRA_CORES) / sizeof(EXTRA_CORES[0]))
+
+static const char* core_name(const char* core) {
+	static const struct { const char* id; const char* name; } NAMES[] = {
+		{ "fceumm", "FCEUmm" }, { "gambatte", "Gambatte" }, { "gpsp", "gpSP" },
+		{ "picodrive", "PicoDrive" }, { "pcsx_rearmed", "PCSX ReARMed" },
+		{ "snes9x", "Snes9x" }, { "snes9x2005", "Snes9x 2005" },
+		{ "mednafen_supafaust", "Supafaust" }, { "fbneo", "FinalBurn Neo" },
+		{ "mgba", "mGBA" }, { "dsperate", "DSperate" }, { "drastic", "DraStic" },
+	};
+	for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
+		if (!strcmp(core, NAMES[i].id)) return NAMES[i].name;
+	return core;
 }
 
-static void commit_instanced(void) {
+typedef struct {
+	int         mark;
+	bool        more;
+	bool        dim;
+	const char* state;      /* pak_hints.json's cores.<tag>.<state> */
+	char        core[32];
+	NS_PakStatus pak;       /* managed paks only */
+	bool        pak_ok;     /* pak status could be read */
+} CoreState;
+
+static bool cores_extras;
+static CoreState core_state[16];
+static bool cores_fresh;    /* core_state matches the card */
+
+static const CoreDef* list_defs(int* n) {
+	*n = cores_extras ? EXTRA_COUNT : BASE_COUNT;
+	return cores_extras ? EXTRA_CORES : BASE_CORES;
+}
+
+static bool gambatte_dual(void) {
+	return NS_settings()->inst_core[0] && NS_gambatteDualAvailable();
+}
+
+static bool mgba_instanced(void) {
+	return NS_settings()->inst_core[1];
+}
+
+/* Store the instanced choices in the settings' existing shape. */
+static void set_instanced(int core, bool on) {
 	NS_Settings* c = NS_settings();
-	int enabled = 0;
-	for (int i = 0; i < NS_INST_CORES; i++) {
-		c->inst_core[i] = inst_staged[i];
-		if (inst_staged[i]) enabled++;
-	}
-	c->instanced = enabled ? NS_INST_SELECTED : NS_INST_OFF;
+	if (c->instanced == NS_INST_ALL)
+		for (int i = 0; i < NS_INST_CORES; i++) c->inst_core[i] = true;
+	c->inst_core[core] = on;
+	bool any = false;
+	for (int i = 0; i < NS_INST_CORES; i++) any = any || c->inst_core[i];
+	c->instanced = any ? NS_INST_SELECTED : NS_INST_OFF;
 	NS_settingsSave();
 }
 
-static void disable_mgba_setting(void) {
-	NS_Settings* c = NS_settings();
-	if (c->instanced == NS_INST_ALL) {
-		c->instanced = NS_INST_SELECTED;
-		c->inst_core[0] = true;
+static void refresh_core(const CoreDef* d, CoreState* st) {
+	memset(st, 0, sizeof(*st));
+	snprintf(st->core, sizeof(st->core), "%s", d->core);
+	switch (d->kind) {
+	case CK_SHIM:
+	case CK_GAMBATTE: {
+		char core[32];
+		NS_SystemState sys = NS_systemStatus(d->tag, core, sizeof(core));
+		if (d->tag2 && sys != NS_SYS_READY) {
+			char core2[32];
+			NS_SystemState sys2 = NS_systemStatus(d->tag2, core2, sizeof(core2));
+			if (sys2 > sys) { sys = sys2; snprintf(core, sizeof(core), "%s", core2); }
+		}
+		if (core[0]) snprintf(st->core, sizeof(st->core), "%s", core);
+		if (sys == NS_SYS_READY) {
+			bool dual = d->kind == CK_GAMBATTE && gambatte_dual();
+			st->mark = dual ? MARK_DOUBLE : MARK_CHECK;
+			st->state = dual ? "dual" : "ready";
+		} else if (sys == NS_SYS_PRESENT) {
+			st->mark = MARK_CIRCLE;
+			st->state = "present";
+		} else {
+			st->mark = MARK_DASH;
+			st->dim = true;
+			st->state = "absent";
+		}
+		st->more = d->kind == CK_GAMBATTE && sys == NS_SYS_READY;
+		break;
 	}
-	c->inst_core[1] = false;
-	if (!c->inst_core[0]) c->instanced = NS_INST_OFF;
-	NS_settingsSave();
-}
-
-static void stage_instanced(void) {
-	NS_Settings* c = NS_settings();
-	for (int i = 0; i < NS_INST_CORES; i++)
-		inst_staged[i] = c->instanced == NS_INST_ALL ||
-		                  (c->instanced == NS_INST_SELECTED && c->inst_core[i]);
-}
-
-/* Whether the mgba instanced core (inst_core[1]) is enabled by a settings
- * snapshot. Single source of truth so the startup check, the staged-toggle
- * check, and stage_instanced() cannot silently drift apart. */
-static bool mgba_instanced_enabled(const NS_Settings* c) {
-	return c->instanced == NS_INST_ALL ||
-	       (c->instanced == NS_INST_SELECTED && c->inst_core[1]);
-}
-
-static void setting_row(char* out, int len, int item) {
-	NS_Settings* c = NS_settings();
-	switch (item) {
-	case SET_COMPAT:
-		snprintf(out, len, "Use compatibility cores:  %s", c->compatibility_cores ? "Yes" : "No");
+	case CK_DSP:
+	case CK_MGBA:
+	case CK_NDS: {
+		NS_ManagedPak k = d->kind == CK_DSP ? NS_PAK_DSP : d->kind == CK_MGBA ? NS_PAK_MGBA : NS_PAK_NDS;
+		if (!NS_pakAvailable(k)) {
+			st->mark = MARK_DASH;
+			st->dim = true;
+			st->state = "unavailable";
+			break;
+		}
+		st->pak_ok = NS_pakStatus(k, &st->pak);
+		const NS_PakStatus* p = &st->pak;
+		bool ours = p->managed && p->installed && !p->missing;
+		if (d->kind == CK_DSP) {
+			if (ours && NS_settings()->dsperate) { st->mark = MARK_CHECK; st->state = "ready"; }
+			else if (p->present) { st->mark = MARK_CIRCLE; st->state = "off"; }
+			else { st->mark = MARK_DASH; st->state = "absent"; }
+		} else if (d->kind == CK_MGBA) {
+			st->more = true;
+			if (ours && mgba_instanced()) { st->mark = MARK_DOUBLE; st->state = "instanced"; }
+			else if (p->present) { st->mark = MARK_CIRCLE; st->state = "installed"; }
+			else { st->mark = MARK_DASH; st->state = "absent"; }
+		} else {
+			if (ours) { st->mark = MARK_CHECK; st->state = "ready"; }
+			else if (p->base_installed && p->unsupported) { st->mark = MARK_CIRCLE; st->state = "unsupported"; }
+			else if (p->base_installed) { st->mark = MARK_CIRCLE; st->state = "present"; }
+			else { st->mark = MARK_DASH; st->state = "absent"; }
+		}
 		break;
-	case SET_INSTANCED:
-		{ int n = c->instanced == NS_INST_ALL ? NS_INST_CORES : 0;
-		  if (c->instanced == NS_INST_SELECTED)
-			for (int i = 0; i < NS_INST_CORES; i++) if (c->inst_core[i]) n++;
-		  snprintf(out, len, "Use instanced cores:  %d  >", n); }
-		break;
-	case SET_DSPERATE:
-		snprintf(out, len, "Nintendo DS (DSperate):  %s",
-		         !NS_pakAvailable(NS_PAK_DSP) ? "Not available" : c->dsperate ? "Yes" : "No");
-		break;
-	case SET_DRASTIC:
-		snprintf(out, len, "Nintendo DS (DraStic):  %s",
-		         !NS_pakAvailable(NS_PAK_NDS) ? "Not available" : c->drastic ? "Yes" : "No");
-		break;
-	case SET_GAMESWITCHER:
-		snprintf(out, len, "Add Netplay to GameSwitcher:  %s", c->add_gameswitcher ? "Yes" : "No");
-		break;
-	case SET_POWERSAVE:
-		snprintf(out, len, "Disable Wi-Fi Power Saving:  %s", c->disable_powersave ? "Yes" : "No");
-		break;
-	case SET_STATUS_ICON:
-		snprintf(out, len, "Use status icon:  %s",
-		         c->status_icon == NS_ICON_PERSISTENT ? "Persistent"
-		       : c->status_icon == NS_ICON_SESSION ? "Session" : "No");
-		break;
-	case SET_QUICK_MENU:
-		snprintf(out, len, "Quick menu (START):  %s", c->quick_menu ? "Yes" : "No");
-		break;
-	default: out[0] = '\0';
+	}
 	}
 }
 
-static void debug_row(char* out, int len, int item) {
+/* Reading every pak's status costs a few hashes and launch.sh reads, so it is
+ * done on entering the list and after a change, never per frame. */
+static void refresh_cores(void) {
+	int n;
+	const CoreDef* defs = list_defs(&n);
+	for (int i = 0; i < n; i++) refresh_core(&defs[i], &core_state[i]);
+	cores_fresh = true;
+}
+
+static void open_core_list(bool extras) {
+	cores_extras = extras;
+	list_sel = list_top = 0;
+	status[0] = '\0';
+	refresh_cores();
+	screen = SCREEN_CORE_LIST;
+}
+
+static void build_core_rows(void) {
+	int n;
+	const CoreDef* defs = list_defs(&n);
+	if (!cores_fresh) refresh_cores();
+	row_count = 0;
+	for (int i = 0; i < n; i++) {
+		const CoreDef* d = &defs[i];
+		const CoreState* st = &core_state[i];
+		char label[64];
+		snprintf(label, sizeof(label), "%s (%s)", d->label ? d->label : d->tag, core_name(st->core));
+		Row* r = add_row(ROW_VALUE, i, label, HINT_getf("cores.%s.%s", d->tag, st->state));
+		r->mark = st->mark;
+		r->more = st->more;
+		r->dim = st->dim;
+	}
+}
+
+/* Gambatte's and mGBA's own screen. */
+static CoreKind opt_core = CK_GAMBATTE;
+
+static void build_option_rows(void) {
+	row_count = 0;
+	if (opt_core == CK_GAMBATTE) {
+		bool avail = NS_gambatteDualAvailable();
+		bool on = gambatte_dual();
+		Row* r = add_row(ROW_VALUE, OPT_DUAL, "Dual instance",
+		                 HINT_get(!avail ? "gambatte.dual.unavailable" : on ? "gambatte.dual.on" : "gambatte.dual.off"));
+		snprintf(r->value, sizeof(r->value), "%s", !avail ? "Unavailable" : on ? "On" : "Off");
+		r->dim = !avail;
+	} else {
+		bool on = mgba_instanced() && pak_status.managed && pak_status.installed && !pak_status.missing;
+		bool ready = pak_status.managed && pak_status.installed && !pak_status.missing;
+		Row* r = add_row(ROW_VALUE, OPT_INSTANCED, "Instanced link",
+		                 HINT_get(on ? "mgba.instanced.on" : ready ? "mgba.instanced.off" : "mgba.instanced.install"));
+		snprintf(r->value, sizeof(r->value), "%s", on ? "On" : "Off");
+		if (pak_status.managed)
+			add_row(ROW_ACTION, OPT_REMOVE, "Remove MGBA.pak", HINT_get("mgba.remove"));
+	}
+}
+
+static void build_remove_rows(void) {
+	const char* tag = PAK_UI[pak_kind].pak;
+	row_count = 0;
+	add_row(ROW_ACTION, REM_NETPLAY, "Remove from Netplay", HINT_getf("remove.netplay.%s", tag));
+	add_row(ROW_ACTION, REM_DEVICE, "Remove from device", HINT_getf("remove.device.%s", tag));
+	if (pak_kind == NS_PAK_DSP && pak_status.has_backup)
+		add_row(ROW_ACTION, REM_BACKUP, "Restore backup", HINT_getf("remove.backup.%s", tag));
+	add_row(ROW_ACTION, REM_CANCEL, "Cancel", HINT_get("remove.cancel"));
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// settings, debug, configuration
+//////////////////////////////////////////////////////////////////////////////
+
+static const char* const ICON_NAMES[] = { "Disabled", "Active Session", "Always" };
+
+static void build_config_rows(void) {
+	row_count = 0;
+	add_row(ROW_SUBMENU, CONF_CORES, "Cores", HINT_get("config.cores"));
+	add_row(ROW_SUBMENU, CONF_SETTINGS, "Settings", HINT_get("config.settings"));
+	add_row(ROW_SUBMENU, CONF_DEBUG, "Debug", HINT_get("config.debug"));
+	add_row(ROW_ACTION, CONF_OFF, "Turn Off Netplay", HINT_get("config.off"));
+}
+
+static void build_cores_rows(void) {
+	row_count = 0;
+	add_row(ROW_SUBMENU, CORES_BASE, "Base", HINT_get("cores.base"));
+	add_row(ROW_SUBMENU, CORES_EXTRAS, "Extras", HINT_get("cores.extras"));
+}
+
+static const char* on_off(bool on) { return on ? "On" : "Off"; }
+
+static void build_settings_rows(void) {
 	NS_Settings* c = NS_settings();
-	switch (item) {
-	case DEBUG_FORCE_COMPAT:
-		snprintf(out, len, "Force compatibility cores:  %s", c->force_compatibility ? "Yes" : "No");
+	bool varnish = NS_varnishInstalled();
+	const char* need = NS_varnishBundled() ? "needs_varnish" : "unavailable";
+	row_count = 0;
+
+	Row* r = add_row(ROW_VALUE, SET_QUICK_MENU, "Quick Menu",
+	                 HINT_getf("settings.quick_menu.%s",
+	                           c->quick_menu ? (c->quick_keys[0] ? "custom" : "on")
+	                           : varnish ? "off" : need));
+	if (c->quick_menu) {
+		snprintf(r->value, sizeof(r->value), "%s", c->quick_label[0] ? c->quick_label : "START");
+		r->more = true;
+	} else snprintf(r->value, sizeof(r->value), "Off");
+
+	static const char* const ICON_HINT[] = { "disabled", "session", "always" };
+	r = add_row(ROW_VALUE, SET_STATUS_ICON, "Netplay Icon in NextUI",
+	            HINT_getf("settings.icon.%s",
+	                      c->status_icon == NS_ICON_OFF && !varnish ? need : ICON_HINT[c->status_icon]));
+	snprintf(r->value, sizeof(r->value), "%s", ICON_NAMES[c->status_icon]);
+
+	r = add_row(ROW_VALUE, SET_COMPAT, "Use compatibility cores",
+	            HINT_getf("settings.compat.%s", c->compatibility_cores ? "on" : "off"));
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->compatibility_cores));
+
+	r = add_row(ROW_VALUE, SET_GAMESWITCHER, "Add Netplay to GameSwitcher",
+	            HINT_getf("settings.gameswitcher.%s", c->add_gameswitcher ? "on" : "off"));
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->add_gameswitcher));
+
+	r = add_row(ROW_VALUE, SET_POWERSAVE, "Disable Wi-Fi Power Saving",
+	            HINT_getf("settings.powersave.%s", c->disable_powersave ? "on" : "off"));
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->disable_powersave));
+}
+
+static void build_debug_rows(void) {
+	NS_Settings* c = NS_settings();
+	row_count = 0;
+	Row* r = add_row(ROW_VALUE, DEBUG_FORCE_COMPAT, "Force compatibility cores",
+	                 HINT_getf("debug.force_compat.%s", c->force_compatibility ? "on" : "off"));
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->force_compatibility));
+	r = add_row(ROW_VALUE, DEBUG_VERBOSE_LOGS, "Verbose debugging logs",
+	            HINT_getf("debug.verbose_logs.%s", c->verbose_logs ? "on" : "off"));
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->verbose_logs));
+	add_row(ROW_ACTION, DEBUG_CHECKS, "Run checks", HINT_get("debug.checks"));
+	add_row(ROW_ACTION, DEBUG_RESTORE_WIFI, "Restore Wi-Fi", HINT_get("debug.restore_wifi"));
+}
+
+static void build_menu_rows(void) {
+	row_count = 0;
+	add_row(ROW_ACTION, MENU_HOST, "Host", HINT_get("menu.host"));
+	add_row(ROW_ACTION, MENU_JOIN, "Join", HINT_get("menu.join"));
+	add_row(ROW_ACTION, MENU_CONFIG, "Configuration", HINT_get("menu.config"));
+}
+
+/* The rows of the screen being shown, for drawing and for input alike. */
+static void build_rows(void) {
+	row_count = 0;
+	switch (screen) {
+	case SCREEN_MENU:         build_menu_rows(); break;
+	case SCREEN_CONFIG:       build_config_rows(); break;
+	case SCREEN_CORES:        build_cores_rows(); break;
+	case SCREEN_CORE_LIST:    build_core_rows(); break;
+	case SCREEN_CORE_OPTIONS: build_option_rows(); break;
+	case SCREEN_SETTINGS:     build_settings_rows(); break;
+	case SCREEN_DEBUG:        build_debug_rows(); break;
+	case SCREEN_PAK_REMOVE:   build_remove_rows(); break;
+	default: break;
+	}
+}
+
+static int draw_footer(SDL_Surface* s, int sel, int y) {
+	y += SCALE1(6);
+	if (sel >= 0 && sel < row_count && rows[sel].hint[0])
+		y = draw_wrapped(s, rows[sel].hint, y, COLOR_GRAY, 2);
+	if (status[0]) y = draw_wrapped(s, status, y, COLOR_GRAY, 1);
+	return y;
+}
+
+/* Steps a list selection, wrapping, with held-button repeat. */
+static bool step_sel(int* sel, int n) {
+	if (n <= 0) return false;
+	if (PAD_justRepeated(BTN_UP))   { *sel = (*sel + n - 1) % n; return true; }
+	if (PAD_justRepeated(BTN_DOWN)) { *sel = (*sel + 1) % n; return true; }
+	if (*sel >= n) { *sel = n - 1; return true; }
+	return false;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// quick menu buttons
+//
+// Held, then released: whatever was held at once is the combination. The
+// screen ignores the buttons it is capturing, so A and B mean something only
+// once a combination is on screen; MENU, which can never be part of one, backs
+// out.
+//////////////////////////////////////////////////////////////////////////////
+
+typedef enum { CS_WAIT_RELEASE, CS_CAPTURE, CS_CONFIRM } ChordStep;
+static ChordStep chord_step;
+static int  chord_codes[8];
+static int  chord_code_count;
+static uint32_t chord_mask;
+static bool chord_axis;
+static const char* chord_note = "";   /* why the last one was refused */
+static char chord_label[32];
+
+static const struct { int btn; const char* name; } CHORD_BUTTONS[] = {
+	{ BTN_SELECT, "SELECT" }, { BTN_START, "START" },
+	{ BTN_L1, "L1" }, { BTN_R1, "R1" }, { BTN_L2, "L2" }, { BTN_R2, "R2" },
+	{ BTN_L3, "L3" }, { BTN_R3, "R3" },
+	{ BTN_X, "X" }, { BTN_Y, "Y" }, { BTN_A, "A" }, { BTN_B, "B" },
+	{ BTN_DPAD_UP, "UP" }, { BTN_DPAD_DOWN, "DOWN" }, { BTN_DPAD_LEFT, "LEFT" }, { BTN_DPAD_RIGHT, "RIGHT" },
+	{ BTN_MENU, "MENU" }, { BTN_POWER, "POWER" }, { BTN_PLUS, "VOL+" }, { BTN_MINUS, "VOL-" },
+};
+#define CHORD_BUTTON_COUNT (int)(sizeof(CHORD_BUTTONS) / sizeof(CHORD_BUTTONS[0]))
+
+static void open_chord(void) {
+	CHORD_open();
+	chord_step = CS_WAIT_RELEASE;
+	chord_note = "";
+	chord_code_count = 0;
+	chord_mask = 0;
+	chord_axis = false;
+	screen = SCREEN_CHORD;
+}
+
+static void close_chord(void) {
+	CHORD_close();
+	screen = SCREEN_SETTINGS;
+}
+
+/* What the combination held is, or why it cannot be one (NULL if fine). */
+static const char* chord_verdict(void) {
+	int buttons = 0;
+	bool only_nav = true;
+	for (int i = 0; i < CHORD_BUTTON_COUNT; i++) {
+		if (!(chord_mask & CHORD_BUTTONS[i].btn)) continue;
+		buttons++;
+		if (CHORD_BUTTONS[i].btn & (BTN_MENU | BTN_POWER | BTN_PLUS | BTN_MINUS))
+			return HINT_get("chord.refused_system");
+		if (!(CHORD_BUTTONS[i].btn & (BTN_A | BTN_B | BTN_DPAD_UP | BTN_DPAD_DOWN |
+		                              BTN_DPAD_LEFT | BTN_DPAD_RIGHT)))
+			only_nav = false;
+	}
+	for (int i = 0; i < chord_code_count; i++)
+		if (CHORD_isSystemKey(chord_codes[i])) return HINT_get("chord.refused_system");
+	if (chord_axis || buttons > chord_code_count || buttons == 0) return HINT_get("chord.refused_axis");
+	if (buttons > 3) return HINT_get("chord.refused_many");
+	if (buttons == 1 && only_nav) return HINT_get("chord.refused_single");
+	return NULL;
+}
+
+static void chord_tick(void) {
+	CHORD_poll();
+	int codes[8];
+	int n = CHORD_held(codes, 8);
+	bool axis = CHORD_axisHeld();
+	uint32_t mask = 0;
+	for (int i = 0; i < CHORD_BUTTON_COUNT; i++)
+		if (PAD_isPressed(CHORD_BUTTONS[i].btn)) mask |= CHORD_BUTTONS[i].btn;
+	bool any = n || axis || mask;
+
+	switch (chord_step) {
+	case CS_WAIT_RELEASE:
+		if (!any) chord_step = CS_CAPTURE;
 		break;
-	case DEBUG_VERBOSE_LOGS:
-		snprintf(out, len, "Verbose debugging logs:  %s", c->verbose_logs ? "Yes" : "No");
+	case CS_CAPTURE:
+		if (any) {
+			for (int i = 0; i < n; i++) {
+				bool seen = false;
+				for (int j = 0; j < chord_code_count; j++) seen = seen || chord_codes[j] == codes[i];
+				if (!seen && chord_code_count < 8) chord_codes[chord_code_count++] = codes[i];
+			}
+			chord_mask |= mask;
+			chord_axis = chord_axis || axis;
+		} else if (chord_mask || chord_code_count || chord_axis) {
+			if (chord_mask == BTN_MENU) { close_chord(); break; }   /* MENU alone backs out */
+			const char* why = chord_verdict();
+			if (why) {
+				chord_note = why;
+			} else {
+				chord_label[0] = '\0';
+				for (int i = 0; i < CHORD_BUTTON_COUNT; i++) {
+					if (!(chord_mask & CHORD_BUTTONS[i].btn)) continue;
+					if (chord_label[0]) strncat(chord_label, "+", sizeof(chord_label) - strlen(chord_label) - 1);
+					strncat(chord_label, CHORD_BUTTONS[i].name, sizeof(chord_label) - strlen(chord_label) - 1);
+				}
+				chord_note = "";
+				chord_step = CS_CONFIRM;
+			}
+			if (chord_step != CS_CONFIRM) {
+				chord_code_count = 0;
+				chord_mask = 0;
+				chord_axis = false;
+			}
+		}
 		break;
-	case DEBUG_CHECKS:
-		snprintf(out, len, "Run checks");
+	case CS_CONFIRM:
+		if (PAD_justPressed(BTN_A)) {
+			NS_Settings* c = NS_settings();
+			if (!strcmp(chord_label, "START")) {
+				/* START is the default, kept per platform by the quick menu itself. */
+				c->quick_keys[0] = c->quick_label[0] = '\0';
+			} else {
+				char keys[32] = "";
+				for (int i = 0; i < chord_code_count; i++) {
+					char one[12];
+					snprintf(one, sizeof(one), "%s%d", i ? "," : "", chord_codes[i]);
+					strncat(keys, one, sizeof(keys) - strlen(keys) - 1);
+				}
+				snprintf(c->quick_keys, sizeof(c->quick_keys), "%s", keys);
+				snprintf(c->quick_label, sizeof(c->quick_label), "%s", chord_label);
+			}
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "The quick menu opens with %s.", chord_label);
+			close_chord();
+		} else if (PAD_justPressed(BTN_B)) {
+			chord_step = CS_WAIT_RELEASE;
+			chord_code_count = 0;
+			chord_mask = 0;
+			chord_axis = false;
+		}
 		break;
-	default: out[0] = '\0';
 	}
 }
 
@@ -414,7 +953,7 @@ static void turn_off_from(NS_ManagedPak from) {
 		 * hold another platform's managed install, and status reads that. */
 		if (!NS_pakStatus((NS_ManagedPak)k, &pak_status)) {
 			snprintf(status, sizeof(status), "Could not check %s status - try again.", PAK_UI[k].name);
-			screen = SCREEN_TOOLS;
+			screen = SCREEN_CONFIG;
 			return;
 		}
 		if (!pak_status.managed) continue;
@@ -422,26 +961,101 @@ static void turn_off_from(NS_ManagedPak from) {
 		restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
 		restore_sel = 0;
 		restore_then_off = true;
+		pak_return = SCREEN_CONFIG;
 		screen = SCREEN_PAK_RESTORE;
 		return;
 	}
 	turn_off_now();
 }
 
+static void pak_done(void) {
+	cores_fresh = false;
+	if (pak_return == SCREEN_CORE_OPTIONS) NS_pakStatus(pak_kind, &pak_status);
+	screen = pak_return;
+}
+
 /* After a restore screen is done with: the setting it governs follows the pak. */
 static void pak_restore_done(bool pak_restored) {
-	if (pak_kind == NS_PAK_MGBA) {
-		if (!restore_then_off) { inst_staged[1] = false; commit_instanced(); }
-		else if (pak_restored) disable_mgba_setting();
-	} else if (pak_kind == NS_PAK_DSP && (!restore_then_off || pak_restored)) {
-		NS_settings()->dsperate = false;
-		NS_settingsSave();
-	} else if (pak_kind == NS_PAK_NDS && (!restore_then_off || pak_restored)) {
-		NS_settings()->drastic = false;
-		NS_settingsSave();
+	if (!restore_then_off || pak_restored) {
+		if (pak_kind == NS_PAK_MGBA) set_instanced(1, false);
+		else if (pak_kind == NS_PAK_DSP) { NS_settings()->dsperate = false; NS_settingsSave(); }
+		else { NS_settings()->drastic = false; NS_settingsSave(); }
 	}
 	if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
-	else screen = SCREEN_SETTINGS;
+	else pak_done();
+}
+
+/* B on a restore screen cancels, as its button says: when turning Netplay off
+ * that means not turning it off at all. "Keep installed" is how to go on
+ * without restoring one pak. */
+static void cancel_restore(void) {
+	if (restore_then_off) {
+		restore_then_off = false;
+		snprintf(status, sizeof(status), "Netplay is still on.");
+		screen = SCREEN_CONFIG;
+	} else pak_done();
+}
+
+/* A on a DS row: set it up for Netplay, or offer to take it out. */
+static void ds_row_action(NS_ManagedPak k, const CoreState* st) {
+	pak_kind = k;
+	pak_return = SCREEN_CORE_LIST;
+	if (!st->pak_ok) {
+		snprintf(status, sizeof(status), "Could not check %s.pak - try again.", PAK_UI[k].pak);
+		return;
+	}
+	pak_status = st->pak;
+	if (st->mark == MARK_CHECK) {
+		remove_sel = remove_top = 0;
+		screen = SCREEN_PAK_REMOVE;
+		return;
+	}
+	if (k == NS_PAK_DSP) {
+		/* Netplay's own DSP.pak, only switched off: switch it back on. */
+		if (pak_status.managed && pak_status.installed && !pak_status.missing && !pak_status.mismatch) {
+			NS_settings()->dsperate = true;
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "DSperate plays over Netplay again.");
+			cores_fresh = false;
+			return;
+		}
+	} else if (pak_status.base_installed && pak_status.unsupported) {
+		snprintf(status, sizeof(status), "This NDS.pak's DraStic build is not supported.");
+		return;
+	} else if (!pak_status.base_installed && !pak_status.base_bundled) {
+		snprintf(status, sizeof(status), "Install NDS.pak (DraStic) first.");
+		return;
+	}
+	prompt_sel = 0;
+	screen = SCREEN_PAK_INSTALL;
+}
+
+static void draw_progress(const char* stage, int step, int steps);
+
+static void run_pak_install(void) {
+	char title[48];
+	snprintf(title, sizeof(title), "Installing %s", PAK_UI[pak_kind].name);
+	set_progress(title, pak_kind == NS_PAK_NDS && !pak_status.base_installed
+	                    ? "Copying NDS.pak. This takes a minute."
+	                    : "Backing up files and verifying builds.");
+	draw_progress("Installing", 1, 1);
+	if (NS_pakInstall(pak_kind, status, sizeof(status))) {
+		if (pak_kind == NS_PAK_MGBA) {
+			set_instanced(1, true);
+			snprintf(status, sizeof(status), "Instanced mGBA installed.");
+		} else if (pak_kind == NS_PAK_DSP) {
+			NS_settings()->dsperate = true;
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "DSperate installed.");
+		} else {
+			NS_settings()->drastic = true;
+			NS_settingsSave();
+			snprintf(status, sizeof(status), pak_status.base_installed
+			         ? "DS local wireless added to NDS.pak." : "NDS.pak installed with local wireless.");
+		}
+	}
+	set_progress("Joining", "This can take up to a minute.");
+	pak_done();
 }
 
 static void draw_progress(const char* stage, int step, int steps) {
@@ -469,11 +1083,21 @@ static void draw_progress(const char* stage, int step, int steps) {
 	GFX_flip(s);
 }
 
+/* A centred-ish two-choice prompt's rows: Continue / Cancel and the like. */
+static int draw_choice(SDL_Surface* s, int y, const char* a, const char* b, int sel) {
+	Row r = { .kind = ROW_ACTION };
+	snprintf(r.label, sizeof(r.label), "%s", a);
+	y = draw_two_col(s, &r, y, sel == 0);
+	snprintf(r.label, sizeof(r.label), "%s", b);
+	return draw_two_col(s, &r, y, sel == 1);
+}
+
 static void render(SDL_Surface* s) {
 	GFX_clear(s);
 
 	/* Battery and the WiFi signal icon, in the standard top-right position. */
 	GFX_blitHardwareGroup(s, 0);
+	build_rows();
 
 	switch (screen) {
 	case SCREEN_MENU: {
@@ -511,13 +1135,17 @@ static void render(SDL_Surface* s) {
 				         session.host[0] ? session.host : "unknown");
 				y = draw_line(s, line, y + SCALE1(4), COLOR_GRAY, true);
 			}
-			y = draw_row(s, "Tools", y + SCALE1(8), true);
+			Row conf = { .kind = ROW_ACTION };
+			snprintf(conf.label, sizeof(conf.label), "Configuration");
+			y = draw_two_col(s, &conf, y + SCALE1(8), true);
+			y = draw_wifi_line(s, y + SCALE1(8));
+			if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
 		} else {
-			for (int i = 0; i < MENU_COUNT; i++)
-				y = draw_row(s, menu_label(i), y, i == menu_sel);
+			/* A one-line hint and the WiFi line, plus any status. */
+			y = draw_rows(s, menu_sel, &menu_top, y, status[0] ? 3 : 2);
+			y = draw_footer(s, menu_sel, y);
+			draw_wifi_line(s, y + SCALE1(2));
 		}
-		y = draw_wifi_line(s, y + SCALE1(8));
-		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
 		GFX_blitButtonGroup(armed
 		                    ? (char*[]){"B", "EXIT", "X", "END SESSION", "A", "SELECT", NULL}
 		                    : (char*[]){"B", "EXIT", "A", "SELECT", NULL}, 1, s, 1);
@@ -526,8 +1154,11 @@ static void render(SDL_Surface* s) {
 	case SCREEN_HOST_MENU: {
 		draw_title(s, "Host");
 		int y = SCALE1(PADDING + 44);
-		for (int i = 0; i < host_menu_count(); i++)
-			y = draw_row(s, host_label(i), y, i == sub_sel);
+		for (int i = 0; i < host_menu_count(); i++) {
+			Row r = { .kind = ROW_ACTION };
+			snprintf(r.label, sizeof(r.label), "%s", host_label(i));
+			y = draw_two_col(s, &r, y, i == sub_sel);
+		}
 		if (!NS_canHostAdhoc())
 			y = draw_line(s, "This device cannot create a network (no AP interface).",
 			              y + SCALE1(6), COLOR_GRAY, true);
@@ -536,138 +1167,95 @@ static void render(SDL_Surface* s) {
 		GFX_blitButtonGroup((char*[]){"B", "BACK", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
-	case SCREEN_TOOLS: {
-		draw_title(s, "Tools");
+	case SCREEN_CONFIG:
+	case SCREEN_CORES:
+	case SCREEN_CORE_LIST:
+	case SCREEN_CORE_OPTIONS:
+	case SCREEN_SETTINGS:
+	case SCREEN_DEBUG:
+	case SCREEN_PAK_REMOVE: {
+		int* sel; int* top; const char* title; char buf[48];
+		bool values = false;
+		switch (screen) {
+		case SCREEN_CONFIG:   sel = &config_sel; top = &config_top; title = "Configuration"; break;
+		case SCREEN_CORES:    sel = &cores_sel; top = &cores_top; title = "Cores"; break;
+		case SCREEN_CORE_LIST: sel = &list_sel; top = &list_top; title = cores_extras ? "Extras" : "Base"; break;
+		case SCREEN_CORE_OPTIONS:
+			sel = &opt_sel; top = &opt_top; title = opt_core == CK_GAMBATTE ? "Gambatte" : "mGBA";
+			values = true;
+			break;
+		case SCREEN_SETTINGS: sel = &settings_sel; top = &settings_top; title = "Settings"; values = true; break;
+		case SCREEN_DEBUG:    sel = &debug_sel; top = &debug_top; title = "Debug"; values = true; break;
+		default:
+			snprintf(buf, sizeof(buf), "Remove %s?", PAK_UI[pak_kind].name);
+			sel = &remove_sel; top = &remove_top; title = buf;
+			break;
+		}
+		draw_title(s, title);
 		int y = SCALE1(PADDING + 44);
-		for (int i = 0; i < TOOL_COUNT; i++)
-			y = draw_row(s, tool_label(i), y, i == sub_sel);
-		y = draw_wifi_line(s, y + SCALE1(8));
-		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
-		GFX_blitButtonGroup((char*[]){"B", "BACK", "A", "SELECT", NULL}, 1, s, 1);
+		if (*sel >= row_count) *sel = row_count ? row_count - 1 : 0;
+		/* Room for the longest hint on this screen, so the list does not
+		 * change length as the selection moves. */
+		int hint_lines = 0;
+		for (int i = 0; i < row_count; i++) {
+			int n = wrapped_lines(s, rows[i].hint, 2);
+			if (n > hint_lines) hint_lines = n;
+		}
+		y = draw_rows(s, *sel, top, y, hint_lines + (status[0] ? 1 : 0));
+		draw_footer(s, *sel, y);
+		bool lr = values && *sel < row_count && rows[*sel].kind == ROW_VALUE;
+		GFX_blitButtonGroup(lr ? (char*[]){"B", "BACK", "A", "CHANGE", NULL}
+		                       : (char*[]){"B", "BACK", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
-	case SCREEN_SETTINGS: {
-		draw_title(s, "Settings");
+	case SCREEN_CHORD: {
+		draw_title(s, "Quick Menu Buttons");
 		int y = SCALE1(PADDING + 44);
-		char row[128];
-		/* The rows do not all fit above the button bar at NextUI's row height (the
-		 * Brick has room for four with the hint, 640x480 for fewer), and the
-		 * hint under the selection is what explains each setting. So the list
-		 * scrolls instead: the window is whatever fits above the hint and any
-		 * status line, and follows the selection. */
-		int line_h = TTF_FontHeight(font.small) + SCALE1(4);
-		int bottom = s->h - SCALE1(PADDING + PILL_SIZE + PADDING) - SCALE1(6)
-		           - line_h * (status[0] ? 2 : 1);
-		int visible = (bottom - y) / SCALE1(PILL_SIZE);
-		if (visible < 1) visible = 1;
-		if (visible > SET_COUNT) visible = SET_COUNT;
-		if (settings_sel < settings_top) settings_top = settings_sel;
-		if (settings_sel >= settings_top + visible) settings_top = settings_sel - visible + 1;
-		if (settings_top > SET_COUNT - visible) settings_top = SET_COUNT - visible;
-		for (int i = settings_top; i < settings_top + visible; i++) {
-			setting_row(row, sizeof(row), i);
-			y = draw_row(s, row, y, i == settings_sel);
+		if (chord_step == CS_CONFIRM) {
+			y = draw_line(s, chord_label, y, COLOR_WHITE, false);
+			y += SCALE1(4);
+			y = draw_wrapped(s, HINT_get("chord.warning"), y, COLOR_GRAY, 2);
+			GFX_blitButtonGroup((char*[]){"B", "TRY AGAIN", "A", "SAVE", NULL}, 1, s, 1);
+		} else {
+			y = draw_wrapped(s, HINT_get("chord.intro"), y, COLOR_WHITE, 2);
+			y += SCALE1(4);
+			y = draw_wrapped(s, HINT_get("chord.warning"), y, COLOR_GRAY, 2);
+			if (chord_note[0]) {
+				y += SCALE1(4);
+				y = draw_wrapped(s, chord_note, y, COLOR_WHITE, 2);
+			}
+			GFX_blitButtonGroup((char*[]){"MENU", "CANCEL", NULL}, 1, s, 1);
 		}
-		y += SCALE1(6);
-		const char* hint = "";
-		switch (settings_sel) {
-		case SET_COMPAT:
-			hint = "Use pak cores only when installed builds differ."; break;
-		case SET_GAMESWITCHER:
-			hint = "While armed, the switcher contains only Netplay."; break;
-		case SET_INSTANCED:
-			hint = "Both devices, and both carts on each. Else link cable."; break;
-		case SET_DSPERATE:
-			hint = "Installs DSP.pak. Each device runs its own DS."; break;
-		case SET_DRASTIC:
-			hint = "Adds local wireless to your NDS.pak (DraStic)."; break;
-		case SET_POWERSAVE:
-			hint = "Lower latency while armed. Uses more battery."; break;
-		case SET_STATUS_ICON:
-			hint = NS_varnishInstalled()
-			     ? (NS_settings()->status_icon == NS_ICON_PERSISTENT ? "N always at the bottom; lights up while armed."
-			       : NS_settings()->status_icon == NS_ICON_SESSION ? "N at the bottom while a session is armed."
-			       : "Persistent: always shown. Session: only while armed.")
-			     : NS_varnishBundled() ? "Turning this on installs Varnish.pak to draw it."
-			     : "Needs Varnish.pak, which draws the icon."; break;
-		case SET_QUICK_MENU:
-			hint = NS_varnishInstalled()
-			     ? "START in NextUI's menus opens a Netplay menu."
-			     : NS_varnishBundled() ? "Turning this on installs Varnish.pak to draw it."
-			     : "Needs Varnish.pak, which draws the menu."; break;
-		}
-		y = draw_line(s, hint, y, COLOR_GRAY, true);
-		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
-		GFX_blitButtonGroup((char*[]){"B", "BACK", "A", "CHANGE", NULL}, 1, s, 1);
-		break;
-	}
-	case SCREEN_DEBUG: {
-		draw_title(s, "Debug");
-		int y = SCALE1(PADDING + 44);
-		char row[128];
-		for (int i = 0; i < DEBUG_COUNT; i++) {
-			debug_row(row, sizeof(row), i);
-			y = draw_row(s, row, y, i == debug_sel);
-		}
-		y += SCALE1(6);
-		const char* hint = "";
-		switch (debug_sel) {
-		case DEBUG_FORCE_COMPAT:
-			hint = "Testing: use pak cores even when builds match."; break;
-		case DEBUG_VERBOSE_LOGS:
-			hint = "Retain a complete log for each game launch."; break;
-		case DEBUG_CHECKS:
-			hint = "Check bindings, paths, cores, and network support."; break;
-		}
-		y = draw_line(s, hint, y, COLOR_GRAY, true);
-		if (status[0]) draw_line(s, status, y, COLOR_GRAY, true);
-		GFX_blitButtonGroup((char*[]){"B", "BACK", "A", "SELECT", NULL}, 1, s, 1);
-		break;
-	}
-	case SCREEN_INSTANCED: {
-		draw_title(s, "Instanced cores");
-		int y = SCALE1(PADDING + 44);
-		for (int i = 0; i < NS_INST_CORES; i++) {
-			char row[128];
-			bool have = NS_coreInstalled(NS_INST_CORE[i]);
-			snprintf(row, sizeof(row), "[%s] %s%s",
-			         inst_staged[i] ? "x" : " ", NS_INST_CORE[i],
-			         have ? "" : "  (not installed)");
-			y = draw_row(s, row, y, i == inst_sel);
-		}
-		y = draw_row(s, "Save", y, inst_sel == NS_INST_CORES);
-		y += SCALE1(6);
-		y = draw_line(s, "Changes take effect only after Save.", y, COLOR_GRAY, true);
-		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
 	case SCREEN_PAK_INSTALL: {
-		draw_title(s, PAK_UI[pak_kind].install_title);
+		bool nds_base = pak_kind == NS_PAK_NDS && !pak_status.base_installed;
+		draw_title(s, nds_base ? "Install NDS.pak?" : PAK_UI[pak_kind].install_title);
 		int y = SCALE1(PADDING + 44);
 		char line[128];
-		y = draw_line(s, PAK_UI[pak_kind].needs, y, COLOR_WHITE, true);
-		if (pak_kind == NS_PAK_NDS) {
+		if (nds_base) {
+			y = draw_line(s, "Netplay installs NDS.pak (DraStic 2.5.2.0)", y, COLOR_WHITE, true);
+			y = draw_line(s, "with DS local wireless for every platform", y, COLOR_WHITE, true);
+			y = draw_line(s, "on your device. Continue?", y, COLOR_WHITE, true);
+		} else if (pak_kind == NS_PAK_NDS) {
 			/* An overlay: the user's DraStic and its settings stay. */
+			y = draw_line(s, PAK_UI[pak_kind].needs, y, COLOR_WHITE, true);
 			y = draw_line(s, "Your DraStic settings stay as they are, and", y, COLOR_WHITE, true);
 			y = draw_line(s, "the files it replaces are kept for later.", y, COLOR_WHITE, true);
 			y = draw_line(s, "Continue?", y, COLOR_WHITE, true);
-			y += SCALE1(5);
-			y = draw_row(s, "Continue", y, prompt_sel == 0);
-			draw_row(s, "Cancel", y, prompt_sel == 1);
-			GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
-			break;
-		}
-		if (pak_status.installed) {
-			snprintf(line, sizeof(line), "Your current %s.pak, saves and savestates", PAK_UI[pak_kind].pak);
+		} else {
+			y = draw_line(s, PAK_UI[pak_kind].needs, y, COLOR_WHITE, true);
+			if (pak_status.installed || pak_status.present) {
+				snprintf(line, sizeof(line), "Your current %s.pak, saves and savestates", PAK_UI[pak_kind].pak);
+				y = draw_line(s, line, y, COLOR_WHITE, true);
+				y = draw_line(s, "will be backed up.", y, COLOR_WHITE, true);
+			}
+			snprintf(line, sizeof(line), "%s will be installed for every platform", PAK_UI[pak_kind].pak);
 			y = draw_line(s, line, y, COLOR_WHITE, true);
-			y = draw_line(s, "will be backed up.", y, COLOR_WHITE, true);
+			y = draw_line(s, "on your device. Continue?", y, COLOR_WHITE, true);
 		}
-		snprintf(line, sizeof(line), "%s will be installed for every platform", PAK_UI[pak_kind].pak);
-		y = draw_line(s, line, y, COLOR_WHITE, true);
-		y = draw_line(s, "on your device. Continue?", y, COLOR_WHITE, true);
 		y += SCALE1(5);
-		y = draw_row(s, "Continue", y, prompt_sel == 0);
-		draw_row(s, "Cancel", y, prompt_sel == 1);
+		draw_choice(s, y, "Continue", "Cancel", prompt_sel);
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
@@ -682,9 +1270,19 @@ static void render(SDL_Surface* s) {
 		snprintf(line, sizeof(line), "Reinstall %s?", PAK_UI[pak_kind].pak);
 		y = draw_line(s, line, y, COLOR_WHITE, true);
 		y += SCALE1(5);
-		y = draw_row(s, "Reinstall", y, prompt_sel == 0);
-		draw_row(s, "Ignore this build", y, prompt_sel == 1);
+		draw_choice(s, y, "Reinstall", "Ignore this build", prompt_sel);
 		GFX_blitButtonGroup((char*[]){"B", "IGNORE", "A", "SELECT", NULL}, 1, s, 1);
+		break;
+	}
+	case SCREEN_REMOVE_CONFIRM: {
+		char line[128];
+		snprintf(line, sizeof(line), "Delete %s.pak?", PAK_UI[pak_kind].pak);
+		draw_title(s, line);
+		int y = SCALE1(PADDING + 44);
+		y = draw_wrapped(s, HINT_getf("remove.device.%s", PAK_UI[pak_kind].pak), y, COLOR_WHITE, 2);
+		y += SCALE1(5);
+		draw_choice(s, y, "Delete", "Cancel", prompt_sel);
+		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
 		break;
 	}
 	case SCREEN_POWERSAVE_CONFIRM: {
@@ -730,8 +1328,7 @@ static void render(SDL_Surface* s) {
 			y = draw_line(s, "NDS.pak gets its own launcher back. DraStic,", y, COLOR_WHITE, true);
 			y = draw_line(s, "its settings and your saves are not touched.", y, COLOR_WHITE, true);
 			y += SCALE1(5);
-			y = draw_row(s, "Remove from NDS.pak", y, restore_sel == 0);
-			draw_row(s, "Keep it", y, restore_sel == 1);
+			draw_choice(s, y, "Remove from NDS.pak", "Keep it", restore_sel);
 			GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
 			break;
 		}
@@ -742,15 +1339,19 @@ static void render(SDL_Surface* s) {
 		         pak_status.backup_date[0] ? pak_status.backup_date : "unknown date");
 		y = draw_line(s, line, y, COLOR_GRAY, true);
 		char pak_q[64];
-		snprintf(pak_q, sizeof(pak_q), "Restore %s from backup?", PAK_UI[pak_kind].pak);
-		const char* names[3] = { pak_q, "Restore saves from backup?", "Restore save states from backup?" };
+		snprintf(pak_q, sizeof(pak_q), "Restore %s.pak", PAK_UI[pak_kind].pak);
+		const char* names[3] = { pak_q, "Restore saves", "Restore save states" };
 		for (int i = 0; i < 3; i++) {
-			snprintf(line, sizeof(line), "%s  %s", names[i], restore_choice[i] ? "Yes" : "No");
-			y = draw_row(s, line, y, restore_sel == i);
+			Row r = { .kind = ROW_VALUE };
+			snprintf(r.label, sizeof(r.label), "%s", names[i]);
+			snprintf(r.value, sizeof(r.value), "%s", restore_choice[i] ? "Yes" : "No");
+			y = draw_two_col(s, &r, y, restore_sel == i);
 		}
-		y = draw_row(s, "Apply", y, restore_sel == 3);
-		snprintf(line, sizeof(line), "Keep installed %s", PAK_UI[pak_kind].pak);
-		y = draw_row(s, line, y, restore_sel == 4);
+		Row apply = { .kind = ROW_ACTION };
+		snprintf(apply.label, sizeof(apply.label), "Apply");
+		y = draw_two_col(s, &apply, y, restore_sel == 3);
+		snprintf(apply.label, sizeof(apply.label), "Keep installed %s", PAK_UI[pak_kind].pak);
+		y = draw_two_col(s, &apply, y, restore_sel == 4);
 		y = draw_line(s, "Restoring saves/save states may overwrite progress.", y + SCALE1(3), COLOR_GRAY, true);
 		draw_line(s, "Overwritten files move to .userdata/shared/Netplay.", y, COLOR_GRAY, true);
 		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "SELECT", NULL}, 1, s, 1);
@@ -782,18 +1383,19 @@ static void render(SDL_Surface* s) {
 		} else {
 			for (int i = 0; i < join_total; i++) {
 				NS_Peer* pr = join_at(i);
-				char line[128];
+				Row r = { .kind = ROW_ACTION };
 				if (pr->scanned) {
 					/* The SSID carries the host's code, which is what the user
 					 * sees on the hosting device - that is the thing to match. */
-					snprintf(line, sizeof(line), "%s  (ad hoc)", pr->ssid);
+					snprintf(r.label, sizeof(r.label), "%s", pr->ssid);
+					snprintf(r.value, sizeof(r.value), "ad hoc");
 				} else {
 					int same = !strcmp(pr->platform, NS_platform());
-					snprintf(line, sizeof(line), "%s%s%s", pr->ip,
-					         pr->hotspot ? "  ad hoc" : "  WiFi",
-					         same ? "" : "  (different device)");
+					snprintf(r.label, sizeof(r.label), "%s", pr->ip);
+					snprintf(r.value, sizeof(r.value), "%s%s", pr->hotspot ? "ad hoc" : "WiFi",
+					         same ? "" : ", other device");
 				}
-				y = draw_row(s, line, y, i == peer_sel);
+				y = draw_two_col(s, &r, y, i == peer_sel);
 			}
 		}
 		y = draw_wifi_line(s, y + SCALE1(8));
@@ -902,6 +1504,89 @@ static void do_arm(NS_Role role, const char* peer) {
 	screen = SCREEN_MENU;
 }
 
+/* LEFT/RIGHT step through a value's options; A steps forward too, except
+ * where A means something else (the quick menu's buttons). */
+static int lr_step(void) {
+	if (PAD_justPressed(BTN_RIGHT)) return 1;
+	if (PAD_justPressed(BTN_LEFT)) return -1;
+	return 0;
+}
+
+static void change_setting(int id, int dir) {
+	NS_Settings* c = NS_settings();
+	status[0] = '\0';
+	switch (id) {
+	case SET_QUICK_MENU:
+		if (!c->quick_menu) {
+			if (needs_varnish(SET_QUICK_MENU)) return;
+			c->quick_menu = true;
+			/* On means START; other buttons are chosen afresh each time. */
+			c->quick_keys[0] = c->quick_label[0] = '\0';
+		} else c->quick_menu = false;
+		break;
+	case SET_STATUS_ICON: {
+		/* Disabled < Active Session < Always, stepping either way. */
+		int v = ((int)c->status_icon + dir + 3) % 3;
+		if (c->status_icon == NS_ICON_OFF && needs_varnish(SET_STATUS_ICON)) return;
+		c->status_icon = (NS_IconMode)v;
+		break;
+	}
+	case SET_COMPAT:
+		c->compatibility_cores = !c->compatibility_cores;
+		if (!c->compatibility_cores) c->force_compatibility = false;
+		break;
+	case SET_GAMESWITCHER:
+		c->add_gameswitcher = !c->add_gameswitcher;
+		break;
+	case SET_POWERSAVE:
+		/* Applies to an armed session now, not only from the next game
+		 * launch: Restore is a no-op when nothing was recorded. */
+		if (!c->disable_powersave && NS_wifiPowerSaveNeedsReload()) {
+			screen = SCREEN_POWERSAVE_CONFIRM;   /* H700: slow, so ask */
+			return;
+		}
+		c->disable_powersave = !c->disable_powersave;
+		if (c->disable_powersave) {
+			NS_SessionInfo armed;
+			if (NS_sessionInfo(&armed)) NS_wifiPowerSaveDisable();
+		} else {
+			NS_wifiPowerSaveRestore();
+			/* Reloading back would cost the same wait again for no
+			 * gain; the next boot loads the driver's default. */
+			if (!strcmp(PLATFORM, "h700"))
+				snprintf(status, sizeof(status), "Power saving returns after the next reboot.");
+		}
+		break;
+	}
+	NS_settingsSave();
+}
+
+static void change_option(int id) {
+	status[0] = '\0';
+	if (id == OPT_DUAL) {
+		if (!NS_gambatteDualAvailable()) {
+			snprintf(status, sizeof(status), "Dual instance is not built for this device.");
+			return;
+		}
+		set_instanced(0, !gambatte_dual());
+		cores_fresh = false;
+	} else if (id == OPT_INSTANCED) {
+		bool ready = pak_status.managed && pak_status.installed && !pak_status.missing;
+		if (mgba_instanced() && ready) {
+			set_instanced(1, false);
+		} else if (ready && !pak_status.mismatch) {
+			set_instanced(1, true);
+		} else {
+			pak_kind = NS_PAK_MGBA;
+			pak_return = SCREEN_CORE_OPTIONS;
+			prompt_sel = 0;
+			screen = SCREEN_PAK_INSTALL;
+			return;
+		}
+		cores_fresh = false;
+	}
+}
+
 int main(int argc, char* argv[]) {
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--quick")) quick_mode = true;
@@ -921,6 +1606,11 @@ int main(int argc, char* argv[]) {
 	signal(SIGTERM, on_signal);
 
 	NS_init();
+	{
+		char hints_path[512];
+		snprintf(hints_path, sizeof(hints_path), "%s/pak_hints.json", NS_pakPath());
+		HINT_load(hints_path, NS_platform());
+	}
 	progress_surface = s;
 	NS_setProgressCallback(draw_progress);
 	WIFI_init();
@@ -964,10 +1654,8 @@ int main(int argc, char* argv[]) {
 	 * enabled. Check once per setup-app launch; an ignored verdict is keyed to
 	 * both hashes, so it stays quiet only until either binary changes. */
 	NS_Settings* startup_settings = NS_settings();
-	bool startup_mgba = mgba_instanced_enabled(startup_settings);
-	if (startup_mgba && NS_pakStatus(NS_PAK_MGBA, &pak_status) &&
+	if (mgba_instanced() && NS_pakStatus(NS_PAK_MGBA, &pak_status) &&
 	    pak_status.mismatch && !pak_status.mismatch_ignored) {
-		stage_instanced();
 		pak_kind = NS_PAK_MGBA;
 		prompt_sel = 0;
 		screen = SCREEN_PAK_MISMATCH;
@@ -1005,8 +1693,9 @@ int main(int argc, char* argv[]) {
 		}
 
 		/* X ends the session from any screen. It is the thing most often
-		 * wanted and it used to be buried in the list. */
-		if (PAD_justPressed(BTN_X) && NS_isArmed()) {
+		 * wanted and it used to be buried in the list. Not while X might be
+		 * one of the quick menu's buttons being held. */
+		if (PAD_justPressed(BTN_X) && NS_isArmed() && screen != SCREEN_CHORD) {
 			// NS_endSession stops the AP and restores wifi itself; calling
 			// NS_hotspotStop again here ran the teardown twice and logged a
 			// spurious "nothing recorded to restore wifi with".
@@ -1027,34 +1716,31 @@ int main(int argc, char* argv[]) {
 			dirty = 1;
 		}
 
+		build_rows();
+
 		switch (screen) {
 		case SCREEN_MENU:
 			if (NS_isArmed()) {
-				/* Session status replaces Host/Join while armed. Tools is the only
-				 * selectable row; X remains the explicit lifecycle action. */
+				/* Session status replaces Host/Join while armed. Configuration
+				 * is the only selectable row; X remains the explicit lifecycle
+				 * action. */
 				if (PAD_justPressed(BTN_B)) quit = 1;
 				if (PAD_justPressed(BTN_A)) {
 					status[0] = '\0';
-					sub_sel = 0;
-					screen = SCREEN_TOOLS;
+					config_sel = 0;
+					screen = SCREEN_CONFIG;
 					dirty = 1;
 				}
 				break;
 			}
-			if (PAD_justPressed(BTN_UP))   { menu_sel = (menu_sel + MENU_COUNT - 1) % MENU_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_DOWN)) { menu_sel = (menu_sel + 1) % MENU_COUNT; dirty = 1; }
+			if (step_sel(&menu_sel, MENU_COUNT)) dirty = 1;
 			if (PAD_justPressed(BTN_B))    quit = 1;
 			if (PAD_justPressed(BTN_A)) {
 				status[0] = '\0';
 				sub_sel = 0;
-				if (NS_isArmed() && (menu_sel == MENU_HOST || menu_sel == MENU_JOIN)) {
-					snprintf(status, sizeof(status), "End the current session with X first.");
-					dirty = 1;
-					break;
-				}
 				switch (menu_sel) {
-				case MENU_HOST:  screen = SCREEN_HOST_MENU; break;
-				case MENU_TOOLS: screen = SCREEN_TOOLS; break;
+				case MENU_HOST:   screen = SCREEN_HOST_MENU; break;
+				case MENU_CONFIG: config_sel = 0; screen = SCREEN_CONFIG; break;
 				case MENU_JOIN:
 					peer_count = 0; peer_sel = 0; adhoc_count = 0; join_total = 0;
 					NS_discoverTick(NULL, 0);
@@ -1110,229 +1796,213 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 
-		case SCREEN_TOOLS:
-			if (PAD_justPressed(BTN_UP))   { sub_sel = (sub_sel + TOOL_COUNT - 1) % TOOL_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_DOWN)) { sub_sel = (sub_sel + 1) % TOOL_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_B))    { screen = SCREEN_MENU; dirty = 1; }
+		case SCREEN_CONFIG:
+			if (step_sel(&config_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { status[0] = '\0'; screen = SCREEN_MENU; dirty = 1; }
 			if (PAD_justPressed(BTN_A)) {
 				status[0] = '\0';
-				switch (sub_sel) {
-				case TOOL_SETTINGS:
-					settings_sel = 0;
-					screen = SCREEN_SETTINGS;
-					break;
-
-				case TOOL_DEBUG:
-					debug_sel = 0;
-					screen = SCREEN_DEBUG;
-					break;
-
-				case TOOL_FIXWIFI:
-					snprintf(status, sizeof(status), "Restoring WiFi...");
-					render(s);
-					set_progress("Restoring WiFi", "Reconnecting to your network.");
-					NS_wifiRestore();
-					set_progress("Joining", "This can take up to a minute.");
-					wifi_poll(true);
-					snprintf(status, sizeof(status), wifi_up
-					         ? "Reconnected to %s." : "Could not reconnect - use system WiFi settings.",
-					         wifi_ssid);
-					screen = SCREEN_MENU;
-					break;
-
-				case TOOL_OFF:
-					turn_off_from(NS_PAK_MGBA);
-					break;
+				switch (rows[config_sel].id) {
+				case CONF_CORES:    cores_sel = 0; screen = SCREEN_CORES; break;
+				case CONF_SETTINGS: settings_sel = 0; screen = SCREEN_SETTINGS; break;
+				case CONF_DEBUG:    debug_sel = 0; screen = SCREEN_DEBUG; break;
+				case CONF_OFF:      turn_off_from(NS_PAK_MGBA); break;
 				}
 				dirty = 1;
 			}
 			break;
 
-		case SCREEN_SETTINGS: {
-			NS_Settings* c = NS_settings();
-			if (PAD_justPressed(BTN_UP))   { settings_sel = (settings_sel + SET_COUNT - 1) % SET_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_DOWN)) { settings_sel = (settings_sel + 1) % SET_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_B))    { screen = SCREEN_TOOLS; dirty = 1; }
+		case SCREEN_CORES:
+			if (step_sel(&cores_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { status[0] = '\0'; screen = SCREEN_CONFIG; dirty = 1; }
 			if (PAD_justPressed(BTN_A)) {
+				open_core_list(rows[cores_sel].id == CORES_EXTRAS);
+				dirty = 1;
+			}
+			break;
+
+		case SCREEN_CORE_LIST: {
+			if (step_sel(&list_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { status[0] = '\0'; screen = SCREEN_CORES; dirty = 1; }
+			if (PAD_justPressed(BTN_A) && list_sel < row_count) {
+				int n;
+				const CoreDef* d = &list_defs(&n)[rows[list_sel].id];
+				const CoreState* st = &core_state[rows[list_sel].id];
 				status[0] = '\0';
-				switch (settings_sel) {
-				case SET_COMPAT:
-					c->compatibility_cores = !c->compatibility_cores;
-					if (!c->compatibility_cores) c->force_compatibility = false;
+				switch (d->kind) {
+				case CK_SHIM:
+					break;   /* status only */
+				case CK_GAMBATTE:
+					if (st->more) { opt_core = CK_GAMBATTE; opt_sel = 0; screen = SCREEN_CORE_OPTIONS; }
 					break;
-				case SET_GAMESWITCHER: c->add_gameswitcher = !c->add_gameswitcher; break;
-				case SET_STATUS_ICON:   /* No > Persistent > Session > No */
-					if (c->status_icon == NS_ICON_OFF && needs_varnish(SET_STATUS_ICON)) break;
-					c->status_icon = c->status_icon == NS_ICON_OFF ? NS_ICON_PERSISTENT
-					               : c->status_icon == NS_ICON_PERSISTENT ? NS_ICON_SESSION
-					               : NS_ICON_OFF;
-					break;
-				case SET_QUICK_MENU:
-					if (!c->quick_menu && needs_varnish(SET_QUICK_MENU)) break;
-					c->quick_menu = !c->quick_menu;
-					break;
-				case SET_POWERSAVE:
-					/* Applies to an armed session now, not only from the next
-					 * game launch: Restore is a no-op when nothing was recorded. */
-					if (!c->disable_powersave && NS_wifiPowerSaveNeedsReload()) {
-						screen = SCREEN_POWERSAVE_CONFIRM;   /* H700: slow, so ask */
+				case CK_MGBA:
+					if (!strcmp(st->state, "unavailable")) break;
+					if (!st->pak_ok) {
+						snprintf(status, sizeof(status), "Could not check MGBA.pak - try again.");
 						break;
 					}
-					c->disable_powersave = !c->disable_powersave;
-					if (c->disable_powersave) {
-						NS_SessionInfo armed;
-						if (NS_sessionInfo(&armed)) NS_wifiPowerSaveDisable();
-					} else {
-						NS_wifiPowerSaveRestore();
-						/* Reloading back would cost the same wait again for no
-						 * gain; the next boot loads the driver's default. */
-						if (!strcmp(PLATFORM, "h700"))
-							snprintf(status, sizeof(status), "Power saving returns after the next reboot.");
-					}
+					pak_status = st->pak;
+					opt_core = CK_MGBA;
+					opt_sel = 0;
+					screen = SCREEN_CORE_OPTIONS;
 					break;
-				case SET_INSTANCED:
-					stage_instanced();
-					inst_sel = 0;
-					screen = SCREEN_INSTANCED;
-					if (inst_staged[1]) {
-						pak_kind = NS_PAK_MGBA;
-						if (!NS_pakStatus(NS_PAK_MGBA, &pak_status)) {
-							snprintf(status, sizeof(status), "Could not check mGBA status - try again.");
-						} else if (pak_status.mismatch && !pak_status.mismatch_ignored) {
-							prompt_sel = 0;
-							screen = SCREEN_PAK_MISMATCH;
-						}
-					}
-					break;
-				case SET_DSPERATE:
-					if (!NS_pakAvailable(NS_PAK_DSP)) {
-						snprintf(status, sizeof(status), "DSperate is not built for this device.");
-						break;
-					}
-					pak_kind = NS_PAK_DSP;
-					if (!NS_pakStatus(NS_PAK_DSP, &pak_status)) {
-						snprintf(status, sizeof(status), "Could not check DSP.pak status - try again.");
-					} else if (!c->dsperate) {
-						if (!pak_status.managed || pak_status.missing || pak_status.mismatch) {
-							prompt_sel = 0;
-							screen = SCREEN_PAK_INSTALL;
-						} else c->dsperate = true;
-					} else if (pak_status.managed) {
-						restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
-						restore_sel = 0; restore_then_off = false;
-						screen = SCREEN_PAK_RESTORE;
-					} else c->dsperate = false;
-					break;
-				case SET_DRASTIC:
-					if (!NS_pakAvailable(NS_PAK_NDS)) {
-						snprintf(status, sizeof(status), "DraStic local wireless is not built for this device.");
-						break;
-					}
-					pak_kind = NS_PAK_NDS;
-					if (!NS_pakStatus(NS_PAK_NDS, &pak_status)) {
-						snprintf(status, sizeof(status), "Could not check NDS.pak status - try again.");
-					} else if (!c->drastic) {
-						if (!pak_status.base_installed)
-							snprintf(status, sizeof(status), "Install NDS.pak (DraStic) first.");
-						else if (pak_status.unsupported && !pak_status.installed)
-							snprintf(status, sizeof(status), "This NDS.pak's DraStic build is not supported.");
-						else if (!pak_status.managed || pak_status.missing || pak_status.mismatch) {
-							prompt_sel = 0;
-							screen = SCREEN_PAK_INSTALL;
-						} else c->drastic = true;
-					} else if (pak_status.managed) {
-						restore_sel = 0; restore_then_off = false;
-						screen = SCREEN_PAK_RESTORE;
-					} else c->drastic = false;
+				case CK_DSP:
+				case CK_NDS:
+					if (!strcmp(st->state, "unavailable")) break;
+					ds_row_action(d->kind == CK_DSP ? NS_PAK_DSP : NS_PAK_NDS, st);
 					break;
 				}
-				if (settings_sel != SET_INSTANCED) NS_settingsSave();
 				dirty = 1;
 			}
 			break;
 		}
+
+		case SCREEN_CORE_OPTIONS: {
+			if (step_sel(&opt_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { status[0] = '\0'; screen = SCREEN_CORE_LIST; dirty = 1; }
+			if (opt_sel >= row_count) break;
+			int id = rows[opt_sel].id;
+			if (rows[opt_sel].kind == ROW_VALUE && (lr_step() || PAD_justPressed(BTN_A))) {
+				change_option(id);
+				dirty = 1;
+			} else if (id == OPT_REMOVE && PAD_justPressed(BTN_A)) {
+				pak_kind = NS_PAK_MGBA;
+				pak_return = SCREEN_CORE_OPTIONS;
+				restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
+				restore_sel = 0; restore_then_off = false;
+				screen = SCREEN_PAK_RESTORE;
+				dirty = 1;
+			}
+			break;
+		}
+
+		case SCREEN_SETTINGS: {
+			if (step_sel(&settings_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { status[0] = '\0'; screen = SCREEN_CONFIG; dirty = 1; }
+			int id = rows[settings_sel].id;
+			int dir = lr_step();
+			if (dir) {
+				change_setting(id, dir);
+				dirty = 1;
+			} else if (PAD_justPressed(BTN_A)) {
+				if (id == SET_QUICK_MENU && NS_settings()->quick_menu) open_chord();
+				else change_setting(id, 1);
+				dirty = 1;
+			}
+			break;
+		}
+
+		case SCREEN_CHORD:
+			chord_tick();
+			dirty = 1;
+			break;
 
 		case SCREEN_DEBUG: {
 			NS_Settings* c = NS_settings();
-			if (PAD_justPressed(BTN_UP))   { debug_sel = (debug_sel + DEBUG_COUNT - 1) % DEBUG_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_DOWN)) { debug_sel = (debug_sel + 1) % DEBUG_COUNT; dirty = 1; }
-			if (PAD_justPressed(BTN_B))    { screen = SCREEN_TOOLS; dirty = 1; }
-			if (PAD_justPressed(BTN_A)) {
-				status[0] = '\0';
-				switch (debug_sel) {
-				case DEBUG_FORCE_COMPAT:
-					c->force_compatibility = !c->force_compatibility;
-					if (c->force_compatibility) c->compatibility_cores = true;
-					NS_settingsSave();
-					break;
-				case DEBUG_VERBOSE_LOGS:
-					c->verbose_logs = !c->verbose_logs;
-					NS_settingsSave();
-					break;
-				case DEBUG_CHECKS:
-					check_count = NS_runChecks(checks, 8, &check_worst);
-					screen = SCREEN_CHECKS;
-					break;
-				}
-				dirty = 1;
+			if (step_sel(&debug_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { status[0] = '\0'; screen = SCREEN_CONFIG; dirty = 1; }
+			int id = rows[debug_sel].id;
+			bool change = rows[debug_sel].kind == ROW_VALUE ? (lr_step() || PAD_justPressed(BTN_A))
+			                                               : PAD_justPressed(BTN_A);
+			if (!change) break;
+			status[0] = '\0';
+			switch (id) {
+			case DEBUG_FORCE_COMPAT:
+				c->force_compatibility = !c->force_compatibility;
+				if (c->force_compatibility) c->compatibility_cores = true;
+				NS_settingsSave();
+				break;
+			case DEBUG_VERBOSE_LOGS:
+				c->verbose_logs = !c->verbose_logs;
+				NS_settingsSave();
+				break;
+			case DEBUG_CHECKS:
+				check_count = NS_runChecks(checks, 8, &check_worst);
+				screen = SCREEN_CHECKS;
+				break;
+			case DEBUG_RESTORE_WIFI:
+				snprintf(status, sizeof(status), "Restoring WiFi...");
+				render(s);
+				set_progress("Restoring WiFi", "Reconnecting to your network.");
+				NS_wifiRestore();
+				set_progress("Joining", "This can take up to a minute.");
+				wifi_poll(true);
+				snprintf(status, sizeof(status), wifi_up
+				         ? "Reconnected to %s." : "Could not reconnect - use system WiFi settings.",
+				         wifi_ssid);
+				break;
 			}
-			break;
-		}
-
-		case SCREEN_INSTANCED: {
-			if (PAD_justPressed(BTN_UP))   { inst_sel = (inst_sel + NS_INST_CORES) % (NS_INST_CORES + 1); dirty = 1; }
-			if (PAD_justPressed(BTN_DOWN)) { inst_sel = (inst_sel + 1) % (NS_INST_CORES + 1); dirty = 1; }
-			if (PAD_justPressed(BTN_B))    { screen = SCREEN_SETTINGS; dirty = 1; }
-			if (PAD_justPressed(BTN_A)) {
-				if (inst_sel < NS_INST_CORES && NS_coreInstalled(NS_INST_CORE[inst_sel])) {
-					inst_staged[inst_sel] = !inst_staged[inst_sel];
-				} else if (inst_sel < NS_INST_CORES) {
-					snprintf(status, sizeof(status), "%s is not installed.", NS_INST_CORE[inst_sel]);
-				} else {
-					bool old_mgba = mgba_instanced_enabled(NS_settings());
-					pak_kind = NS_PAK_MGBA;
-					if (!NS_pakStatus(NS_PAK_MGBA, &pak_status)) {
-						snprintf(status, sizeof(status), "Could not check mGBA status - try again.");
-					} else if (!old_mgba && inst_staged[1] &&
-					    (!pak_status.managed || pak_status.missing || pak_status.mismatch)) {
-						prompt_sel = 0; screen = SCREEN_PAK_INSTALL;
-					} else if (old_mgba && !inst_staged[1] && pak_status.managed) {
-						restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
-						restore_sel = 0; restore_then_off = false;
-						screen = SCREEN_PAK_RESTORE;
-					} else {
-						commit_instanced(); screen = SCREEN_SETTINGS;
-					}
-				}
-				dirty = 1;
-			}
+			dirty = 1;
 			break;
 		}
 
 		case SCREEN_PAK_INSTALL:
 			if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { prompt_sel = !prompt_sel; dirty = 1; }
-			if (PAD_justPressed(BTN_B)) { screen = pak_back_screen(); dirty = 1; }
+			if (PAD_justPressed(BTN_B)) { pak_done(); dirty = 1; }
+			if (PAD_justPressed(BTN_A)) {
+				if (prompt_sel == 0) run_pak_install();
+				else pak_done();
+				dirty = 1;
+			}
+			break;
+
+		case SCREEN_PAK_REMOVE: {
+			if (step_sel(&remove_sel, row_count)) dirty = 1;
+			if (PAD_justPressed(BTN_B)) { pak_done(); dirty = 1; }
+			if (!PAD_justPressed(BTN_A)) break;
+			status[0] = '\0';
+			switch (rows[remove_sel].id) {
+			case REM_NETPLAY:
+				if (pak_kind == NS_PAK_DSP) {
+					NS_settings()->dsperate = false;
+					NS_settingsSave();
+					snprintf(status, sizeof(status), "DSP.pak kept; its games play offline now.");
+				} else {
+					set_progress("Removing DS local wireless", "Putting NDS.pak's own files back.");
+					draw_progress("Restoring", 1, 1);
+					if (NS_pakRestore(pak_kind, true, false, false, status, sizeof(status))) {
+						NS_settings()->drastic = false;
+						NS_settingsSave();
+						snprintf(status, sizeof(status), "NDS.pak has its own launcher back.");
+					}
+					set_progress("Joining", "This can take up to a minute.");
+				}
+				pak_done();
+				break;
+			case REM_DEVICE:
+				prompt_sel = 1;   /* deleting is never the default */
+				screen = SCREEN_REMOVE_CONFIRM;
+				break;
+			case REM_BACKUP:
+				restore_choice[0] = restore_choice[1] = restore_choice[2] = true;
+				restore_sel = 0; restore_then_off = false;
+				screen = SCREEN_PAK_RESTORE;
+				break;
+			default:
+				pak_done();
+				break;
+			}
+			dirty = 1;
+			break;
+		}
+
+		case SCREEN_REMOVE_CONFIRM:
+			if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { prompt_sel = !prompt_sel; dirty = 1; }
+			if (PAD_justPressed(BTN_B)) { screen = SCREEN_PAK_REMOVE; dirty = 1; }
 			if (PAD_justPressed(BTN_A)) {
 				if (prompt_sel == 0) {
 					char title[48];
-					snprintf(title, sizeof(title), "Installing %s", PAK_UI[pak_kind].name);
-					set_progress(title, "Backing up files and verifying builds.");
-					if (NS_pakInstall(pak_kind, status, sizeof(status))) {
-						if (pak_kind == NS_PAK_MGBA) {
-							commit_instanced();
-							snprintf(status, sizeof(status), "Instanced mGBA installed.");
-						} else if (pak_kind == NS_PAK_DSP) {
-							NS_settings()->dsperate = true;
-							NS_settingsSave();
-							snprintf(status, sizeof(status), "DSperate installed.");
-						} else {
-							NS_settings()->drastic = true;
-							NS_settingsSave();
-							snprintf(status, sizeof(status), "DS local wireless added to NDS.pak.");
-						}
-						screen = SCREEN_SETTINGS;
-					} else screen = pak_back_screen();
-				} else screen = pak_back_screen();
+					snprintf(title, sizeof(title), "Removing %s", PAK_UI[pak_kind].pak);
+					set_progress(title, "Deleting the pak from the card.");
+					draw_progress("Deleting", 1, 1);
+					if (NS_pakRemove(pak_kind, status, sizeof(status))) {
+						if (pak_kind == NS_PAK_DSP) NS_settings()->dsperate = false;
+						else NS_settings()->drastic = false;
+						NS_settingsSave();
+						snprintf(status, sizeof(status), "%s.pak removed.", PAK_UI[pak_kind].pak);
+					}
+					set_progress("Joining", "This can take up to a minute.");
+					pak_done();
+				} else screen = SCREEN_PAK_REMOVE;
 				dirty = 1;
 			}
 			break;
@@ -1348,7 +2018,7 @@ int main(int argc, char* argv[]) {
 				if (NS_varnishInstall(status, sizeof(status))) {
 					NS_Settings* c = NS_settings();
 					if (varnish_for == SET_STATUS_ICON) c->status_icon = NS_ICON_PERSISTENT;
-					else c->quick_menu = true;
+					else { c->quick_menu = true; c->quick_keys[0] = c->quick_label[0] = '\0'; }
 					NS_settingsSave();
 					screen = SCREEN_VARNISH_REBOOT;
 				}
@@ -1400,7 +2070,7 @@ int main(int argc, char* argv[]) {
 		case SCREEN_PAK_MISMATCH:
 			if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { prompt_sel = !prompt_sel; dirty = 1; }
 			if (PAD_justPressed(BTN_B)) {
-				NS_pakIgnoreMismatch(pak_kind, status, sizeof(status)); screen = pak_back_screen(); dirty = 1;
+				NS_pakIgnoreMismatch(pak_kind, status, sizeof(status)); pak_done(); dirty = 1;
 			}
 			if (PAD_justPressed(BTN_A)) {
 				if (prompt_sel == 0) {
@@ -1410,7 +2080,7 @@ int main(int argc, char* argv[]) {
 					if (NS_pakInstall(pak_kind, status, sizeof(status)))
 						snprintf(status, sizeof(status), "%s reinstalled.", PAK_UI[pak_kind].name);
 				} else NS_pakIgnoreMismatch(pak_kind, status, sizeof(status));
-				screen = pak_back_screen();
+				pak_done();
 				dirty = 1;
 			}
 			break;
@@ -1418,11 +2088,7 @@ int main(int argc, char* argv[]) {
 		case SCREEN_PAK_RESTORE:
 			if (pak_kind == NS_PAK_NDS) {
 				if (PAD_justPressed(BTN_UP) || PAD_justPressed(BTN_DOWN)) { restore_sel = !restore_sel; dirty = 1; }
-				if (PAD_justPressed(BTN_B)) {
-					if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
-					else screen = pak_back_screen();
-					dirty = 1;
-				}
+				if (PAD_justPressed(BTN_B)) { cancel_restore(); dirty = 1; }
 				if (PAD_justPressed(BTN_A)) {
 					if (restore_sel == 0) {
 						set_progress("Removing DS local wireless", "Putting NDS.pak's own files back.");
@@ -1436,14 +2102,12 @@ int main(int argc, char* argv[]) {
 			}
 			if (PAD_justPressed(BTN_UP))   { restore_sel = (restore_sel + 4) % 5; dirty = 1; }
 			if (PAD_justPressed(BTN_DOWN)) { restore_sel = (restore_sel + 1) % 5; dirty = 1; }
-			if (PAD_justPressed(BTN_B)) {
-				if (restore_then_off) turn_off_from((NS_ManagedPak)(pak_kind + 1));
-				else screen = pak_back_screen();
+			if (PAD_justPressed(BTN_B)) { cancel_restore(); dirty = 1; }
+			if (restore_sel < 3 && (lr_step() || PAD_justPressed(BTN_A))) {
+				restore_choice[restore_sel] = !restore_choice[restore_sel];
 				dirty = 1;
-			}
-			if (PAD_justPressed(BTN_A)) {
-				if (restore_sel < 3) restore_choice[restore_sel] = !restore_choice[restore_sel];
-				else if (restore_sel == 3) {
+			} else if (PAD_justPressed(BTN_A)) {
+				if (restore_sel == 3) {
 					char title[48];
 					snprintf(title, sizeof(title), "Restoring %s", PAK_UI[pak_kind].name);
 					set_progress(title, "Preserving files that would be overwritten.");

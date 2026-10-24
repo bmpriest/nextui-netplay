@@ -1,6 +1,6 @@
 # DSP.pak (Netplay.pak's DSperate build)
 
-A NextUI Emu Pak for Nintendo DS, wrapping the standalone [DSperate](https://github.com/beebono/DSperate) emulator (upstream main, pinned by commit in the `Makefile`). It started as [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) by josegonzalez; this copy lives in Netplay.pak, which installs it from Tools > Settings > Nintendo DS (DSperate) and starts it as a local-wireless host or guest when a Netplay session is armed. See [../docs/dsperate.md](../docs/dsperate.md) for the Netplay side.
+A NextUI Emu Pak for Nintendo DS, wrapping the standalone [DSperate](https://github.com/beebono/DSperate) emulator (upstream main, pinned by commit in the `Makefile`). It started as [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) by josegonzalez; this copy lives in Netplay.pak, which installs it from Configuration > Cores > Extras > DSP and starts it as a local-wireless host or guest when a Netplay session is armed. See [../docs/dsperate.md](../docs/dsperate.md) for the Netplay side.
 
 DSperate reimplements DraStic's JIT and NEON rendering techniques with an ARM to AArch64 recompiler, a threaded software rasteriser, save states, Action Replay cheats and RetroAchievements. Unlike DraStic it needs no BIOS dump to play games.
 

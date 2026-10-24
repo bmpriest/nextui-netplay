@@ -22,20 +22,21 @@ True multiplayer for GameBoy Advance/Game Boy Color/Game Boy. Each player has th
 
 ### Instanced Cores (experimental) for Game Boy/Game Boy Color/Game Boy Advance
 
-Turn on **Use instanced cores** in Tools > Settings and each device emulates *both* Game Boys,
+In **Configuration > Cores > Base**, open **GB/GBC (Gambatte)** and turn on
+**Dual instance**; each device then emulates *both* Game Boys,
 keeping the link cable inside the device and sending only controller inputs over
 WiFi. It removes a WiFi round trip from every cable exchange, which is what makes
 trading and battling feel sluggish.
 
-The core picker is a submenu with options for Gambatte and mGBA. mGBA is
-off by default. Enabling it installs Netplay's bundled MGBA.pak on each
-supported platform on the card while keeping the paired core inside
-Netplay.pak. Existing paks, saves and states are backed up first, and disabling
-it offers an independent restore for each category.
+mGBA's is in **Configuration > Cores > Extras > MGBA (mGBA)**: turning on
+**Instanced link** installs Netplay's bundled MGBA.pak on each supported
+platform on the card while keeping the paired core inside Netplay.pak. Existing
+paks, saves and states are backed up first, and **Remove MGBA.pak** on the same
+screen offers an independent restore for each category.
 
 Because of how NextUI handles mGBA, if you're installing it for the first time, you will need to copy the games you want to play over to `Roms/Game Boy Advance (MGBA)` and saves to `Saves/MGBA`.
 
-Both devices have to have Instanced Cores switched on, and both have to have *both* games
+Both devices have to have the instanced mode switched on, and both have to have *both* games
 available — no game files are sent between devices. So if you want to trade between Pokemon Ruby and Emerald, both devices will need both ROMs. If either condition
 isn't met, the game restarts automatically on the normal link-cable path and
 plays as it always did.
@@ -46,10 +47,11 @@ DS games that play over local wireless (Mario Kart DS, for one) can play
 between two devices. Each device runs its own DS with its own screens and save;
 the DS radio is carried over the Netplay session's network.
 
-Turn on **Nintendo DS (DSperate)** in Tools > Settings. That installs
+Select **DSP (DSperate)** in **Configuration > Cores > Extras**. That installs
 Netplay's bundled DSP.pak, a build of the [DSperate](https://github.com/beebono/DSperate)
-emulator, backing up any DSP.pak, saves and states that were already there;
-turning it off offers to restore them. Put your games in
+emulator, backing up any DSP.pak, saves and states that were already there.
+Selecting it again offers to remove it from Netplay (the pak stays and plays
+offline), remove it from the device, or restore the backup. Put your games in
 `Roms/Nintendo DS (DSP)`. No BIOS is needed.
 
 With a session armed, launch the same game on both devices (in either order)
@@ -58,11 +60,13 @@ joins it. Use the ad hoc network: through a router the games run at about a
 third of full speed. On a Trimui Brick and an RG35XX H, Mario Kart DS races
 run at about 50 fps (menus at full speed) and Asphalt: Urban GT 2 at about 57. DSP.pak is built for tg5040, tg5050 and h700.
 
-If you already use NDS.pak (DraStic), turn on **Nintendo DS (DraStic)**
-instead, or as well. Netplay doesn't ship DraStic: it adds local wireless to the
-NDS.pak already on your card (the DraStic 2.5.2.0 build that
-minui-nintendo-ds-pak ships) and leaves your DraStic settings alone. Turning it
-off gives NDS.pak its own launcher back. Games stay in `Roms/Nintendo DS (NDS)`.
+DraStic works too: select **NDS (DraStic)** in the same list. If NDS.pak is
+already on your card (the DraStic 2.5.2.0 build that minui-nintendo-ds-pak
+ships), Netplay adds local wireless to it and leaves your DraStic settings
+alone; if it isn't, Netplay installs minui-nintendo-ds-pak 0.14.1 first.
+Selecting it again offers to remove it from Netplay (NDS.pak gets its own
+launcher back) or remove NDS.pak from the device. Games stay in
+`Roms/Nintendo DS (NDS)`.
 On a Trimui Brick and an RG35XX H, both on DraStic, Mario Kart DS races run at
 55-58 fps over ad hoc. DraStic and DSperate speak the same protocol, so each
 device can use either; a mixed pair runs at DSperate's pace. The DraStic overlay
@@ -123,6 +127,31 @@ Delete previous Netplay.pak folder. Extract new one.
 
 ## Usage
 
+The app's top level is Host, Join and Configuration. Configuration holds:
+
+- **Cores**: Base (NextUI's base install) and Extras list each system with a
+  check when it plays over Netplay on this device, two checks in instanced or
+  dual mode, a hollow circle when its pak is here but not set up, and a dash
+  when it is not installed. The hint under the selection says how it plays.
+- **Settings**: Quick Menu, Netplay Icon in NextUI (Always, Active Session,
+  Disabled), Use compatibility cores, Add Netplay to GameSwitcher and Disable
+  Wi-Fi Power Saving. LEFT and RIGHT change a setting.
+- **Debug**: Force compatibility cores, Verbose debugging logs, Run checks and
+  Restore Wi-Fi.
+- **Turn Off Netplay**.
+
+The hint text lives in `Netplay.pak/pak_hints.json` and can be edited on the
+card; a key ending in `.<platform>` (`ready.my282`) replaces the plain one on
+that platform.
+
+### Quick menu (experimental)
+
+`Configuration > Settings > Quick Menu` draws a small Netplay menu over NextUI's
+own menus (it needs Varnish.pak, which Netplay offers to install). Turning it on
+makes START open it; select the row again to choose your own buttons: hold
+them, let go, and save. Up to three buttons; MENU, power and volume cannot be
+used, and buttons NextUI also uses will do both things.
+
 ### Netplay (LAN)
 
 1. From one device, open the .pak and select 'Host.' If ad hoc is recognized as being available for your device, the option will be available. 
@@ -145,7 +174,7 @@ bindings remain as inactive passthroughs.
 
 ### Disable Wi-Fi Power Saving (experimental)
 
-`Tools > Settings > Disable Wi-Fi Power Saving` is off by default. When it is
+`Configuration > Settings > Disable Wi-Fi Power Saving` is off by default. When it is
 on, the radio's power saving is turned off while a session is armed and put
 back when the session ends. Power saving makes the radio sleep between beacons,
 which adds latency to the small per-frame packets netplay sends.
@@ -156,10 +185,10 @@ until the next reboot; after one, Netplay shows the setting as off again.
 
 ### Game Switcher shortcut (experimental)
 
-`Tools > Settings > Add Netplay to GameSwitcher` is off by default. When it is
-enabled, Netplay appears at the top of NextUI's Game Switcher. Opening it starts
-the Netplay app, where you can host, join, or press X to end an armed
-session.
+`Configuration > Settings > Add Netplay to GameSwitcher` is off by default. When it is
+enabled, Netplay appears at the top of NextUI's Game Switcher. Opening it shows
+the quick menu over NextUI when that is on (below), and otherwise starts the
+Netplay app, where you can host, join, or press X to end an armed session.
 
 While a session is armed, the Game Switcher intentionally contains only the
 Netplay shortcut. Your normal history is backed up and restored, with Netplay
