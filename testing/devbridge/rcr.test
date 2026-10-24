@@ -1,6 +1,6 @@
 # River City Ransom - shared-screen lockstep (FCEUmm), two players.
 #
-# Title -> 2 PLAYERS (each device drives its own player) -> 90 seconds of
+# 2P PLAY (each device drives its own player) -> 90 seconds of
 # random brawling from both -> both logs must show agreement.
 #
 # Presses are held 0.3 s: one that begins and ends inside a link stall is never
@@ -12,13 +12,15 @@ WAIT 3000
 guest:OPEN_GAME FC "Nintendo Entertainment System (FC)/River City Ransom (USA).zip"
 all:WAIT_FOR game 30000
 WAIT 10000
-all:SCREEN rcr-title
 
-# Title -> mode list; Player 1 picks 2 PLAYERS.
-host:TRM sh {helpers}/keys.sh start:0.3:2.5
+# The game opens on "1P PLAY / 2P PLAY". Player 1 picks 2P, keeps the
+# default message speed, and skips SLICK's letter, which lands back on the
+# title; Start there begins the two-player game (ALEX and RYAN both on the
+# HUD).
+host:TRM sh {helpers}/keys.sh down:0.3:0.8
 all:SCREEN rcr-modes
-host:TRM sh {helpers}/keys.sh down:0.3:1 start:0.3:4
-all:SCREEN rcr-start
+host:TRM sh {helpers}/keys.sh start:0.3:2.5 start:0.3:3
+all:SCREEN rcr-title
 host:TRM sh {helpers}/keys.sh start:0.3:3
 all:SCREEN rcr-play
 
