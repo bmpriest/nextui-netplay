@@ -92,6 +92,15 @@ do_install() {
 		} > "$_target/launch.sh"
 		chmod 755 "$_target/launch.sh"
 
+		# minarch reads default.cfg (and default-<device>.cfg) from the pak
+		# getEmuPath found, which is now this one. Without copies the core runs
+		# on its own option defaults instead of NextUI's: a stub on one device
+		# and a stock pak on the other then emulate differently (FCEUmm's
+		# sndquality changed every River City Ransom checkpoint).
+		for _cfg in "$_pak"/default*.cfg; do
+			[ -f "$_cfg" ] && cp "$_cfg" "$_target/"
+		done
+
 		echo "$_target" >> "$MANIFEST.new"
 		_n=$((_n + 1))
 		# A shared launcher (my282 pre-alignment) names every core it can select,
@@ -139,6 +148,12 @@ do_uninstall() {
 		[ -n "$_target" ] || continue
 		if is_ours "$_target/launch.sh"; then
 			rm -f "$_target/launch.sh"
+			# The default configs we copied, while they still match the pak's.
+			_tag="$(basename "$_target" .pak)"
+			for _cfg in "$_target"/default*.cfg; do
+				[ -f "$_cfg" ] || continue
+				cmp -s "$_cfg" "$SYSTEM_PATH/paks/Emus/$_tag.pak/$(basename "$_cfg")" && rm -f "$_cfg"
+			done
 			# Only if we left it empty - never take a directory with other content.
 			rmdir "$_target" 2>/dev/null
 			_n=$((_n + 1))

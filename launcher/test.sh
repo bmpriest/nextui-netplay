@@ -202,6 +202,9 @@ exec minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$1"
 EOF
 chmod 755 "$SYSTEM_PATH/paks/Emus/GBA282.pak/launch.sh"
 
+printf 'gpsp_frameskip = disabled\n' > "$SYSTEM_PATH/paks/Emus/GBA.pak/default.cfg"
+printf 'gpsp_frameskip = disabled\n' > "$SYSTEM_PATH/paks/Emus/GBA.pak/default-brick.cfg"
+
 echo "== install"
 "$NP/launcher/install-stubs.sh" install > "$ROOT/install.log" 2>&1 || bad "installer exited non-zero"
 [ -f "$ROOT/Emus/$PLATFORM/GBA.pak/launch.sh" ] && ok "GBA stub installed"  || bad "GBA stub missing"
@@ -211,6 +214,9 @@ echo "== install"
 	|| bad "my282 case-statement pak missed (anchored EMU_EXE match?)"
 check "EXTRAS pak untouched" "$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")" "$FBN_BEFORE"
 grep -q "skip FBN (fbneo)" "$ROOT/install.log" && ok "EXTRAS pak reported as uncovered" || bad "no report for FBN"
+cmp -s "$ROOT/Emus/$PLATFORM/GBA.pak/default.cfg" "$SYSTEM_PATH/paks/Emus/GBA.pak/default.cfg" \
+	&& cmp -s "$ROOT/Emus/$PLATFORM/GBA.pak/default-brick.cfg" "$SYSTEM_PATH/paks/Emus/GBA.pak/default-brick.cfg" \
+	&& ok "stub carries the pak's default configs" || bad "stub lost default.cfg - minarch would run core defaults"
 
 echo
 echo "== launch with no session (must be byte-identical to stock)"

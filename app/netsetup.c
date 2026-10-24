@@ -1884,11 +1884,12 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	 * route creates a directory per system under Emus/<PLATFORM>/ and is kept
 	 * only for devices where mounting is unavailable. bind-mount.sh clears any
 	 * stubs left by a previous version before mounting, so the two can never be
-	 * active at once - an SD stub would shadow the mount and wrap twice. */
+	 * active at once - an SD stub would shadow the mount and wrap twice.
+	 * Its output goes to this log: the fallback is only worth taking knowingly. */
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' SYSTEM_PATH='%s/.system/%s' "
 	         "USERDATA_PATH='%s/.userdata/%s' "
-	         "sh '%s/launcher/bind-mount.sh' up >/dev/null 2>&1",
+	         "sh '%s/launcher/bind-mount.sh' up 1>&2",
 	         ns_sd, ns_platform, ns_sd, ns_platform, ns_sd, ns_platform, ns_pak);
 	if (system(cmd) != 0) {
 		ns_log("bind mounts unavailable - falling back to launch stubs\n");
