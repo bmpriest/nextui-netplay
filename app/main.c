@@ -309,8 +309,9 @@ static int draw_two_col(SDL_Surface* s, const Row* r, int y, bool selected) {
 /* The rows, scrolled so the selection is visible above footer_lines lines of
  * small text (hint, status) and the button bar. */
 static int draw_rows(SDL_Surface* s, int sel, int* top, int y, int footer_lines) {
+	/* Down to the top of the button bar, less the footer's lines. */
 	int line_h = TTF_FontHeight(font.small) + SCALE1(4);
-	int bottom = s->h - SCALE1(PADDING + PILL_SIZE + PADDING) - SCALE1(6) - line_h * footer_lines;
+	int bottom = s->h - SCALE1(PADDING + PILL_SIZE) - SCALE1(2) - line_h * footer_lines;
 	int visible = (bottom - y) / SCALE1(PILL_SIZE);
 	if (visible < 1) visible = 1;
 	if (visible > row_count) visible = row_count;
@@ -726,7 +727,7 @@ static void build_rows(void) {
 }
 
 static int draw_footer(SDL_Surface* s, int sel, int y) {
-	y += SCALE1(6);
+	y += SCALE1(2);
 	if (sel >= 0 && sel < row_count && rows[sel].hint[0])
 		y = draw_wrapped(s, rows[sel].hint, y, COLOR_GRAY, 2);
 	if (status[0]) y = draw_wrapped(s, status, y, COLOR_GRAY, 1);
