@@ -186,7 +186,17 @@ log "watching (host $HOST, every ${INTERVAL}s, act after $FAILS_NEEDED failures)
 
 fails=0
 checks=0
-while [ $checks -lt $MAX_CHECKS ]; do
+while :; do
+	# The backstop is for a watchdog whose session went away without taking the
+	# record with it. While a session is still armed this is the only thing that
+	# would notice the host leaving, so keep watching: an evening's session ran
+	# past the old hard 8 h stop, the host ended it an hour later, and the guest
+	# sat on the dead network until the app was opened (2026-10-26).
+	if [ $checks -ge $MAX_CHECKS ]; then
+		[ -f "$NETPLAY_STATE/session" ] || break
+		log "still armed after $checks checks - watching on"
+		checks=0
+	fi
 	sleep $INTERVAL
 	checks=$((checks + 1))
 
