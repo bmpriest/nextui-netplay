@@ -43,6 +43,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -194,33 +195,60 @@ class Device:
 
 class Tunnel:
     """Local port -> target:22 through `via`, which keeps its LAN address
-    while it serves the ad hoc network."""
+    while it serves the ad hoc network. A tunnel that drops (a missed
+    keepalive on a busy link ended one mid-test) is reopened on the same
+    port by a watcher thread, so DevBridge's next command finds it again."""
 
     def __init__(self, via, via_address, target_ip):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
-        argv = ["ssh", *via.ssh_base(), "-N", "-o", "ExitOnForwardFailure=yes",
-                "-L", f"127.0.0.1:{self.port}:{target_ip}:22", "root@" + via_address]
-        self.proc = subprocess.Popen(argv, env=via.ssh_env(), stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
+        self.argv = ["ssh", *via.ssh_base(), "-N", "-o", "ExitOnForwardFailure=yes",
+                     "-o", "ServerAliveCountMax=12",
+                     "-L", f"127.0.0.1:{self.port}:{target_ip}:22", "root@" + via_address]
+        self.env = via.ssh_env()
+        self.name = f"tunnel via {via} to {target_ip}"
+        self.closed = False
+        self.restarts = 0
+        self.proc = self._start()
         deadline = time.time() + 20
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise Infra(f"tunnel via {via} to {target_ip} exited")
-            try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=1):
-                    return
-            except OSError:
-                time.sleep(0.5)
+                raise Infra(f"{self.name} exited")
+            if self._open():
+                threading.Thread(target=self._watch, daemon=True).start()
+                return
+            time.sleep(0.5)
         self.close()
-        raise Infra(f"tunnel via {via} to {target_ip} never opened")
+        raise Infra(f"{self.name} never opened")
+
+    def _start(self):
+        return subprocess.Popen(self.argv, env=self.env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+
+    def _open(self):
+        try:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=1):
+                return True
+        except OSError:
+            return False
+
+    def _watch(self):
+        while not self.closed:
+            if self.proc.poll() is not None and not self.closed:
+                self.restarts += 1
+                log(f"{self.name} dropped; reopening (restart {self.restarts})")
+                time.sleep(1)
+                if not self.closed:
+                    self.proc = self._start()
+            time.sleep(1)
 
     def alive(self):
         return self.proc.poll() is None
 
     def close(self):
+        self.closed = True
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -384,9 +412,19 @@ class Runner:
     # devices
 
     def prepare(self, devices):
+        # A run stopped mid-cell can leave a host armed and its guest on the
+        # host's network: end what is reachable, then wait for the rest.
+        for d in devices:
+            if d.reachable(20):
+                d.sh(f"mkdir -p {HELPERS}", check=True)
+                d.push(HERE / "device/ctl.sh", f"{HELPERS}/ctl.sh")
+                if d.ctl("status", check=False).get("armed") == "1":
+                    log(f"{d}: a session was left armed; ending it")
+                    d.ctl("end", check=False)
         for d in devices:
             if not d.reachable(20):
-                raise Infra(f"{d}: not reachable")
+                log(f"{d}: not reachable yet; waiting for it to come home")
+                self.wait_home(d, 420)
             rc, out = d.sh("for p in /mnt/SDCARD/Tools/*/Netplay.pak; do [ -d $p ] && basename $(dirname $p); done",
                            check=True)
             d.platform = out.split()[0]
@@ -438,7 +476,7 @@ class Runner:
         the front when it exits."""
         names = "minarch.elf drastic dsperate"
         rc, out = d.sh(f"pidof {names}", timeout=15)
-        if not out.strip():
+        if rc != 0 or not re.fullmatch(r"[\d\s]+", out.strip() or "x"):
             return
         log(f"{d}: stopping a game left running ({out.strip()})")
         d.sh(f"killall {names} 2>/dev/null; sleep 3; killall -9 {names} 2>/dev/null; true", timeout=30)
@@ -554,9 +592,11 @@ class Runner:
             host.ctl("end", check=False)
         except Fail as e:
             log(f"teardown: {e}")
+        restarts = sum(t.restarts for t in self.tunnels)
         for t in self.tunnels:
             t.close()
         self.tunnels = []
+        self.last_tunnel_restarts = restarts
         guest.tunnel_port = None
         # The host's session-end message, or the guest's watchdog once the
         # AP is gone, has to bring it home by itself.
@@ -656,6 +696,9 @@ class Runner:
                 res["teardown_error"] = str(e)
                 res["infra"] = res.get("infra") or isinstance(e, Infra)
                 log(f"teardown: {e}")
+            if getattr(self, "last_tunnel_restarts", 0):
+                res["tunnel_restarts"] = self.last_tunnel_restarts
+                self.last_tunnel_restarts = 0
             res["total_s"] = round(time.time() - t0, 1)
             with open(self.out / "results.jsonl", "a") as f:
                 f.write(json.dumps(res) + "\n")

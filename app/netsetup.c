@@ -2533,6 +2533,51 @@ static int station_channel(void) {
 	return freq == 2484 ? 14 : (freq - 2407) / 5;
 }
 
+/* Where the station's supplicant last saw one of its networks (enabled, or
+ * only backing off after failures: TEMP-DISABLED): the strongest scan result
+ * whose SSID it is configured for, or 0. */
+static int station_scan_channel(void) {
+	char ctrl[256], cmd[1024];
+	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return 0;
+	snprintf(cmd, sizeof(cmd),
+	         "{ wpa_cli -p %s -i wlan0 list_networks 2>/dev/null |"
+	         "  awk -F'\t' 'NR>1 && !index($4, \"[DISABLED]\") {print \"N\\t\" $2}';"
+	         "  wpa_cli -p %s -i wlan0 scan_results 2>/dev/null |"
+	         "  awk -F'\t' 'NR>1 {print \"S\\t\" $5 \"\\t\" $2 \"\\t\" $3}'; } |"
+	         " awk -F'\t' 'BEGIN {best = -1000}"
+	         " $1 == \"N\" {want[$2] = 1}"
+	         " $1 == \"S\" && ($2 in want) && $4 + 0 > best {best = $4 + 0; f = $3}"
+	         " END {print f + 0}'",
+	         ctrl, ctrl);
+	FILE* p = popen(cmd, "r");
+	if (!p) return 0;
+	char line[32] = "";
+	int freq = 0;
+	if (fgets(line, sizeof(line), p)) freq = atoi(line);
+	pclose(p);
+	if (freq < 2412 || freq > 2484) return 0;
+	return freq == 2484 ? 14 : (freq - 2407) / 5;
+}
+
+/* The channel an AP must share with the station network. A station between
+ * associations (a lost beacon, a router slow to answer) reads as no channel;
+ * an AP surveyed onto another channel then pinned the one-channel radio there
+ * and the station could not get back to its network for the whole session
+ * (a Brick, 2026-10-26). Wait a little for it, then use where the supplicant
+ * last saw its network; 0 only when there is no station network at all. */
+static int station_home_channel(void) {
+	int ch = station_channel();
+	for (int i = 0; !ch && i < 12 && station_scan_channel(); i++) {
+		sleep(1);
+		ch = station_channel();
+	}
+	if (!ch) {
+		ch = station_scan_channel();
+		if (ch) ns_log("station not associated; following its network's last channel %d\n", ch);
+	}
+	return ch;
+}
+
 /* How the platform started its own supplicant, captured before we kill it.
  *
  * Guessing this is what broke the A30: the restore path assumed
@@ -3016,7 +3061,7 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
-	int ch = station_channel();
+	int ch = station_home_channel();
 	/* Ad Hoc Network Switch: leave the station network so the AP can take the
 	 * quietest channel instead of whatever the router is on. Surveyed now,
 	 * while still associated; the client stack comes down just before hostapd
