@@ -225,6 +225,18 @@ np_assoc_ssid_wpa() {
 	esac
 }
 
+# Make the running supplicant read its config again, which also clears a
+# network's TEMP-DISABLED back-off. A host whose AP held the radio's one channel
+# while the house network moved to another (2026-10-26: the router went from
+# channel 10 to 7 overnight) failed every rejoin, and after the AP was gone the
+# supplicant stayed backed off: enable_network and reassociate did not lift it,
+# reconfigure did. Nothing to do without wpa_cli.
+np_supplicant_reconfigure() {
+	np_have wpa_cli || return 1
+	np_platform_profile
+	wpa_cli -p "$(np_ctrl_dir)" -i "$NP_WIFI_IF" reconfigure >/dev/null 2>&1
+}
+
 # Which association probe this device will actually use: iw, wpa_cli, or none.
 # "none" is the answer that matters - it means nothing here can tell associated
 # from not, which is the state the H700 shipped in and which every timeout in
@@ -560,6 +572,7 @@ wifi-platform.sh)
 	has-ip)         np_has_ip ;;
 	ip)             np_ip ;;
 	ctrl-dir)       np_ctrl_dir ;;
+	supplicant-reconfigure) np_supplicant_reconfigure ;;
 	dhcp-kind)      np_dhcp_kind ;;
 	dhcp-start)     np_dhcp_start "${2:-oneshot}" ;;
 	dhcp-stop)      np_dhcp_stop ;;

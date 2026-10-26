@@ -3006,8 +3006,16 @@ void NS_hotspotStop(void) {
 		ns_log("AP stopped\n");
 		hotspot_running = false;
 		ns_ap_if[0] = '\0';
-		/* The host never took the client stack down, so there is nothing to
-		 * restore here. */
+		/* The host never took the client stack down, but it can still have
+		 * lost the house network: the AP holds the radio's one channel, and if
+		 * the router moves to another mid-session every rejoin fails until the
+		 * supplicant backs off and stops trying, staying off after the AP is
+		 * gone (2026-10-26, a router moving from channel 10 to 7 overnight).
+		 * Ask it to start over. */
+		if (!wifi_link_up()) {
+			ns_log("station not associated after the AP stopped - reconfiguring the supplicant\n");
+			wifi_plat("supplicant-reconfigure");
+		}
 	}
 
 	/* Restore the client stack if we moved it - judged by what the radio is
