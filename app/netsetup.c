@@ -54,6 +54,7 @@ static char joined_ssid[NS_SSID_LEN];  /* recorded into the session so the */
 static char joined_psk[NS_PSK_LEN];    /* launch stub can rejoin per game */
 static NS_ProgressFn ns_progress;      /* lets the UI animate a blocking join */
 static bool file_exists(const char* p);
+static bool hotspot_processes_alive(void);
 
 /* Everything that differs per platform lives in launcher/wifi-platform.sh, and
  * this is how the app reaches it.
@@ -1699,43 +1700,45 @@ bool NS_sessionInfo(NS_SessionInfo* out) {
 	return true;
 }
 
+/* Start a detached netplay-broker.elf with `mode` as its argument (NULL for
+ * the host broker), logging to `log_name` in the state directory. */
+static pid_t spawn_broker(const char* mode, const char* log_name) {
+	char executable[512];
+	snprintf(executable, sizeof(executable), "%s/bin/%s/netplay-broker.elf", ns_pak, ns_platform);
+	if (access(executable, X_OK) != 0) return -1;
+
+	pid_t pid = fork();
+	if (pid != 0) return pid;
+	setsid();
+	char log_path[512];
+	snprintf(log_path, sizeof(log_path), "%s/%s", ns_state, log_name);
+	int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	int null_fd = open("/dev/null", O_RDONLY);
+	if (null_fd >= 0) { dup2(null_fd, STDIN_FILENO); close(null_fd); }
+	if (log_fd >= 0) {
+		dup2(log_fd, STDOUT_FILENO);
+		dup2(log_fd, STDERR_FILENO);
+		if (log_fd > STDERR_FILENO) close(log_fd);
+	}
+	long max_fd = sysconf(_SC_OPEN_MAX);
+	if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
+	for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) close(fd);
+	setenv("SDCARD_PATH", ns_sd, 1);
+	setenv("PLATFORM", ns_platform, 1);
+	execl(executable, executable, mode, (char*)NULL);
+	_exit(127);
+}
+
 bool NS_brokerStart(char* err, int errlen) {
 	if (broker_pid()) return true;
 	char stale[512];
 	snprintf(stale, sizeof(stale), "%s/broker.pid", ns_state); remove(stale);
 	snprintf(stale, sizeof(stale), "%s/broker.status", ns_state); remove(stale);
 
-	char executable[512];
-	snprintf(executable, sizeof(executable), "%s/bin/%s/netplay-broker.elf", ns_pak, ns_platform);
-	if (access(executable, X_OK) != 0) {
-		snprintf(err, errlen, "persistent host broker is missing");
-		return false;
-	}
-
-	pid_t pid = fork();
+	pid_t pid = spawn_broker(NULL, "broker.log");
 	if (pid < 0) {
-		snprintf(err, errlen, "could not start host broker");
+		snprintf(err, errlen, "persistent host broker is missing or could not start");
 		return false;
-	}
-	if (pid == 0) {
-		setsid();
-		char log_path[512];
-		snprintf(log_path, sizeof(log_path), "%s/broker.log", ns_state);
-		int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-		int null_fd = open("/dev/null", O_RDONLY);
-		if (null_fd >= 0) { dup2(null_fd, STDIN_FILENO); close(null_fd); }
-		if (log_fd >= 0) {
-			dup2(log_fd, STDOUT_FILENO);
-			dup2(log_fd, STDERR_FILENO);
-			if (log_fd > STDERR_FILENO) close(log_fd);
-		}
-		long max_fd = sysconf(_SC_OPEN_MAX);
-		if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
-		for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) close(fd);
-		setenv("SDCARD_PATH", ns_sd, 1);
-		setenv("PLATFORM", ns_platform, 1);
-		execl(executable, executable, (char*)NULL);
-		_exit(127);
 	}
 
 	for (int i = 0; i < 30; i++) {
@@ -1764,6 +1767,113 @@ void NS_brokerStop(void) {
 	char path[512];
 	snprintf(path, sizeof(path), "%s/broker.pid", ns_state); remove(path);
 	snprintf(path, sizeof(path), "%s/broker.status", ns_state); remove(path);
+}
+
+/* Ending a session reaches the guests.
+ *
+ * A host that ended its session used to leave its guests armed: on ad hoc they
+ * waited for the watchdog's three strikes to notice the network had gone, and
+ * a guest whose app was reopened first got its WiFi back but kept a session to
+ * a host that no longer existed (2026-10-26). Now the host says so, and the
+ * guest agent (netplay-broker.elf --guest, running for a guest's session) ends
+ * the guest's session and, after an ad hoc one, restores its WiFi.
+ *
+ * One UDP datagram, sent three times: to every guest the host knows of (the
+ * broker's table, and the AP's own station list in case a guest joined since
+ * the broker last looked), and as broadcasts on the AP's subnet and the LAN.
+ * A guest only acts on it from its own session's host address. */
+#define SESSION_END_PORT 55440
+static const char session_end_magic[] = "NETPLAY-END 1";
+
+static void send_session_end(int fd, const char* ip) {
+	struct sockaddr_in to;
+	memset(&to, 0, sizeof(to));
+	to.sin_family = AF_INET;
+	to.sin_port = htons(SESSION_END_PORT);
+	if (inet_pton(AF_INET, ip, &to.sin_addr) != 1) return;
+	sendto(fd, session_end_magic, sizeof(session_end_magic) - 1, 0,
+	       (struct sockaddr*)&to, sizeof(to));
+}
+
+static void notify_guests_session_end(void) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s) || s.role != NS_ROLE_HOST) return;
+	NS_Client clients[NS_MAX_CLIENTS];
+	int stations = NS_hotspotClients(clients, NS_MAX_CLIENTS);
+
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return;
+	int on = 1;
+	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+	for (int round = 0; round < 3; round++) {
+		for (int i = 0; i < s.guest_count; i++) send_session_end(fd, s.guest[i].ip);
+		for (int i = 0; i < stations; i++) send_session_end(fd, clients[i].ip);
+		if (hotspot_processes_alive()) send_session_end(fd, "10.0.0.255");
+		send_session_end(fd, "255.255.255.255");
+		usleep(60 * 1000);
+	}
+	close(fd);
+	ns_log("told the guests the session is over (%d known, %d on the AP)\n", s.guest_count, stations);
+}
+
+bool NS_guestAgentStart(void) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s) || s.role != NS_ROLE_CLIENT) return false;
+	pid_t pid = spawn_broker("--guest", "guest.log");
+	if (pid < 0) { ns_log("guest agent is missing - host session ends will not reach us\n"); return false; }
+	waitpid(pid, NULL, WNOHANG);
+	return true;
+}
+
+/* The guest agent: runs for a guest's session and ends it when the host says
+ * the session is over. Exits on its own once the session is gone some other
+ * way. A second agent for the same session finds the port taken and leaves. */
+int NS_guestAgentRun(void) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s) || s.role != NS_ROLE_CLIENT) return 1;
+	struct in_addr host;
+	if (inet_pton(AF_INET, s.host, &host) != 1) { ns_log("guest agent: no host address\n"); return 1; }
+
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return 1;
+	struct sockaddr_in me;
+	memset(&me, 0, sizeof(me));
+	me.sin_family = AF_INET;
+	me.sin_port = htons(SESSION_END_PORT);
+	me.sin_addr.s_addr = htonl(INADDR_ANY);
+	if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
+		ns_log("guest agent: port %d taken - another agent is watching\n", SESSION_END_PORT);
+		close(fd);
+		return 0;
+	}
+	ns_log("guest agent: watching for the end of the session with %s\n", s.host);
+
+	for (;;) {
+		struct pollfd p = { .fd = fd, .events = POLLIN };
+		int ready = poll(&p, 1, 1000);
+		if (!NS_isArmed()) { ns_log("guest agent: session ended here - exiting\n"); break; }
+		if (ready <= 0) continue;
+
+		char buf[64];
+		struct sockaddr_in from;
+		socklen_t fromlen = sizeof(from);
+		ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+		if (n != (ssize_t)(sizeof(session_end_magic) - 1) || memcmp(buf, session_end_magic, (size_t)n)) continue;
+		if (from.sin_addr.s_addr != host.s_addr) continue;
+
+		ns_log("guest agent: the host ended the session\n");
+		/* After an ad hoc session the host's network is going away with it:
+		 * put the station network back now rather than after the watchdog's
+		 * strikes, and before ending the session, whose own restore only runs
+		 * while the host's network is still there. */
+		char record[512];
+		snprintf(record, sizeof(record), "%s/wifi_restore", ns_state);
+		if (file_exists(record)) NS_wifiRestore();
+		NS_endSession();
+		break;
+	}
+	close(fd);
+	return 0;
 }
 
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
@@ -1932,6 +2042,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 
 void NS_disarm(void) {
 	char cmd[1200];
+	notify_guests_session_end();
 	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
@@ -1959,7 +2070,6 @@ void NS_disarm(void) {
 }
 
 static void wifi_client_leave_adhoc(void);
-static bool hotspot_processes_alive(void);
 
 /* Drop the session but leave the launch stubs installed.
  *
@@ -1971,6 +2081,7 @@ void NS_endSession(void) {
 	char cmd[1200];
 	NS_SessionInfo session;
 	bool was_client = NS_sessionInfo(&session) && session.role == NS_ROLE_CLIENT;
+	if (!was_client) notify_guests_session_end();
 	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
@@ -2670,6 +2781,15 @@ NS_Recovery NS_wifiRecoverIfStranded(void) {
 		char hook[512];
 		snprintf(hook, sizeof(hook), "%s/wifi_restore_hook", ns_state);
 		remove(hook);
+	}
+	/* A guest whose host's network is gone has no session left to play,
+	 * whatever its session file says - as the watchdog decides when it is
+	 * the one to notice. Reopening the app first used to bring WiFi back and
+	 * leave the guest armed for a host that no longer existed. */
+	NS_SessionInfo s;
+	if (NS_sessionInfo(&s) && s.role == NS_ROLE_CLIENT && s.network[0]) {
+		ns_log("the host's network is gone - ending the guest session\n");
+		NS_endSession();
 	}
 	return back ? NS_RECOVERY_DONE : NS_RECOVERY_FAILED;
 }

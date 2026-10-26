@@ -141,6 +141,11 @@ bool NS_cleanupStaleSession(void);
 /* Host-only detached owner of discovery and compatibility negotiation. */
 bool NS_brokerStart(char* err, int errlen);
 void NS_brokerStop(void);
+/* A guest's session agent (netplay-broker.elf --guest): ends the guest's
+ * session, and restores its WiFi after an ad hoc one, when the host ends the
+ * session. Started once a guest is armed; exits on its own with the session. */
+bool NS_guestAgentStart(void);
+int  NS_guestAgentRun(void);
 
 /* --- settings -----------------------------------------------------------
  *

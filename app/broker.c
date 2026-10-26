@@ -63,8 +63,9 @@ static void publish_status(const char* status_path, const NS_SessionInfo* sessio
 	else remove(temporary);
 }
 
-int main(void) {
+int main(int argc, char* argv[]) {
 	NS_init();
+	if (argc > 1 && !strcmp(argv[1], "--guest")) return NS_guestAgentRun();
 
 	char pid_path[512], status_path[512];
 	snprintf(pid_path, sizeof(pid_path), "%s/broker.pid", NS_statePath());

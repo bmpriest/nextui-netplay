@@ -1515,6 +1515,8 @@ static void do_arm(NS_Role role, const char* peer) {
 		}
 		else
 			core_note[0] = '\0';
+		/* So the host's Turn off reaches this device even with the app closed. */
+		NS_guestAgentStart();
 	}
 
 	int adhoc = NS_hotspotActive();
