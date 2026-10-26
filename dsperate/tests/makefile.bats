@@ -485,11 +485,12 @@ shortcut_table() {
 @test "the Netplay fixes are in the series, after upstream's patches" {
     for p in 0101-lan-join-retry 0102-input-open-every-controller \
         0103-lan-configurable-timeout 0104-wifi-late-transport-begin \
-        0105-gameswitcher-network-session 0106-pad-map-virtual; do
+        0105-gameswitcher-network-session 0106-pad-map-virtual \
+        0107-io-vcount-writes; do
         [ -f "$REPO_ROOT/patches/$p.patch" ] || return 1
     done
     # git apply runs in glob order, so these land on top of upstream's.
-    [ "$(ls "$REPO_ROOT"/patches/*.patch | tail -n 1)" = "$REPO_ROOT/patches/0106-pad-map-virtual.patch" ]
+    [ "$(ls "$REPO_ROOT"/patches/*.patch | tail -n 1)" = "$REPO_ROOT/patches/0107-io-vcount-writes.patch" ]
 }
 
 @test "DSPERATE_REPO can be pointed at a local checkout" {

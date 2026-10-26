@@ -114,6 +114,7 @@ The patch builds `layout.cpp` outside LTO on GCC 8 only. Placement runs only whe
 | `0104-wifi-late-transport-begin` | upstreamable bug fix | A transport attached while the radio is on says `begin()`: the Mario Kart "Communication error" (`../docs/dsperate.md`) |
 | `0105-gameswitcher-network-session` | Netplay behaviour | Upstream refuses MENU + SELECT during a network session; here it still leaves for the game switcher, with the battery save and no state |
 | `0106-pad-map-virtual` | Netplay testing | `add_pad_mapping` also maps DevBridge's virtual pad: the built-in body on TrimUI (same ids but the name CRC), `MINUI_PAD_MAP_VIRTUAL` for a second `ANBERNIC-keys` on h700 |
+| `0107-io-vcount-writes` | upstreamable bug fix | VCOUNT writes were dropped. Wireless games use them to line the client's frames up with the host's; without them each session kept a random frame phase, and in most the host's MP command beat the guest's AID setup, so every frame paid two or three exchanges (Mario Kart DS on two Bricks: 40-58 fps by session, 52-54 with this) |
 
 ## Tests
 

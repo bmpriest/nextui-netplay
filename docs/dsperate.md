@@ -62,6 +62,7 @@ to regenerate them.
 | 0104 late transport says `begin()` | The bug that made Mario Kart fail with "Communication error": see below |
 | 0105 game switcher in a session | Upstream refuses MENU + SELECT during a network session; here it leaves for the game switcher with the battery save and no state |
 | 0106 DevBridge's virtual pad | The pak's mapping only reached SDL's first joystick; DSperate now maps the virtual pad too (`MINUI_PAD_MAP_VIRTUAL` on h700) |
+| 0107 VCOUNT writes | Dropped, so each session kept a random frame phase and most paid two or three MP exchanges a frame: see below |
 
 The pad mappings are positional and `pad.face_fix` is off (the kernel codes it
 trusts are not positional on these pads), so a config seeded by the upstream
@@ -80,6 +81,36 @@ when a transport is attached to a radio that is already on.
 That ordering is ordinary under Netplay, because the guest's emulator can start
 before the host's. Upstream's own late-join path (the guest scan that starts
 once the game is on the air) had the same gap.
+
+### The session-to-session slowdown (0107)
+
+On two Bricks the same Mario Kart DS race ran anywhere from 40 to 58 fps
+depending on the session, steady within each. The radio was not it: idle
+round trips were 3 ms at -11 dBm, and the time per MP exchange was the same in
+fast and slow sessions. What differed was the number of exchanges per frame,
+fixed for the whole session: one in the fast ones, two or three in the slow.
+
+Counting the protocol (a diagnostic build, 2026-10-26) showed every extra
+exchange was a retry. The host's command reached the guest while the guest's
+W_AIDLow was 0, so the guest answered with a blank; the host's ack listed it
+as failed and the game sent the command again until a retry landed after the
+guest's game had set its AID for that frame.
+
+On hardware the client's frames are lined up with the host's: Nintendo's
+wireless library writes VCOUNT during VBlank to nudge its display timing to
+the host's. DSperate dropped VCOUNT writes, so the two emulators kept whatever
+frame phase they started with, and in most sessions the host's command came
+before the guest was ready. Mario Kart writes VCOUNT about once a second on
+each console. With 0107 every session ran one exchange per frame and raced at
+52-54 fps (three of three), where before 40-58 (about 49 on average, twelve
+sessions).
+
+What is left is the lockstep itself. Frames now line up as on hardware, so both
+consoles reach each exchange together: the host waits about 5.8 ms (the 3 ms
+round trip plus the guest catching up) and the guest waits for both the
+command and the ack. The occasional unfixed session that raced at 58 fps did so
+because its guest happened to run a little ahead. Further gains would have to
+come from the link's round trip.
 
 ## Measured
 

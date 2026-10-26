@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netplay <netplay@localhost>
+Date: Mon, 26 Oct 2026 02:55:52 -0600
+Subject: [PATCH] io: honour VCOUNT writes
+
+Writes to VCOUNT (0x04000006) were dropped. Nintendo's wireless library uses
+them to line a client's frames up with the host's: written during VBlank
+(GBATEK: valid on lines 202..212), the value becomes the next scanline. Without
+it each local-wireless session kept whatever frame phase it started with, and
+in most the host's MP command reached the guest before its game had set its
+AID for the frame: a blank reply, a failed ack, a resend, two or three times a
+frame. Two Bricks in Mario Kart DS raced at 40-58 fps depending on the session
+(one exchange per frame in a third of them, two or three in the rest); with
+this, one exchange per frame in every session and 52-54 fps.
+
+Applied from the next scanline, as melonDS does. Never pending at line 0,
+where states are taken, so it needs no state field.
+---
+ src/core/gpu/gpu.cpp | 5 +++--
+ src/core/gpu/gpu.h   | 5 +++++
+ src/core/io/io.cpp   | 5 +++++
+ 3 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/gpu/gpu.cpp b/src/core/gpu/gpu.cpp
+index 1a58fe9..0ebf14f 100644
+--- a/src/core/gpu/gpu.cpp
++++ b/src/core/gpu/gpu.cpp
+@@ -55,7 +55,7 @@ Gpu::Gpu(NDS& nds) : engine{Engine2D(nds, 0), Engine2D(nds, 1)}, nds_(nds) {
+ void Gpu::reset() {
+   join_worker();
+   disarm_trap();
+-  line_ = 0; hblank_done_ = false;
++  line_ = 0; next_vcount_ = 0xFFFF; hblank_done_ = false;
+   lazy_frame_ = false; per_line_[0] = per_line_[1] = false;
+   render_next_[0] = render_next_[1] = SCREEN_H; frame_finished_ = false;
+   frame_begun_ = false; screens_on_ = false;
+@@ -478,7 +478,8 @@ void Gpu::async_probe_check(bool at_line0) {
+ void Gpu::on_scanline_start() {
+   prof::Scope hook(prof::GPU_LINE);
+   nds_.io.set_hblank(false);
+-  line_ = static_cast<u16>((line_ + 1) % SCANLINES_PER_FRAME);
++  if (next_vcount_ != 0xFFFF) { line_ = next_vcount_; next_vcount_ = 0xFFFF; }
++  else line_ = static_cast<u16>((line_ + 1) % SCANLINES_PER_FRAME);
+   hblank_done_ = false;
+ 
+   // Display lines evaluate window edges in step_engine; the rest go through the latch.
+diff --git a/src/core/gpu/gpu.h b/src/core/gpu/gpu.h
+index 4785fd4..952687d 100644
+--- a/src/core/gpu/gpu.h
++++ b/src/core/gpu/gpu.h
+@@ -198,6 +198,10 @@ public:
+   void scale_image(int screen, const u32* src);
+   bool scaling() const { return scale_[0].px && scale_[1].px; }
+   u16 line() const { return line_; }
++  // A VCOUNT write (GBATEK: only during lines 202..212): the next scanline is
++  // `v` instead of line_ + 1. Wireless games use it to line their frames up
++  // with the host's. Never pending at line 0, where states are taken.
++  void request_vcount(u16 v) { next_vcount_ = v; }
+ 
+   Engine2D engine[2];
+ 
+@@ -212,6 +216,7 @@ public:
+ private:
+   NDS& nds_;
+   u16 line_ = 0;
++  u16 next_vcount_ = 0xFFFF;   // a VCOUNT write waiting for the next scanline
+   bool hblank_done_ = false;  // this line's HBlank event has run (its render, if any, is behind us)
+   bool frame_begun_ = false;
+   bool screens_on_ = false;   // POWCNT1 bit 0, latched at frame start
+diff --git a/src/core/io/io.cpp b/src/core/io/io.cpp
+index 243cf50..367eda5 100644
+--- a/src/core/io/io.cpp
++++ b/src/core/io/io.cpp
+@@ -1109,6 +1109,11 @@ void Io::write16(Cpu cpu, u32 addr, u16 value) {
+   if (!a9 && addr >= 0x04800000 && addr < 0x04810000) { if (powcnt2 & 2) wifi.write16(addr, value); return; }
+   switch ((addr - 0x04000000u) >> 1) {   // dense index: GCC emits a jump table
+   case 0x2: dispstat[ci(cpu)] = (dispstat[ci(cpu)] & 0x0047) | (value & 0xFFB8); return;   // bit 6 (DSi LCD init flag) is read-only, never set on a DS
++  case 0x3: {   // VCOUNT: honoured only while the current line is 202..212 (GBATEK), from the next scanline
++    const u16 line = static_cast<u16>(value & 0x1FF);
++    if (nds_.gpu.line() >= 202 && nds_.gpu.line() <= 212 && line < 263) nds_.gpu.request_vcount(line);
++    return;
++  }
+   case 0x80: case 0x82: case 0x84: case 0x86: c.timers[(addr - 0x04000100) / 4].reload = value; return;
+   case 0x81: case 0x83: case 0x85: case 0x87: timer_write_control(cpu, (addr - 0x04000102) / 4, value); return;
+   case 0x99: keycnt[ci(cpu)] = value; update_key_irq(); return;
+-- 
+2.55.0
+

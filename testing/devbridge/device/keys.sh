@@ -23,6 +23,9 @@ if [ "$1" = --bg ]; then
 	if command -v setsid >/dev/null 2>&1; then
 		setsid sh "$0" "$@" </dev/null >/dev/null 2>&1 &
 	elif command -v start-stop-daemon >/dev/null 2>&1; then
+		# A pidfile left by an earlier call whose pid now belongs to another
+		# shell would make it refuse to start, so start from none.
+		rm -f "/tmp/netplay-bg.$$.pid"
 		start-stop-daemon -S -b -m -p "/tmp/netplay-bg.$$.pid" -x /bin/sh -- "$0" "$@"
 	else
 		sh "$0" "$@" </dev/null >/dev/null 2>&1 &
