@@ -42,8 +42,8 @@ Nothing below happens without `.userdata/shared/Netplay/session`.
    log is archived to `logs/netplay-games/<game>/<session>/` like the
    minarch wrapper's.
 6. The MP wait bound: 100 ms on a session without an ad hoc network (an
-   access point), DSperate's 25 ms on ad hoc, or `dsp_lan_timeout_ms=<n>` from
-   the session file if present (see the access-point measurements below).
+   access point), 50 ms on ad hoc, or `dsp_lan_timeout_ms=<n>` from the
+   session file if present (see the measurements below).
 
 ## Patches on top of upstream
 
@@ -114,6 +114,24 @@ on. So it is one DS per device over the LAN protocol.
 
 The shipped configuration passes the full test (lobby, race, quit, both logs
 checked) at a 57 fps session average on both devices.
+
+### MP wait on ad hoc: 25 ms against 50 ms
+
+Two Bricks (DSP.pak 0.2.0), `testing/devbridge/dsp-mkds.test`, three runs
+each, 2026-10-26. Timeouts are per device over the whole session; race fps is
+the last seventy seconds.
+
+| MP wait | Timeouts | Race fps | Time waiting | `check.sh` (50 fps) |
+|---|---|---|---|---|
+| 25 ms (DSperate's default) | 120–284 | 40.6–46.3 | 34–43 % | 0 of 3 pass |
+| 50 ms | 8–33 | 44.7–58.2 | 25–38 % | 2 of 3 pass |
+
+A reply that misses 25 ms usually arrives soon after; giving up costs Mario
+Kart a retried exchange, so the longer bound times out about ten times less
+and is faster on average, at the price of a worst-case 50 ms hitch. An earlier
+run the same night at 25 ms had a burst of 50-60 timeouts in ten seconds and
+the game ended the session at kart select. Ad hoc sessions therefore default
+to 50 ms.
 
 - **Use ad hoc.** Through the access point, round trips here have a median of
   10 ms with a long tail (25 % over 25 ms, max ~115 ms). Mario Kart makes

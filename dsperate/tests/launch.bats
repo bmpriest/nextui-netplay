@@ -675,8 +675,14 @@ setup_session() {
     dsp_netplay_args
     [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
     [ "$DSP_RESUME_FLAG" = "--no-autoload" ]
-    # Ad hoc keeps DSperate's own MP wait.
-    [ -z "${DS_LAN_TIMEOUT_MS:-}" ]
+    # Ad hoc waits 50 ms for MP replies, not DSperate's 25.
+    [ "$DS_LAN_TIMEOUT_MS" = "50" ]
+}
+
+@test "a session's own MP wait wins on ad hoc too" {
+    setup_session role=host adhoc_ssid=nextui-TEST dsp_lan_timeout_ms=25
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "25" ]
 }
 
 @test "DSperate taken out of Netplay plays offline in a session" {

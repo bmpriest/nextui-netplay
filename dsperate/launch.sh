@@ -451,14 +451,20 @@ dsp_netplay_args() {
         return 0
         ;;
     esac
-    # How long one MP exchange may hold a frame before it is dropped. DSperate's
-    # default (25 ms) holds on Netplay's ad hoc network (3 ms round trips), but
-    # through an access point a quarter of round trips exceed it and Mario Kart
-    # gives up with a communication error; 100 ms stops that. The session may
-    # carry its own value.
+    # How long one MP exchange may hold a frame before it is dropped. Through
+    # an access point a quarter of round trips exceed DSperate's 25 ms and Mario
+    # Kart gives up with a communication error; 100 ms stops that. Ad hoc gets
+    # 50 ms: on two Bricks (2026-10-26, three Mario Kart races each) 25 ms timed
+    # out 120-284 exchanges per device and raced at 40-46 fps, 50 ms 8-33 and
+    # 44-58 fps; a burst of late replies at 25 ms also ended one session. The
+    # session may carry its own value.
     _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$DSP_NET_SESSION" | head -n 1)"
-    if [ -z "$_timeout" ] && ! grep -q '^adhoc_ssid=' "$DSP_NET_SESSION"; then
-        _timeout=100
+    if [ -z "$_timeout" ]; then
+        if grep -q '^adhoc_ssid=' "$DSP_NET_SESSION"; then
+            _timeout=50
+        else
+            _timeout=100
+        fi
     fi
     case "$_timeout" in
     "" | *[!0-9]*) ;;
