@@ -378,6 +378,12 @@ bool NS_wifiPowerSaveNeedsReload(void) {
 }
 
 bool NS_wifiPowerSaveReload(char* err, int errlen) {
+	/* The reload takes the whole radio down, and on the H700 the AP's wlan1
+	 * with it: a hosted session would lose every guest. */
+	if (hotspot_processes_alive()) {
+		snprintf(err, errlen, "End the hosted session first - the reload stops its network.");
+		return false;
+	}
 	ns_log("reloading the wifi driver with power save off\n");
 	int rc = wifi_plat("powersave-reload off");
 	if (rc == 0) return true;
@@ -2364,7 +2370,79 @@ static bool ap_interface(char* out, int len) {
 		}
 	}
 	pclose(p);
+	if (found) return true;
+
+	/* No iw (the H700): every wireless interface has a phy80211 link in
+	 * sysfs. Its 8821cs driver creates wlan1 for exactly this, in concurrent
+	 * mode, beside the station's wlan0. */
+	DIR* d = opendir("/sys/class/net");
+	if (!d) return false;
+	struct dirent* e;
+	while (!found && (e = readdir(d))) {
+		if (e->d_name[0] == '.' || !strcmp(e->d_name, "wlan0") ||
+		    !strncmp(e->d_name, "mon.", 4) || !strncmp(e->d_name, "p2p", 3)) continue;
+		char phy[320];
+		snprintf(phy, sizeof(phy), "/sys/class/net/%s/phy80211", e->d_name);
+		if (!file_exists(phy)) continue;
+		snprintf(out, len, "%s", e->d_name);
+		found = true;
+	}
+	closedir(d);
 	return found;
+}
+
+/* Two ways to serve the ad hoc network. hostapd where the firmware has it
+ * (TrimUI); otherwise a second wpa_supplicant in AP mode on the AP interface
+ * (the H700, whose wpa_supplicant 2.10 is built with AP support and which has
+ * no hostapd). That one gets its own control socket and pid file, so stopping
+ * the AP never touches the station's supplicant, and is never found by name.
+ * udhcpd likewise: the system's, or the one this pak ships. */
+#define AP_WPA_CONF  "/tmp/netplay_apwpa.conf"
+#define AP_WPA_CTRL  "/tmp/netplay_ap_ctrl"
+#define AP_WPA_PID   "/tmp/netplay_apwpa.pid"
+#define AP_IFACE     "/tmp/netplay_ap_iface"
+
+static bool have_command(const char* name) {
+	char cmd[128];
+	snprintf(cmd, sizeof(cmd), "command -v %s >/dev/null 2>&1", name);
+	return system(cmd) == 0;
+}
+
+static bool ap_via_supplicant(void) { return !have_command("hostapd"); }
+
+/* The AP supplicant's pid, or 0 when it is not running. */
+static int ap_supplicant_pid(void) {
+	FILE* f = fopen(AP_WPA_PID, "r");
+	int pid = 0;
+	if (f) { if (fscanf(f, "%d", &pid) != 1) pid = 0; fclose(f); }
+	if (pid <= 1) return 0;
+	char path[64], comm[32] = "";
+	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+	f = fopen(path, "r");
+	if (!f) return 0;
+	if (!fgets(comm, sizeof(comm), f)) comm[0] = '\0';
+	fclose(f);
+	return !strncmp(comm, "wpa_supplicant", 14) ? pid : 0;
+}
+
+static void ap_supplicant_stop(const char* apif) {
+	int pid = ap_supplicant_pid();
+	if (pid) {
+		char cmd[256];
+		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i %s terminate >/dev/null 2>&1", AP_WPA_CTRL, apif);
+		system(cmd);
+		for (int i = 0; i < 10 && kill(pid, 0) == 0; i++) usleep(300 * 1000);
+		if (kill(pid, 0) == 0) { ns_log("AP supplicant did not exit - killing it\n"); kill(pid, SIGKILL); }
+	}
+	remove(AP_WPA_PID);
+	remove(AP_IFACE);
+}
+
+/* Fills `out` with the udhcpd to run: the system's, else this pak's. */
+static bool udhcpd_command(char* out, int len) {
+	if (have_command("udhcpd")) { snprintf(out, len, "udhcpd"); return true; }
+	snprintf(out, len, "%s/bin/%s/udhcpd", ns_pak, ns_platform);
+	return access(out, X_OK) == 0;
 }
 
 /* hostapd leaves these behind when it is killed rather than stopped, and they
@@ -2434,6 +2512,19 @@ static int station_channel(void) {
 	int freq = 0;
 	if (fgets(line, sizeof(line), p)) freq = atoi(line);
 	pclose(p);
+	if (!freq) {
+		/* No iw (the H700): the station's supplicant knows its frequency. */
+		char ctrl[256], cmd[400];
+		if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
+			snprintf(cmd, sizeof(cmd),
+			         "wpa_cli -p %s -i wlan0 status 2>/dev/null | sed -n 's/^freq=//p' | head -1", ctrl);
+			p = popen(cmd, "r");
+			if (p) {
+				if (fgets(line, sizeof(line), p)) freq = atoi(line);
+				pclose(p);
+			}
+		}
+	}
 	if (freq < 2412 || freq > 2484) return 0;
 	return freq == 2484 ? 14 : (freq - 2407) / 5;
 }
@@ -2450,11 +2541,13 @@ static void wifi_client_stack_down(void) {
 	saved_supplicant[0] = '\0';
 	/* Match on argv[0] only. Matching anywhere in the command line also matches
 	 * the shell running this very search - its own arguments contain the string
-	 * - and whichever /proc entry came first would win. */
+	 * - and whichever /proc entry came first would win. The supplicant serving
+	 * an H700's AP is ours, not the station's, and is skipped. */
 	FILE* p = popen(
 		"for d in /proc/[0-9]*; do "
 		"  a0=$(tr '\\0' '\\n' < $d/cmdline 2>/dev/null | head -1); "
 		"  case \"$a0\" in */wpa_supplicant|wpa_supplicant) "
+		"    tr '\\0' ' ' < $d/cmdline 2>/dev/null | grep -q netplay_apwpa && continue; "
 		"    tr '\\0' ' ' < $d/cmdline 2>/dev/null; echo; break;; "
 		"  esac; "
 		"done 2>/dev/null", "r");
@@ -2819,7 +2912,8 @@ static void wifi_client_leave_adhoc(void) {
  * cleanable. */
 static bool hotspot_processes_alive(void) {
 	return system("pidof hostapd >/dev/null 2>&1") == 0
-	    || system("pidof udhcpd  >/dev/null 2>&1") == 0;
+	    || system("pidof udhcpd  >/dev/null 2>&1") == 0
+	    || ap_supplicant_pid() != 0;
 }
 
 static bool active_hotspot_interface(char* out, int len) {
@@ -2830,7 +2924,15 @@ static bool active_hotspot_interface(char* out, int len) {
 	}
 	if (!hotspot_processes_alive()) return false;
 
-	FILE* conf = fopen("/tmp/netplay_hostapd.conf", "r");
+	/* An H700's AP supplicant records its interface; hostapd's config does. */
+	FILE* conf = fopen(AP_IFACE, "r");
+	if (conf && ap_supplicant_pid()) {
+		if (fscanf(conf, "%63s", out) != 1) out[0] = '\0';
+		fclose(conf);
+		return out[0] != '\0';
+	}
+	if (conf) fclose(conf);
+	conf = fopen("/tmp/netplay_hostapd.conf", "r");
 	char line[128];
 	while (conf && fgets(line, sizeof(line), conf)) {
 		if (sscanf(line, "interface=%63s", out) == 1) break;
@@ -2877,11 +2979,15 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		snprintf(err, errlen, "invalid network name or passphrase");
 		return false;
 	}
-	char cur[128];
-	if (hotspot_running && ns_ap_if[0]
-	    && system("pidof hostapd >/dev/null 2>&1") == 0) {
-		snprintf(cur, sizeof(cur),
-		         "iw dev %s info 2>/dev/null | grep -q 'ssid %s'", ns_ap_if, ssid);
+	char cur[256];
+	bool supplicant_ap = ap_via_supplicant();
+	if (hotspot_running && ns_ap_if[0] &&
+	    (supplicant_ap ? ap_supplicant_pid() != 0 : system("pidof hostapd >/dev/null 2>&1") == 0)) {
+		if (supplicant_ap)
+			snprintf(cur, sizeof(cur), "wpa_cli -p %s -i %s status 2>/dev/null | grep -qx 'ssid=%s'",
+			         AP_WPA_CTRL, ns_ap_if, ssid);
+		else
+			snprintf(cur, sizeof(cur), "iw dev %s info 2>/dev/null | grep -q 'ssid %s'", ns_ap_if, ssid);
 		if (system(cur) == 0) {
 			ns_log("AP already up on %s as %s - keeping it\n", ns_ap_if, ssid);
 			return true;
@@ -2895,8 +3001,10 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		snprintf(err, errlen, "no AP interface on this device - it cannot host ad hoc");
 		return false;
 	}
-	if (system("command -v udhcpd >/dev/null 2>&1") != 0) {
-		/* my282 ships no udhcpd. Without it a client associates and then sits
+	char udhcpd[512];
+	if (!udhcpd_command(udhcpd, sizeof(udhcpd))) {
+		/* my282 ships no udhcpd, and neither does the H700's firmware (this
+		 * pak brings one for it). Without it a client associates and then sits
 		 * with no address, which used to read as a hang. Say so instead. */
 		snprintf(err, errlen, "no udhcpd on this device - it cannot host ad hoc");
 		return false;
@@ -2950,6 +3058,7 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	system("killall -q -9 hostapd 2>/dev/null");
 	system("killall -q udhcpd 2>/dev/null");
 	system("killall -q -9 udhcpd 2>/dev/null");
+	if (supplicant_ap) ap_supplicant_stop(apif);
 	sleep(1);
 
 	/* Reset the interface before handing it to hostapd.
@@ -2967,7 +3076,9 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	drop_monitor_interfaces();
 	snprintf(cmd, sizeof(cmd), "ip link set %s down 2>/dev/null", apif);      system(cmd);
 	snprintf(cmd, sizeof(cmd), "ip addr flush dev %s 2>/dev/null", apif);     system(cmd);
-	snprintf(cmd, sizeof(cmd), "iw dev %s set type managed 2>/dev/null", apif); system(cmd);
+	if (!supplicant_ap) {
+		snprintf(cmd, sizeof(cmd), "iw dev %s set type managed 2>/dev/null", apif); system(cmd);
+	}
 	sleep(1);
 
 	/* Not -B. Its exit status only says it forked, which it does even when the
@@ -2981,20 +3092,43 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		host_switched = true;
 	}
 
-	ns_log("starting AP on %s channel %d (station is on %d)\n", apif, ch, station_channel());
-	system("hostapd /tmp/netplay_hostapd.conf > /tmp/netplay_hostapd.log 2>&1 &");
+	ns_log("starting AP on %s channel %d (station is on %d) with %s\n", apif, ch, station_channel(),
+	       supplicant_ap ? "wpa_supplicant" : "hostapd");
+	if (supplicant_ap) {
+		/* wpa_supplicant's AP mode: mode=2 with a fixed frequency. ap_scan=2
+		 * makes it use the network block as given rather than scanning for it.
+		 * The same AP-ENABLED line lands in the same log as hostapd's. */
+		f = fopen(AP_WPA_CONF, "w");
+		if (!f) { snprintf(err, errlen, "cannot write AP config"); host_switch_back(); return false; }
+		fprintf(f,
+			"ctrl_interface=%s\nap_scan=2\nnetwork={\n\tssid=\"%s\"\n\tmode=2\n\tfrequency=%d\n"
+			"\tkey_mgmt=WPA-PSK\n\tproto=RSN\n\tpairwise=CCMP\n\tgroup=CCMP\n\tpsk=\"%s\"\n}\n",
+			AP_WPA_CTRL, ssid, ch == 14 ? 2484 : 2407 + 5 * ch, psk);
+		fclose(f);
+		f = fopen(AP_IFACE, "w");
+		if (f) { fprintf(f, "%s\n", apif); fclose(f); }
+		remove("/tmp/netplay_hostapd.log");
+		snprintf(cmd, sizeof(cmd), "ip link set %s up 2>/dev/null", apif); system(cmd);
+		snprintf(cmd, sizeof(cmd),
+		         "wpa_supplicant -B -D nl80211 -i %s -c " AP_WPA_CONF " -P " AP_WPA_PID
+		         " -f /tmp/netplay_hostapd.log >/dev/null 2>&1", apif);
+		system(cmd);
+	} else {
+		system("hostapd /tmp/netplay_hostapd.conf > /tmp/netplay_hostapd.log 2>&1 &");
+	}
 
 	bool up = false;
 	for (int i = 0; i < 12 && !up; i++) {
 		sleep(1);
-		if (system("pidof hostapd >/dev/null 2>&1") != 0) break;
+		if (supplicant_ap ? !ap_supplicant_pid() : system("pidof hostapd >/dev/null 2>&1") != 0) break;
 		up = system("grep -q AP-ENABLED /tmp/netplay_hostapd.log 2>/dev/null") == 0;
 	}
 	if (!up) {
 		snprintf(err, errlen, "AP would not start on %s ch%d - see netplay_hostapd.log", apif, ch);
 		ns_log("%s\n", err);
 		system("sed 's/^/[netplay-app]   hostapd: /' /tmp/netplay_hostapd.log 1>&2 2>/dev/null");
-		system("killall -q hostapd 2>/dev/null");
+		if (supplicant_ap) ap_supplicant_stop(apif);
+		else system("killall -q hostapd 2>/dev/null");
 		host_switch_back();
 		return false;
 	}
@@ -3004,11 +3138,13 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	snprintf(cmd, sizeof(cmd), "ip addr add " NS_HOTSPOT_HOST_IP "/24 dev %s 2>/dev/null", apif);
 	system(cmd);
 
-	system("udhcpd /tmp/netplay_udhcpd.conf >/dev/null 2>&1");
+	snprintf(cmd, sizeof(cmd), "%s /tmp/netplay_udhcpd.conf >/dev/null 2>&1", udhcpd);
+	system(cmd);
 	if (system("pidof udhcpd >/dev/null 2>&1") != 0) {
 		snprintf(err, errlen, "AP up but udhcpd would not run - clients get no address");
 		ns_log("%s\n", err);
-		system("killall -q hostapd 2>/dev/null");
+		if (supplicant_ap) ap_supplicant_stop(apif);
+		else system("killall -q hostapd 2>/dev/null");
 		host_switch_back();
 		return false;
 	}
@@ -3169,6 +3305,10 @@ void NS_hotspotStop(void) {
 			sleep(1);
 		}
 
+		/* An H700's AP is its own wpa_supplicant: told to terminate, which
+		 * deauthenticates its stations the same orderly way. */
+		if (ns_ap_if[0]) ap_supplicant_stop(ns_ap_if);
+
 		system("killall -q udhcpd 2>/dev/null");
 		system("killall -q -9 udhcpd 2>/dev/null");
 		/* Put the interface back to a state the next hostapd can configure.
@@ -3259,6 +3399,25 @@ int NS_hotspotClients(NS_Client* out, int max) {
 	char apif[64] = "";
 	active_hotspot_interface(apif, sizeof(apif));
 	if (!apif[0]) return 0;
+
+	if (!have_command("iw")) {
+		/* No station dump without iw (the H700): a guest is anyone holding
+		 * a complete neighbour entry on the AP interface, which a guest that
+		 * took a lease and talked to us does. */
+		FILE* a = fopen("/proc/net/arp", "r");
+		char row[256];
+		int n = 0;
+		while (a && n < max && fgets(row, sizeof(row), a)) {
+			char ip[NS_IP_LEN], flags[16], hw[32], dev[64];
+			if (sscanf(row, "%15s %*s %15s %31s %*s %63s", ip, flags, hw, dev) != 4) continue;
+			if (strcmp(dev, apif) || strcmp(flags, "0x2")) continue;
+			snprintf(out[n].mac, sizeof(out[n].mac), "%s", hw);
+			snprintf(out[n].ip, sizeof(out[n].ip), "%s", ip);
+			n++;
+		}
+		if (a) fclose(a);
+		return n;
+	}
 
 	char cmd[256];
 	snprintf(cmd, sizeof(cmd),

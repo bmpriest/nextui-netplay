@@ -30,6 +30,7 @@ testing/results/*
 .cache/
 bin/*/*.elf
 bin/*/statecheck
+bin/*/udhcpd
 drastic-wifi/build*/obj/
 drastic-wifi/build*/*.stripped.so
 !cores/build-udhcpd.sh
