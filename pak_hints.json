@@ -162,6 +162,10 @@
     "powersave": {
       "on": "Lower latency while armed; uses more battery.",
       "off": "The radio saves power, at some latency."
+    },
+    "adhoc_switch": {
+      "on": "Disconnects from connected Wi-Fi to create Ad Hoc Network on quieter channel.",
+      "off": "Disconnects from connected Wi-Fi to create Ad Hoc Network on quieter channel."
     }
   },
   "chord": {

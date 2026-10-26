@@ -423,6 +423,7 @@ static NS_Settings ns_set = {
 	.simple_client = false,
 	.add_gameswitcher = false,
 	.disable_powersave = false,
+	.adhoc_switch = false,
 	.dsperate = false,
 	.drastic = false,
 	.status_icon   = NS_ICON_OFF,
@@ -558,6 +559,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
+		else if (!strcmp(k, "adhoc_switch")) ns_set.adhoc_switch = v != 0;
 		else if (!strcmp(k, "dsperate")) ns_set.dsperate = v != 0;
 		else if (!strcmp(k, "drastic")) ns_set.drastic = v != 0;
 		else if (!strcmp(k, "status_icon"))
@@ -597,6 +599,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
+	fprintf(f, "adhoc_switch=%d\n", ns_set.adhoc_switch ? 1 : 0);
 	fprintf(f, "dsperate=%d\n", ns_set.dsperate ? 1 : 0);
 	fprintf(f, "drastic=%d\n", ns_set.drastic ? 1 : 0);
 	fprintf(f, "status_icon=%d\n", (int)ns_set.status_icon);
@@ -1956,6 +1959,7 @@ void NS_disarm(void) {
 }
 
 static void wifi_client_leave_adhoc(void);
+static bool hotspot_processes_alive(void);
 
 /* Drop the session but leave the launch stubs installed.
  *
@@ -2628,6 +2632,9 @@ NS_Recovery NS_wifiRecoverIfStranded(void) {
 	char path[512];
 	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
 	if (!file_exists(path)) return NS_RECOVERY_NONE;   /* never moved the stack */
+	/* A host serving its own AP after the Ad Hoc Network Switch is off its
+	 * station network on purpose; ending the session reconnects it. */
+	if (hotspot_processes_alive()) return NS_RECOVERY_NONE;
 
 	bool connected = wifi_associated(NULL);
 	bool has_ip    = wifi_has_ip();
@@ -2712,6 +2719,33 @@ static bool active_hotspot_interface(char* out, int len) {
 	return out[0] != '\0';
 }
 
+/* A host that took the Ad Hoc Network Switch left its station network for the
+ * AP and owes a reconnect. In this process that is host_switched; in an app
+ * reopened mid-session it is the wifi_restore record, which a host only writes
+ * when it switches (a guest's record goes with joined_hotspot / on_own_adhoc). */
+static bool host_switched;
+
+static bool host_owes_reconnect(void) {
+	if (host_switched) return true;
+	if (joined_hotspot || on_own_adhoc()) return false;
+	char path[512];
+	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+	return file_exists(path);
+}
+
+static void host_switch_back(void) {
+	if (!host_switched) return;
+	ns_log("ad hoc switch: back to the station network\n");
+	host_switched = false;
+	if (wifi_client_stack_up()) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+		remove(path);
+		snprintf(path, sizeof(path), "%s/wifi_restore_hook", ns_state);
+		remove(path);
+	}
+}
+
 bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	/* Already serving this network? Leave it alone.
 	 *
@@ -2751,6 +2785,20 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
 	int ch = station_channel();
+	/* Ad Hoc Network Switch: leave the station network so the AP can take the
+	 * quietest channel instead of whatever the router is on. Surveyed now,
+	 * while still associated; the client stack comes down just before hostapd
+	 * starts, so a failure before then leaves WiFi as it was. */
+	bool switch_station = false;
+	if (ch && ns_set.adhoc_switch) {
+		int quiet = quiet_channel();
+		if (quiet) {
+			ns_log("ad hoc switch: leaving the station network on channel %d for channel %d\n",
+			       ch, quiet);
+			ch = quiet;
+			switch_station = true;
+		}
+	}
 	if (!ch) ch = quiet_channel();
 	if (!ch) ch = 1;
 
@@ -2805,6 +2853,14 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	/* Not -B. Its exit status only says it forked, which it does even when the
 	 * channel is rejected - the old "hostapd would not start" branch could never
 	 * fire. Run it in the background and wait for it to say AP-ENABLED. */
+	/* Takes the client stack down the way a guest's join does, leaving the
+	 * same wifi_restore record, so a crash or reboot mid-session still has a
+	 * way back. */
+	if (switch_station) {
+		wifi_client_stack_down();
+		host_switched = true;
+	}
+
 	ns_log("starting AP on %s channel %d (station is on %d)\n", apif, ch, station_channel());
 	system("hostapd /tmp/netplay_hostapd.conf > /tmp/netplay_hostapd.log 2>&1 &");
 
@@ -2819,6 +2875,7 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		ns_log("%s\n", err);
 		system("sed 's/^/[netplay-app]   hostapd: /' /tmp/netplay_hostapd.log 1>&2 2>/dev/null");
 		system("killall -q hostapd 2>/dev/null");
+		host_switch_back();
 		return false;
 	}
 
@@ -2832,6 +2889,7 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		snprintf(err, errlen, "AP up but udhcpd would not run - clients get no address");
 		ns_log("%s\n", err);
 		system("killall -q hostapd 2>/dev/null");
+		host_switch_back();
 		return false;
 	}
 	ns_log("AP up on %s as %s, serving %s\n", apif, ssid, NS_HOTSPOT_HOST_IP);
@@ -3011,8 +3069,12 @@ void NS_hotspotStop(void) {
 		 * the router moves to another mid-session every rejoin fails until the
 		 * supplicant backs off and stops trying, staying off after the AP is
 		 * gone (2026-10-26, a router moving from channel 10 to 7 overnight).
-		 * Ask it to start over. */
-		if (!wifi_link_up()) {
+		 * Ask it to start over. A host that took the Ad Hoc Network Switch
+		 * gave the network up on purpose, and gets its client stack back. */
+		if (host_owes_reconnect()) {
+			host_switched = true;
+			host_switch_back();
+		} else if (!wifi_link_up()) {
 			ns_log("station not associated after the AP stopped - reconfiguring the supplicant\n");
 			wifi_plat("supplicant-reconfigure");
 		}

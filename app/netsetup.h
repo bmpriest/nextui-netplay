@@ -179,6 +179,7 @@ typedef struct {
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
 	bool        disable_powersave; /* radio power save off while a session is armed */
+	bool        adhoc_switch;  /* host: leave the station network for a quieter AP channel */
 	bool        dsperate;      /* DSP.pak installed by this pak for DS local wireless */
 	bool        drastic;       /* local wireless added to the user's NDS.pak (DraStic) */
 	NS_IconMode status_icon;    /* Varnish.pak overlay icon: dim, half lit hosting, lit connected */

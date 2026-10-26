@@ -74,6 +74,19 @@ static int     adhoc_count = 0;
 static int     join_total = 0;      /* peer_count + adhoc_count */
 static NS_Peer* join_at(int i) { return i < peer_count ? &peers[i] : &adhoc[i - peer_count]; }
 
+/* More than one host in reach is rare, so a lone host is joined without a
+ * press: once the list has held exactly one entry for JOIN_AUTO_SETTLE_MS (a
+ * second host's announcement gets that long to turn up), and never sooner
+ * than JOIN_AUTO_MIN_MS after opening the screen. Two or more, or any press of
+ * Up, Down or Y, leaves the choice to the user for the rest of the visit. */
+#define JOIN_AUTO_SETTLE_MS 2500
+#define JOIN_AUTO_MIN_MS    3000
+/* With nothing found, scan for ad hoc networks again this often. A scan holds
+ * the radio for about two seconds, so only while the list is empty. */
+#define JOIN_RESCAN_MS     10000
+static bool   join_auto = false;
+static Uint32 join_opened_at, join_single_since, join_scanned_at;
+
 /* A hotspot can be visible both through its last broadcast announcement and
  * through the WiFi scan. They are two sightings of one host, not two choices.
  * Prefer the announcement: it carries platform metadata and credentials. Mark
@@ -343,7 +356,7 @@ enum { CONF_CORES, CONF_SETTINGS, CONF_DEBUG, CONF_OFF };
 enum { CORES_BASE, CORES_EXTRAS };
 /* "Use simple client" (NS_Settings.simple_client) stays hidden: it was planned
  * but never implemented. The setting is still read and written. */
-enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE };
+enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE, SET_ADHOC_SWITCH };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
 enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE };
 enum { REM_NETPLAY, REM_DEVICE, REM_BACKUP, REM_CANCEL };
@@ -688,6 +701,13 @@ static void build_settings_rows(void) {
 	r = add_row(ROW_VALUE, SET_POWERSAVE, "Disable Wi-Fi Power Saving",
 	            HINT_getf("settings.powersave.%s", c->disable_powersave ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->disable_powersave));
+
+	/* Only where this device can host an ad hoc network at all. */
+	if (NS_canHostAdhoc()) {
+		r = add_row(ROW_VALUE, SET_ADHOC_SWITCH, "Ad Hoc Network Switch",
+		            HINT_getf("settings.adhoc_switch.%s", c->adhoc_switch ? "on" : "off"));
+		snprintf(r->value, sizeof(r->value), "%s", on_off(c->adhoc_switch));
+	}
 }
 
 static void build_debug_rows(void) {
@@ -1384,7 +1404,7 @@ static void render(SDL_Surface* s) {
 			y = draw_line(s, "Looking for a host...", y, COLOR_WHITE, false);
 			y += SCALE1(4);
 			y = draw_line(s, "On WiFi: the host session must still be armed.", y, COLOR_GRAY, true);
-			y = draw_line(s, "Ad hoc: press Y to scan again.", y, COLOR_GRAY, true);
+			y = draw_line(s, "Ad hoc: scans again every 10s; Y scans now.", y, COLOR_GRAY, true);
 		} else {
 			for (int i = 0; i < join_total; i++) {
 				NS_Peer* pr = join_at(i);
@@ -1543,6 +1563,11 @@ static void change_setting(int id, int dir) {
 	case SET_GAMESWITCHER:
 		c->add_gameswitcher = !c->add_gameswitcher;
 		break;
+	case SET_ADHOC_SWITCH:
+		/* Read when a host starts its AP; a session already hosting keeps
+		 * the channel it has. */
+		c->adhoc_switch = !c->adhoc_switch;
+		break;
 	case SET_POWERSAVE:
 		/* Applies to an armed session now, not only from the next game
 		 * launch: Restore is a no-op when nothing was recorded. */
@@ -1589,6 +1614,36 @@ static void change_option(int id) {
 			return;
 		}
 		cores_fresh = false;
+	}
+}
+
+/* Join the host at row i of the Join list - picked with A, or the lone host
+ * joined on its own. */
+static void join_peer(SDL_Surface* s, int i) {
+	NS_Peer* pr = join_at(i);
+	join_auto = false;
+	NS_discoverStop();
+
+	if (pr->hotspot) {
+		char err[96] = "";
+		// Credentials are fixed, so a network found by scan - or an
+		// announcement that predates this build - is still joinable.
+		const char* ssid = pr->ssid[0] ? pr->ssid : NS_ADHOC_SSID;
+		const char* psk  = pr->psk[0]  ? pr->psk  : NS_ADHOC_PSK;
+
+		snprintf(status, sizeof(status), "Joining %s...", ssid);
+		render(s);   // this blocks for a while; say so first
+		if (!NS_hotspotJoin(ssid, psk, err, sizeof(err))) {
+			// NS_hotspotJoin has already put the old network back.
+			snprintf(status, sizeof(status), "%s", err);
+			screen = SCREEN_MENU;
+			return;
+		}
+		// The host's address on its own network is fixed, so we
+		// already know the peer even though its old one is gone.
+		do_arm(NS_ROLE_CLIENT, NS_HOTSPOT_HOST_IP);
+	} else {
+		do_arm(NS_ROLE_CLIENT, pr->ip);
 	}
 }
 
@@ -1751,11 +1806,15 @@ int main(int argc, char* argv[]) {
 					NS_discoverTick(NULL, 0);
 					NS_discoverStart();
 					screen = SCREEN_JOINING;
+					join_auto = true;
+					join_opened_at = SDL_GetTicks();
+					join_single_since = 0;
 					// One scan on entry so an ad hoc host shows up without the
 					// user having to know to press anything.
 					snprintf(status, sizeof(status), "Scanning for ad hoc networks...");
 					render(s);
 					adhoc_count = NS_scanAdhoc(adhoc, NS_MAX_PEERS);
+					join_scanned_at = SDL_GetTicks();
 					status[0] = '\0';
 					break;
 				}
@@ -2145,49 +2204,50 @@ int main(int argc, char* argv[]) {
 			join_total = peer_count + adhoc_count;
 			if (peer_sel >= join_total) peer_sel = join_total ? join_total - 1 : 0;
 
-			if (PAD_justPressed(BTN_UP) && join_total)   { peer_sel = (peer_sel + join_total - 1) % join_total; dirty = 1; }
-			if (PAD_justPressed(BTN_DOWN) && join_total) { peer_sel = (peer_sel + 1) % join_total; dirty = 1; }
-			if (PAD_justPressed(BTN_B)) { NS_discoverStop(); screen = SCREEN_MENU; dirty = 1; }
+			if (PAD_justPressed(BTN_UP) && join_total)   { join_auto = false; peer_sel = (peer_sel + join_total - 1) % join_total; dirty = 1; }
+			if (PAD_justPressed(BTN_DOWN) && join_total) { join_auto = false; peer_sel = (peer_sel + 1) % join_total; dirty = 1; }
+			if (PAD_justPressed(BTN_B)) { join_auto = false; NS_discoverStop(); screen = SCREEN_MENU; dirty = 1; break; }
 
-			/* A scan costs ~2s and briefly steals the radio, so it is on demand
-			 * rather than on a timer - discovery keeps updating meanwhile. */
-			if (PAD_justPressed(BTN_Y)) {
+			/* A scan costs ~2s and briefly steals the radio: on demand, or on a
+			 * timer only while nothing has been found - discovery keeps
+			 * updating meanwhile. */
+			Uint32 now = SDL_GetTicks();
+			bool pressed_y = PAD_justPressed(BTN_Y);
+			if (pressed_y) join_auto = false;
+			if (pressed_y || (join_total == 0 && now - join_scanned_at >= JOIN_RESCAN_MS)) {
 				snprintf(status, sizeof(status), "Scanning for ad hoc networks...");
 				render(s);
 				adhoc_count = NS_scanAdhoc(adhoc, NS_MAX_PEERS);
+				join_scanned_at = now = SDL_GetTicks();
 				int scanned_count = adhoc_count;
 				dedupe_adhoc();
 				join_total = peer_count + adhoc_count;
-				snprintf(status, sizeof(status), "%d ad hoc network(s) found.", scanned_count);
+				if (pressed_y) snprintf(status, sizeof(status), "%d ad hoc network(s) found.", scanned_count);
+				else status[0] = '\0';
 				dirty = 1;
 			}
 
-			if (PAD_justPressed(BTN_A) && join_total) {
-				NS_Peer* pr = join_at(peer_sel);
-				NS_discoverStop();
-
-				if (pr->hotspot) {
-					char err[96] = "";
-					// Credentials are fixed, so a network found by scan - or an
-					// announcement that predates this build - is still joinable.
-					const char* ssid = pr->ssid[0] ? pr->ssid : NS_ADHOC_SSID;
-					const char* psk  = pr->psk[0]  ? pr->psk  : NS_ADHOC_PSK;
-
-					snprintf(status, sizeof(status), "Joining %s...", ssid);
-					render(s);   // this blocks for a while; say so first
-					if (!NS_hotspotJoin(ssid, psk, err, sizeof(err))) {
-						// NS_hotspotJoin has already put the old network back.
-						snprintf(status, sizeof(status), "%s", err);
-						screen = SCREEN_MENU;
+			if (join_auto) {
+				if (join_total == 1) {
+					if (!join_single_since) { join_single_since = now; dirty = 1; }
+					NS_Peer* only = join_at(0);
+					snprintf(status, sizeof(status), "Joining %s - B to cancel.",
+					         only->scanned ? only->ssid : only->ip);
+					if (now - join_single_since >= JOIN_AUTO_SETTLE_MS &&
+					    now - join_opened_at >= JOIN_AUTO_MIN_MS) {
+						join_peer(s, 0);
 						dirty = 1;
 						break;
 					}
-					// The host's address on its own network is fixed, so we
-					// already know the peer even though its old one is gone.
-					do_arm(NS_ROLE_CLIENT, NS_HOTSPOT_HOST_IP);
 				} else {
-					do_arm(NS_ROLE_CLIENT, pr->ip);
+					if (join_single_since) { join_single_since = 0; status[0] = '\0'; dirty = 1; }
+					/* Two or more: the user picks, for the rest of this visit. */
+					if (join_total > 1) { join_auto = false; status[0] = '\0'; dirty = 1; }
 				}
+			}
+
+			if (PAD_justPressed(BTN_A) && join_total) {
+				join_peer(s, peer_sel);
 				dirty = 1;
 			}
 			break;
