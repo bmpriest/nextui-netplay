@@ -32,3 +32,4 @@ bin/*/*.elf
 bin/*/statecheck
 drastic-wifi/build*/obj/
 drastic-wifi/build*/*.stripped.so
+!cores/build-udhcpd.sh

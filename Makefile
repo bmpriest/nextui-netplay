@@ -1,4 +1,4 @@
-.PHONY: cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
+.PHONY: udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -374,6 +374,38 @@ nds-wifi-a30-pak: nds-pak nds-wifi-hooks
 
 nds-wifi-paks: nds-wifi-a30-pak
 
+# BusyBox udhcpd for the platforms whose firmware has no DHCP server but can
+# serve an ad hoc network (the H700 runs its AP through wpa_supplicant). One
+# applet, built in the pinned toolchain image (the H700 shares tg5040's
+# compiler and sysroot); the tarball is checked against its published SHA-256.
+BUSYBOX_VERSION  := 1.36.1
+BUSYBOX_SHA256   := b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
+BUSYBOX_TARBALL  := $(CORE_SRC_ROOT)/busybox-$(BUSYBOX_VERSION).tar.bz2
+UDHCPD_PLATFORMS := h700
+
+$(BUSYBOX_TARBALL):
+	@mkdir -p "$(CORE_SRC_ROOT)"
+	curl -fsSL -o "$@.part" "https://busybox.net/downloads/busybox-$(BUSYBOX_VERSION).tar.bz2"
+	echo "$(BUSYBOX_SHA256)  $@.part" | sha256sum -c - >/dev/null
+	mv "$@.part" "$@"
+
+# The toolchain image has no bzip2, so the container gets a plain tar.
+$(BUSYBOX_TARBALL:.bz2=): $(BUSYBOX_TARBALL)
+	bzip2 -dkc "$<" > "$@"
+
+udhcpd: $(BUSYBOX_TARBALL:.bz2=)
+	@for p in $(UDHCPD_PLATFORMS); do \
+		mkdir -p bin/$$p; \
+		docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src \
+			$(TG5040_TOOLCHAIN) sh cores/build-udhcpd.sh "$(BUSYBOX_TARBALL:.bz2=)" bin/$$p/udhcpd || exit 1; \
+		printf "   %-7s %s\n" "$$p" "$$(du -h bin/$$p/udhcpd | cut -f1)"; \
+	done
+
+check-udhcpd:
+	@for p in $(UDHCPD_PLATFORMS); do \
+		test -x "bin/$$p/udhcpd" || { echo "missing bin/$$p/udhcpd - run 'make udhcpd' first"; exit 1; }; \
+	done
+
 # Stage and package the measurement pak for one platform, laid out as it sits on
 # the card so the zip is self-describing: unpack it at the SD root and the pak
 # and its ROM folder land where they belong. Same shape as gblc-pak.
@@ -548,7 +580,7 @@ test:
 # shipped and is the pak's whole UI.)
 ###########################################################
 
-BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-dsp check-nds check-varnish
+BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-dsp check-nds check-varnish check-udhcpd
 
 dist: dist-base dist-compatibility dist-full
 	@echo
@@ -610,6 +642,9 @@ dist-base: $(BASE_DIST_CHECKS)
 		cp bin/$$p/netplay-wifips.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay-quickmenu.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		done
+	@for p in $(UDHCPD_PLATFORMS); do \
+		cp bin/$$p/udhcpd "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
+	done
 	@chmod 755 "$(BASE_STAGE)/$(PAK)/launch.sh" "$(BASE_STAGE)/$(PAK)/launcher"/*
 	@find "$(BASE_STAGE)" -name '.DS_Store' -delete
 	@cd "$(BASE_STAGE)" && zip -q -r "../Netplay.pak.zip" "$(PAK)" -x '*/.*'
