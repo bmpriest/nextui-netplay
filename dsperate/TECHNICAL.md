@@ -11,7 +11,7 @@ Upstream publishes prebuilt aarch64 tarballs, and neither can load on any device
 | `dsperate-vX-linux-aarch64-static.tar.gz` | `GLIBC_2.38` | Only libstdc++/libgcc are static; glibc is still dynamic |
 | `dsperate-vX-linux-aarch64.tar.gz` | `GLIBC_2.38` | Also needs `GLIBCXX_3.4.30`, i.e. a GCC 12 libstdc++ |
 
-Upstream CI builds on `ubuntu-24.04-arm`, glibc 2.39. The devices are at 2.33 (TrimUI SDK) and 2.35 (H700 stock), and NextUI's own cross toolchain targets 2.28. So the pak cross-compiles a pinned upstream tag in the LoveRetro toolchain images instead.
+Upstream CI builds on `ubuntu-24.04-arm`, glibc 2.39. The devices are at 2.33 (TrimUI SDK) and 2.35 (H700 stock), and NextUI's own cross toolchain targets 2.28. So the pak cross-compiles a pinned upstream tag in the LoveRetro toolchain images instead. In Netplay.pak the images are pinned by digest, to the same ones `build-platforms` uses for the rest of the pak.
 
 ## Toolchains
 
@@ -102,6 +102,19 @@ The patch builds `layout.cpp` outside LTO on GCC 8 only. Placement runs only whe
 
 **`0006-shaders.patch`** is not a workaround either: it wires in the Visual FX page's SHADER PRESET row and the Shaders page under it, described under "The shaders" below. Like 0003 it adds no files, the module being `overlay/minui_shader.{h,cpp}`, `overlay/minui_resample.{h,cpp}` and `overlay/minui_shader_presets.h`. It applies after 0003 and builds on a few of 0003's lines (the `GameSwitcher` action in `input.{h,cpp}`, `fade_out` and the hotkey notice in `main.cpp`), so rebasing 0003 can mean regenerating 0006.
 
+### Netplay.pak's patches
+
+`0101` and up are Netplay.pak's, applied after upstream's by the same rule (`git apply` in glob order). They are `git format-patch` output against v3.0.5 with the overlay copied in and patches up to `0006` applied: regenerate them from such a tree with `git format-patch --zero-commit --start-number 101`. `0106` edits the overlay's `minui.cpp`, `minui_pad.h` and the overlay test; the others edit DSperate's own sources.
+
+| Patch | Kind | Notes |
+| --- | --- | --- |
+| `0101-lan-join-retry` | upstreamable | Non-blocking `--lan-join` that keeps a guest trying until its host's emulator answers ("WAITING FOR HOST") |
+| `0102-input-open-every-controller` | upstreamable | Every mappable pad is opened, not just the first; `pad.face_fix` is per pad |
+| `0103-lan-configurable-timeout` | upstreamable | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS` (default 25 ms, as upstream) and MP wait statistics under `DS_VERBOSE` |
+| `0104-wifi-late-transport-begin` | upstreamable bug fix | A transport attached while the radio is on says `begin()`: the Mario Kart "Communication error" (`../docs/dsperate.md`) |
+| `0105-gameswitcher-network-session` | Netplay behaviour | Upstream refuses MENU + SELECT during a network session; here it still leaves for the game switcher, with the battery save and no state |
+| `0106-pad-map-virtual` | Netplay testing | `add_pad_mapping` also maps DevBridge's virtual pad: the built-in body on TrimUI (same ids but the name CRC), `MINUI_PAD_MAP_VIRTUAL` for a second `ANBERNIC-keys` on h700 |
+
 ## Tests
 
 `make test-native` builds the upstream suite in its own `build/ctest` directory with `-DDSPERATE_TESTS=ON`, so the three shipping builds keep `-DDSPERATE_TESTS=OFF` and never carry test binaries.
@@ -138,6 +151,8 @@ Pinning is all the workflow does. Reviewing the pull request is the rest of the 
 4. Re-measure the ABI table above.
 
 `tests/makefile.bats` asserts the pin is a tag rather than a branch and that the README names it, and `make verify-pin` asserts the checkout matches. To bump by hand, run `scripts/bump-dsperate.sh <tag>`.
+
+Netplay.pak carries neither workflow, so there the bump is by hand: run the script, then `rm -rf src && make dist-tg5040 dist-tg5050 dist-h700` (`DSPERATE_REPO=~/dev/sbcs/cores/DSperate` builds from a local checkout), rebase any of the `01xx` patches that stopped applying, and run `testing/devbridge/dsp-mkds.test` on two devices. Taking a new release of the upstream pak itself means laying its tree over this one and re-applying the Netplay changes: the patches above, the positional bodies and `DSP_MAP_H700_VIRTUAL` in `config/platform.sh`, `face_fix = off` in the profiles, the seed revision and session functions in `launch.sh`, the image digests and this section.
 
 ## The MinUI integration
 
@@ -348,6 +363,8 @@ What the heavier ones cost on this machine's arm64 container, one screen, at 640
 NextUI h700-rc11 changed how its SDL presents the built-in Anbernic pad. Before rc11 the button numbers depended on the model, which is why `config/platform.sh` carries three per-model `DSP_MAP_H700_*` bodies. From rc11, every H700 model reports the TrimUI (tg5040) numbers, L2/R2 become axes 2 and 5, and the pad's GUID changes to `19000000010000000100000000016e01`.
 
 DSperate picks the body by that GUID, as it starts (`MinUi::add_pad_mapping`, with the choice itself in `minui_pad.h`). `dsp_export_pad_mapping` only hands it the bodies, as `MINUI_PAD_MAP` and `MINUI_PAD_MAP_FIXED`, and the GUID to look for, as `MINUI_PAD_FIXED_GUID`. Reading the GUID in `launch.sh` meant running `dsp-pad-guid`, which started SDL a second time on every launch; it is now only there for `--probe`. Once SDL is up, the first joystick's GUID goes in front of the right body and the result goes to `SDL_GameControllerAddMapping`, before the frontend looks for a pad. On the fixed GUID, h700 uses `PROFILE_MAP_FIXED`, which is `DSP_MAP_TRIMUI` or `DSP_MAP_TRIMUI_NOSTICK`; on anything else it keeps the per-model body. The log names the GUID as `pad mapping: <guid> (<name>)`. This is the check NextUI's [Porting NextUI Paks to H700](https://github.com/pvaibhav/NextUI/wiki/Porting-NextUI-Paks-to-H700#built-in-controls-in-sdl) page recommends, and it follows the real state rather than a version number: `SDL_JOYSTICK_H700_FIXED_LAYOUT=0` brings back both the old numbers and the old GUID. `PROFILE_MAP_FIXED` is empty on every other platform, so a TrimUI pad can never take this path.
+
+Netplay.pak's bodies are positional (SDL's `a` is the South button, the one marked B), the convention the pause menu's labels assume, with `pad.face_fix = off`: the kernel codes face_fix checks are not positional on these pads (the Brick's Y reports `BTN_NORTH`). Its seeds are marked `<profile>@3`, so a config seeded by the upstream pak's label-numbered bodies is re-seeded once. Patch `0106` maps DevBridge's virtual pad as a second joystick.
 
 rc11's SDL also ships a built-in mapping for the new GUID, but the pak still adds its own. An added mapping replaces the built-in one for that GUID, and the built-in one does not match the TrimUI bodies the pak uses everywhere else.
 

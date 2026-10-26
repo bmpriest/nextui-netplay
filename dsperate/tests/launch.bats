@@ -39,7 +39,7 @@ setup() {
 @test "the config is seeded from the profile the device maps to" {
     dsp_seed_config
     [ -f "$DSP_CONFIG" ]
-    [ "$(cat "$DSP_DEVICE_FILE")" = "no-sticks" ]
+    [ "$(cat "$DSP_DEVICE_FILE")" = "no-sticks@3" ]
     grep -q "stylus_dpad" "$DSP_CONFIG"
 }
 
@@ -67,7 +67,7 @@ setup() {
     # Pretend the card moved to a device with two sticks.
     dsp_platform_profile tg5040 smartpro
     dsp_seed_config
-    [ "$(cat "$DSP_DEVICE_FILE")" = "two-sticks" ]
+    [ "$(cat "$DSP_DEVICE_FILE")" = "two-sticks@3" ]
     grep -q "original" "$DSP_USERDATA_DIR/dsperate.ini.bak"
     ! grep -q "original" "$DSP_CONFIG"
 }
@@ -619,4 +619,124 @@ fake_nextui() {
     "timing: "*" launch") ;;
     *) return 1 ;;
     esac
+}
+
+# ── Netplay.pak ──────────────────────────────────────────────────────────────
+
+@test "a config seeded by the upstream pak is re-seeded once" {
+    dsp_seed_config
+    echo "# upstream seed" >>"$DSP_CONFIG"
+    echo "no-sticks" >"$DSP_DEVICE_FILE"
+    dsp_seed_config
+    ! grep -q "upstream seed" "$DSP_CONFIG"
+    grep -q "face_fix = off" "$DSP_CONFIG"
+    dsp_seed_config
+    [ "$(cat "$DSP_DEVICE_FILE")" = "no-sticks@3" ]
+}
+
+@test "every profile turns face_fix off: the bodies are positional" {
+    for ini in "$REPO_ROOT"/config/dsperate/*.ini; do
+        grep -q '^face_fix = off$' "$ini" || return 1
+    done
+}
+
+@test "DevBridge's virtual pad body reaches DSperate on h700 only" {
+    [ -z "$(sh -c 'echo "${MINUI_PAD_MAP_VIRTUAL:-}"')" ]
+    dsp_export_pad_mapping
+    [ -z "$MINUI_PAD_MAP_VIRTUAL" ]
+    setup_launch h700 rg35xxh
+    dsp_platform_profile h700 rg35xxh
+    dsp_init_env
+    dsp_export_pad_mapping
+    [ "$MINUI_PAD_MAP_VIRTUAL" = "$DSP_MAP_H700_VIRTUAL" ]
+    [ "$(sh -c 'echo "$MINUI_PAD_MAP_VIRTUAL"')" = "$DSP_MAP_H700_VIRTUAL" ]
+}
+
+@test "no session means no network arguments" {
+    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+}
+
+# A fake Netplay.pak whose pre-launch.sh does nothing, and a session file.
+setup_session() {
+    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
+    NETPLAY_PAK="$BATS_TEST_TMPDIR/Netplay.pak"
+    mkdir -p "$NETPLAY_STATE" "$NETPLAY_PAK/launcher"
+    : >"$NETPLAY_PAK/launcher/pre-launch.sh"
+    printf '%s\n' "$@" >"$NETPLAY_STATE/session"
+    DSP_RESUME_FLAG=""
+    DSP_LOAD_STATE=""
+    unset DS_LAN_TIMEOUT_MS DS_VERBOSE
+}
+
+@test "a host session hosts and boots fresh" {
+    setup_session role=host adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
+    [ "$DSP_RESUME_FLAG" = "--no-autoload" ]
+    # Ad hoc keeps DSperate's own MP wait.
+    [ -z "${DS_LAN_TIMEOUT_MS:-}" ]
+}
+
+@test "DSperate taken out of Netplay plays offline in a session" {
+    setup_session role=host adhoc_ssid=nextui-TEST
+    printf 'dsperate=0\n' >"$NETPLAY_STATE/settings"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+    printf 'dsperate=1\n' >"$NETPLAY_STATE/settings"
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
+}
+
+@test "a guest session joins the host by address" {
+    setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-join 10.0.0.1" ]
+}
+
+@test "a picked slot survives a session" {
+    setup_session role=client peer=10.0.0.1
+    DSP_LOAD_STATE="/x.3.dss"
+    dsp_netplay_args
+    [ "$DSP_LOAD_STATE" = "/x.3.dss" ]
+    [ -z "$DSP_RESUME_FLAG" ]
+}
+
+@test "a session's network arguments reach DSperate as separate words" {
+    setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    stub_dsperate
+    ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/Mario Kart DS.nds"
+    cd "$BIN_DIR"
+    dsp_run_emulator
+    [ "$(cat "$BATS_TEST_TMPDIR/argv.txt")" = "$ROM_PATH
+--fullscreen
+--no-autoload
+--lan-join
+10.0.0.1" ]
+}
+
+@test "a session through an access point waits longer for MP replies" {
+    setup_session role=client peer=192.168.0.2
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "100" ]
+    setup_session role=client peer=192.168.0.2 dsp_lan_timeout_ms=60
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "60" ]
+}
+
+@test "a guest with an unusable host address plays offline" {
+    setup_session role=client "peer=10.0.0.1;reboot"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+    setup_session role=client
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+}
+
+@test "verbose Netplay logs turn on DSperate's" {
+    setup_session role=host verbose_logs=1
+    dsp_netplay_args
+    [ "$DS_VERBOSE" = "1" ]
 }

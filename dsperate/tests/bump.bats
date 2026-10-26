@@ -59,11 +59,5 @@ pinned_tag() {
     [[ "$output" == *"README.md was not updated"* ]]
 }
 
-@test "the workflow pins through the bump script" {
-    wf="$REPO_ROOT/.github/workflows/update-dsperate.yaml"
-    [ -f "$wf" ]
-    grep -q "scripts/bump-dsperate.sh" "$wf"
-    # make clone applies every patch and fails on the first that drifts; the
-    # PR body reports it rather than the workflow guessing.
-    grep -q "make clone" "$wf"
-}
+# The upstream pak's update-dsperate workflow is not carried in Netplay.pak;
+# a tag bump here is manual (TECHNICAL.md).

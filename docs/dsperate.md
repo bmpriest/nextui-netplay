@@ -14,7 +14,7 @@ hardware.
 
 | Piece | Where | What it does |
 |---|---|---|
-| `dsperate/` | this repo | Builds DSP.pak: upstream DSperate pinned by commit, plus `patches/`, launcher, pad profiles |
+| `dsperate/` | this repo | Builds DSP.pak: minui-nintendo-dsperate-pak 0.2.0 (DSperate v3.0.5, its pause menu and shaders) plus Netplay's `patches/01xx`, launcher and pad profiles |
 | `make cores-dsp` | Makefile | Builds tg5040, tg5050 and h700, stages `dist/dsp/<platform>/DSP.pak` (one platform's binaries each) |
 | `cores/dsp/<platform>/DSP.pak` | in Netplay.pak | The payload `pak-manage.sh` installs |
 | `launcher/pak-manage.sh dsp` | in Netplay.pak | Install / status / ignore / restore, shared with MGBA.pak (`pak-manage.sh mgba`) |
@@ -47,19 +47,27 @@ Nothing below happens without `.userdata/shared/Netplay/session`.
 
 ## Patches on top of upstream
 
-`dsperate/patches/` is a `git am` series against the pinned commit. The
-Makefile fails if any patch stops applying.
+`dsperate/` is [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak)
+0.2.0, which builds DSperate v3.0.5 with its own patches (`0002`-`0006`: GCC 8
+workarounds, the MinUI integration, the shaders) and the pause menu in
+`overlay/`. Netplay's patches are `0101` and up, applied after upstream's. The
+Makefile fails if any patch stops applying. `dsperate/TECHNICAL.md` says how
+to regenerate them.
 
 | Patch | Why |
 |---|---|
-| 0001 GCC 8 NEON workaround | The NextUI toolchains are GCC 8.3, which miscompiles one NEON scaler (kept from minui-nintendo-dsperate-pak) |
-| 0002 MinUI integration | Power button, game-switcher slot thumbnails/markers, `emu.state_key=rom`, minarch-style screenshots; rebased onto upstream main. In a network session the game-switcher hotkey writes no state |
-| 0003 non-blocking `--lan-join` | A failed join was final, and Netplay starts the two devices independently. The guest now keeps trying from the frame loop (a "WAITING FOR HOST" toast) and goes live when the host's emulator answers |
-| 0004 every controller | Only the first pad was opened, so DevBridge's virtual pad (and Bluetooth pads) were ignored. Face-button correction is now per pad |
-| 0005 configurable MP wait | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS` (default 25 ms, as upstream) and wait statistics under `DS_VERBOSE` |
-| 0006 late transport says `begin()` | The bug that made Mario Kart fail with "Communication error": see below |
+| 0101 non-blocking `--lan-join` | A failed join was final, and Netplay starts the two devices independently. The guest now keeps trying from the frame loop (a "WAITING FOR HOST" toast) and goes live when the host's emulator answers |
+| 0102 every controller | Only the first pad was opened, so DevBridge's virtual pad (and Bluetooth pads) were ignored. Face-button correction is now per pad |
+| 0103 configurable MP wait | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS` (default 25 ms, as upstream) and wait statistics under `DS_VERBOSE` |
+| 0104 late transport says `begin()` | The bug that made Mario Kart fail with "Communication error": see below |
+| 0105 game switcher in a session | Upstream refuses MENU + SELECT during a network session; here it leaves for the game switcher with the battery save and no state |
+| 0106 DevBridge's virtual pad | The pak's mapping only reached SDL's first joystick; DSperate now maps the virtual pad too (`MINUI_PAD_MAP_VIRTUAL` on h700) |
 
-### The communication-error bug (0006)
+The pad mappings are positional and `pad.face_fix` is off (the kernel codes it
+trusts are not positional on these pads), so a config seeded by the upstream
+pak is re-seeded once (seed marker `<profile>@3`).
+
+### The communication-error bug (0104)
 
 `MpTransport::begin()` tells the other consoles this console's radio is on.
 The host needs it before it will wait for that console's MP replies. It was

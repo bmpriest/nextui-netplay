@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netplay <netplay@localhost>
+Date: Sun, 25 Oct 2026 19:38:58 -0600
+Subject: [PATCH 105/106] minui: the game switcher hotkey leaves a network
+ session without a state
+
+Upstream refuses the hotkey outright while a network session is live. Netplay
+players leave a session through the launcher's game switcher, so the hotkey
+still quits there; it only skips the state, which nothing could resume, and
+keeps the battery save.
+---
+ src/frontend/sdl/main.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
+index e021f2b..d14cafd 100644
+--- a/src/frontend/sdl/main.cpp
++++ b/src/frontend/sdl/main.cpp
+@@ -3712,14 +3712,16 @@ sdl_ready:
+         // leave it a picture, and mark that the switcher should open. Same
+         // guards as the save-state hotkey, plus a recording, which the quit
+         // would end anyway.
+-        if (net_live) { std::fprintf(stderr, "state: not during a network session\n"); break; }
+         if (save_readonly) { std::fprintf(stderr, "state: not during a replay\n"); break; }
+         if (log.writing()) { std::fprintf(stderr, "state: not while recording\n"); break; }
+         // This and the auto state on the way out take a while, and nothing
+         // feeds the device meanwhile; stop it rather than let it run dry
+         // and stutter. The quit follows either way.
+         audio.pause(true);
+-        if (save_state_file(nds, state_path(nds, session.states_dir, state_slot, session.rom_path), display.current_layout())) {
++        // A network session still leaves, but without a state: nothing could
++        // resume the conversation it froze. The battery save still goes down.
++        if (net_live) flush_save();
++        else if (save_state_file(nds, state_path(nds, session.states_dir, state_slot, session.rom_path), display.current_layout())) {
+           flush_save();
+           minui_slot_saved(state_slot);
+         }
+-- 
+2.55.0
+

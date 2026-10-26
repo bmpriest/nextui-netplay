@@ -96,13 +96,14 @@ all:SCREEN nds-mk-race-start
 
 # A minute of racing, then both quit so each launcher archives its log:
 # DraStic through its own menu (MENU, UP, UP, A, held on the device by keys.sh
-# so no press is lost in the tunnel), DSperate with MENU+A.
+# so no press is lost in the tunnel), DSperate through its pause menu (a MENU
+# tap, UP wraps to Quit, A).
 all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
 WAIT 30000
 all:SCREEN nds-mk-race-30s
 WAIT 32000
 all:SCREEN nds-mk-race-60s
-guest:TRM sh {helpers}/keys.sh menu+a:0.4:0
+guest:TRM sh {helpers}/keys.sh menu:0.12:0.8 up:0.12:0.4 a:0.12:0
 host:TRM sh {helpers}/keys.sh menu:0.2:2 up:0.15:0.7 up:0.15:0.7 a:0.15:0
 all:WAIT_FOR devbridge 45000
 host:TRM sh {helpers}/check.sh dsp mariokart 45

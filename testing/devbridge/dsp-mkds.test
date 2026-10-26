@@ -79,7 +79,8 @@ host:TRM sh {helpers}/keys.sh down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.
 WAIT 15000
 all:SCREEN dsp-mk-race-start
 
-# A minute of racing on both, then both quit (MENU+A) so DSP.pak archives the
+# A minute of racing on both, then both quit (a MENU tap opens the pause menu,
+# UP wraps to Quit) so DSP.pak archives the
 # verbose log, which check.sh reads: both radios in the session, and the
 # session's average speed across menus and race.
 all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
@@ -87,7 +88,7 @@ WAIT 30000
 all:SCREEN dsp-mk-race-30s
 WAIT 32000
 all:SCREEN dsp-mk-race-60s
-all:TRM sh {helpers}/keys.sh menu+a:0.4:0
+all:TRM sh {helpers}/keys.sh menu:0.12:0.8 up:0.12:0.4 a:0.12:0
 all:WAIT_FOR devbridge 30000
 host:TRM sh {helpers}/check.sh dsp mariokart 50
 guest:TRM sh {helpers}/check.sh dsp mariokart 50

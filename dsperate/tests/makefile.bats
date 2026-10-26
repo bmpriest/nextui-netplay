@@ -48,12 +48,12 @@ load test_helper
     done
 }
 
-@test "the toolchains come from the LoveRetro registry" {
+@test "the toolchains come from the LoveRetro registry, pinned by digest" {
     for p in $(pak_platforms); do
         u="$(echo "$p" | tr '[:lower:]' '[:upper:]')"
         mk "${u}_IMAGE"
         case "$output" in
-        ghcr.io/loveretro/*-toolchain:*) ;;
+        ghcr.io/loveretro/*-toolchain@sha256:*) ;;
         *) return 1 ;;
         esac
     done
@@ -480,4 +480,19 @@ shortcut_table() {
     # Output stays under build/, which make clean removes.
     mk SCREENSHOTS
     [ "$output" = "$REPO_ROOT/build/screenshots" ]
+}
+
+@test "the Netplay fixes are in the series, after upstream's patches" {
+    for p in 0101-lan-join-retry 0102-input-open-every-controller \
+        0103-lan-configurable-timeout 0104-wifi-late-transport-begin \
+        0105-gameswitcher-network-session 0106-pad-map-virtual; do
+        [ -f "$REPO_ROOT/patches/$p.patch" ] || return 1
+    done
+    # git apply runs in glob order, so these land on top of upstream's.
+    [ "$(ls "$REPO_ROOT"/patches/*.patch | tail -n 1)" = "$REPO_ROOT/patches/0106-pad-map-virtual.patch" ]
+}
+
+@test "DSPERATE_REPO can be pointed at a local checkout" {
+    run make -C "$REPO_ROOT" --no-print-directory print-DSPERATE_REPO DSPERATE_REPO=/somewhere/DSperate
+    [ "$output" = "DSPERATE_REPO=/somewhere/DSperate" ]
 }

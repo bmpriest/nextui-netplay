@@ -14,15 +14,19 @@ PLATFORMS := tg5040 tg5050 h700
 # CMake option changes first, because a renamed switch fails open (CMake ignores
 # unknown -D cache args) and scripts/assert-build.sh is the only thing that
 # would catch it.
-DSPERATE_REPO := https://github.com/beebono/DSperate
+# DSPERATE_REPO can point at a local checkout to build without the network
+# (Netplay.pak: make cores-dsp DSPERATE_REPO=~/dev/sbcs/cores/DSperate).
+DSPERATE_REPO ?= https://github.com/beebono/DSperate
 DSPERATE_TAG  := v3.0.5
 
 # ── Docker toolchain images ───────────────────────────────────────────────────
-TG5040_IMAGE := ghcr.io/loveretro/tg5040-toolchain:latest
-TG5050_IMAGE := ghcr.io/loveretro/tg5050-toolchain:latest
+# Netplay.pak pins these by digest to the same images build-platforms/platforms.conf
+# uses for the rest of the pak, so a green build stays green.
+TG5040_IMAGE := ghcr.io/loveretro/tg5040-toolchain@sha256:f131c6af64029a8723d0ce8d3c2682642f5f091b04714f6beedda9bec18477ab
+TG5050_IMAGE := ghcr.io/loveretro/tg5050-toolchain@sha256:ed4aa21844feb84561abfeb05136c8a46f9c44d1d70c30f0984c11accb34a873
 # The h700 image is the tg5040 image plus a patched mali-fbdev SDL2 under
 # $PREFIX_LOCAL: same cross compiler, same TrimUI SDK sysroot.
-H700_IMAGE   := ghcr.io/loveretro/h700-toolchain:latest
+H700_IMAGE   := ghcr.io/loveretro/h700-toolchain@sha256:bf5d8f9f5442cad789aa77176bc059ec823caefa3258bf30780eee681c777119
 
 # ── Platform specific CPU flags ───────────────────────────────────────────────
 TG5040_CPUFLAGS := -mcpu=cortex-a53 -mtune=cortex-a53

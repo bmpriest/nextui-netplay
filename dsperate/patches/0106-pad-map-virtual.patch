@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: netplay <netplay@localhost>
+Date: Sun, 25 Oct 2026 19:39:56 -0600
+Subject: [PATCH 106/106] minui: map DevBridge's virtual pad as well as the
+ built-in one
+
+The pak's mapping only reached SDL's joystick 0, so DevBridge's virtual pad,
+which Netplay's hardware tests drive, had no mapping. A further pad whose GUID
+matches the built-in pad's but for the name CRC (TrimUI, where the virtual pad
+copies the built-in ids) takes the same body; a second ANBERNIC-keys on H700
+takes MINUI_PAD_MAP_VIRTUAL. Anything else stays SDL's.
+---
+ src/frontend/sdl/minui.cpp   | 21 +++++++++++++++++++++
+ src/frontend/sdl/minui_pad.h | 16 ++++++++++++++++
+ tests/minui_menu_test.cpp    | 17 +++++++++++++++++
+ 3 files changed, 54 insertions(+)
+
+diff --git a/src/frontend/sdl/minui.cpp b/src/frontend/sdl/minui.cpp
+index 4f70a82..5b45980 100644
+--- a/src/frontend/sdl/minui.cpp
++++ b/src/frontend/sdl/minui.cpp
+@@ -131,6 +131,27 @@ void MinUi::add_pad_mapping() {
+   }
+   std::fprintf(stderr, "pad mapping: %s (%s)\n", guid, name ? name : "Controller");
+   setenv("MINUI_PAD_BUTTONS", m.buttons.c_str(), 1);
++
++  // DevBridge's virtual pad, the one further pad the pak can vouch for. The
++  // menu's controls stay the built-in pad's.
++  const std::string first_guid = guid;
++  const std::string first_body = m.fixed ? fixed_body : body;
++  const char* virtual_body = std::getenv("MINUI_PAD_MAP_VIRTUAL");
++  for (int i = 1; i < SDL_NumJoysticks(); ++i) {
++    char g[33] = {};
++    SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), g, sizeof g);
++    const char* n = SDL_JoystickNameForIndex(i);
++    const std::string b = minui_pad::extra_body(first_guid, g, n ? n : "", first_body, virtual_body ? virtual_body : "");
++    if (b.empty()) {
++      if (first_guid != g) std::fprintf(stderr, "pad: leaving %s (%s) to SDL's own mappings\n", g, n ? n : "Controller");
++      continue;
++    }
++    const minui_pad::Mapping extra = minui_pad::choose(g, n ? n : "", b, "", "");
++    if (SDL_GameControllerAddMapping(extra.sdl.c_str()) < 0)
++      std::fprintf(stderr, "pad mapping: SDL refused %s: %s\n", g, SDL_GetError());
++    else
++      std::fprintf(stderr, "pad mapping: %s (%s)\n", g, n ? n : "Controller");
++  }
+ }
+ 
+ void MinUi::mark(const char* what) const {
+diff --git a/src/frontend/sdl/minui_pad.h b/src/frontend/sdl/minui_pad.h
+index 554812f..6b7e3a1 100644
+--- a/src/frontend/sdl/minui_pad.h
++++ b/src/frontend/sdl/minui_pad.h
+@@ -50,4 +50,20 @@ inline Mapping choose(const std::string& guid, const std::string& name, const st
+   return m;
+ }
+ 
++// The body for a further pad, after the built-in one (SDL's joystick 0) took
++// `first_body`; empty leaves it to SDL's own mappings. DevBridge's virtual
++// pad copies the built-in pad's bus, vendor, product and version on TrimUI,
++// so its GUID differs only in the name CRC (the first 8 hex digits) and the
++// same body fits. On H700 it is a second "ANBERNIC-keys" with numbering of
++// its own, `virtual_body`. A pad with the first one's GUID needs nothing:
++// SDL applies one mapping to every pad with that GUID.
++inline std::string extra_body(const std::string& first_guid, const std::string& guid, const std::string& name,
++                              const std::string& first_body, const std::string& virtual_body) {
++  if (guid.empty() || guid == first_guid) return "";
++  if (guid.size() > 8 && first_guid.size() > 8 && guid.compare(8, std::string::npos, first_guid, 8) == 0)
++    return first_body;
++  if (!virtual_body.empty() && name == "ANBERNIC-keys") return virtual_body;
++  return "";
++}
++
+ } // namespace ds::sdl::minui_pad
+diff --git a/tests/minui_menu_test.cpp b/tests/minui_menu_test.cpp
+index e62d755..6b6191f 100644
+--- a/tests/minui_menu_test.cpp
++++ b/tests/minui_menu_test.cpp
+@@ -1227,6 +1227,22 @@ void test_pad_mapping() {
+   CHECK(pad::choose("", "Pad", body, "", "").buttons.empty());
+ }
+ 
++void test_pad_extra_body() {
++  const std::string first = "0300a3845e0400008e02000014010000";
++  const std::string body = "a:b0,b:b1";
++  const std::string virt = "a:b5,b:b4";
++  // TrimUI: DevBridge's pad differs only in the name CRC and shares the body.
++  CHECK(pad::extra_body(first, "03008ece5e0400008e02000014010000", "Xbox 360 Controller", body, virt) == body);
++  // H700: a second ANBERNIC-keys with its own ids takes the virtual body.
++  CHECK(pad::extra_body("19000000010000000100000000016e01", "06000000414e4245524e49432d6b6500", "ANBERNIC-keys",
++                        body, virt) == virt);
++  CHECK(pad::extra_body(first, "06000000414e4245524e49432d6b6500", "ANBERNIC-keys", body, "").empty());
++  // The first pad's own GUID already has its mapping; anything else is SDL's.
++  CHECK(pad::extra_body(first, first, "Xbox 360 Controller", body, virt).empty());
++  CHECK(pad::extra_body(first, "050000004c050000cc09000000810000", "Wireless Controller", body, virt).empty());
++  CHECK(pad::extra_body(first, "", "Pad", body, virt).empty());
++}
++
+ // ---------------------------------------------------------------------------
+ // The screenshot's name: NextUI's getDisplayName, then its map.txt alias
+ 
+@@ -1602,6 +1618,7 @@ int main() {
+   test_shortcuts_modifier();
+   test_shortcuts_defaults();
+   test_pad_mapping();
++  test_pad_extra_body();
+   test_display_name();
+   test_screenshot_notice_switch();
+   test_notice_timing();
+-- 
+2.55.0
+

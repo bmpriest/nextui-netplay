@@ -1,6 +1,8 @@
-# minui-nintendo-dsperate-pak
+# DSP.pak (Netplay.pak's DSperate build)
 
 A MinUI Emu Pak for Nintendo DS, wrapping the standalone [DSperate](https://github.com/beebono/DSperate) emulator (version 3.0.5).
+
+This is [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) 0.2.0 by josegonzalez, with the changes Netplay.pak needs for DS local wireless: a patch series for DSperate's LAN play, positional pad mappings, DevBridge's virtual pad, and a launcher that joins an armed Netplay session. Netplay.pak installs it from Configuration > Cores > Extras > DSP. See [../docs/dsperate.md](../docs/dsperate.md) for the Netplay side.
 
 DSperate reimplements DraStic's JIT and NEON rendering techniques with an ARM to AArch64 recompiler, a threaded software rasteriser, save states, Action Replay cheats and RetroAchievements. Unlike DraStic it needs no BIOS dump to play games.
 
@@ -21,10 +23,11 @@ On `h700`, NextUI rc11 changed the button numbers SDL apps see. The pak detects 
 
 ## Installation
 
+Normally Netplay.pak installs it (and restores whatever was there before when the setting is turned off). By hand:
+
 1. Mount your MinUI SD card.
-2. Download the latest release from Github. It will be named `DSP.pak.zip`.
-3. Copy the zip file to `/Emus/$PLATFORM/DSP.pak.zip`.
-4. Extract the zip in place, then delete the zip file.
+2. Build it (`make dist` here, or `make cores-dsp` in Netplay.pak for one pak per platform).
+3. Copy `dist/DSP.pak` to `/Emus/$PLATFORM/DSP.pak`.
 5. Confirm that there is a `/Emus/$PLATFORM/DSP.pak/launch.sh` file on your SD card.
 6. Create a folder at `/Roms/Nintendo DS (DSP)` and place your roms in this directory.
 7. Unmount your SD Card and insert it into your MinUI device.
@@ -222,15 +225,21 @@ To find the numbers of buttons the pak does not use yet, create an empty `probe.
 - `make screenshots` draws every page of the pause menu, in the MinUI and NextUI looks and at every panel size the pak supports, and a test screen through every shader preset, into `build/screenshots/`. No device is needed.
 - `make release` produces `dist/DSP.pak.zip`.
 
-A scheduled workflow opens a pull request when DSperate publishes a new release. See "Bumping the upstream version" in TECHNICAL.md.
+Netplay.pak does not carry the upstream pak's scheduled bump workflow; see "Bumping the upstream version" in TECHNICAL.md.
 
 See [TECHNICAL.md](TECHNICAL.md) for the build pipeline, the ABI floors, the toolchain workarounds and how to bump the upstream version.
+
+## Local wireless (Netplay)
+
+With a Netplay session armed, `launch.sh` re-joins the session's network, adds `--lan-host Netplay` on the session's host and `--lan-join <host>` on the guest, boots fresh (`--no-autoload`) unless a slot was picked, and pins the `performance` CPU governor until the game exits. In the game's own wireless menu one player creates a group and the other joins. MENU + SELECT still leaves for the game switcher during a session, but writes no state, since nothing could resume the conversation it froze. Without a session nothing changes.
+
+The pad mappings are positional (SDL's `a` is the button marked B), which is also how the pause menu names the face buttons, and `pad.face_fix` is off: the kernel codes it checks are not positional on these pads.
 
 ## Credits
 
 - @beebono for DSperate
 - kleinrein for rgds-core's screen shaders, and jdgleaver, Gigaherz, Greg Hogan, hunterk, Pokefan531, Themaister, ShadX, Hyllian and Sp00kyFox for the shaders it ships. The NextUI team for its shader presets, and Fes, zadpos, decavoid, Team XBMC, Stefanos A., guest(r), Andrea Mazzoleni, davej and the other authors of the shaders NextUI ships. See `THIRD_PARTY.md`.
-- anyone else I'm missing
+- @josegonzalez for minui-nintendo-dsperate-pak, which this build, its pause menu and launcher come from
 
 ## License
 

@@ -48,8 +48,9 @@ between two devices. Each device runs its own DS with its own screens and save;
 the DS radio is carried over the Netplay session's network.
 
 Select **DSP (DSperate)** in **Configuration > Cores > Extras**. That installs
-Netplay's bundled DSP.pak, a build of the [DSperate](https://github.com/beebono/DSperate)
-emulator, backing up any DSP.pak, saves and states that were already there.
+Netplay's bundled DSP.pak (minui-nintendo-dsperate-pak 0.2.0, with its pause
+menu and shaders, on [DSperate](https://github.com/beebono/DSperate) v3.0.5),
+backing up any DSP.pak, saves and states that were already there.
 Selecting it again offers to remove it from Netplay (the pak stays and plays
 offline), remove it from the device, or restore the backup. Put your games in
 `Roms/Nintendo DS (DSP)`. No BIOS is needed.

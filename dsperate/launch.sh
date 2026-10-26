@@ -101,7 +101,11 @@ dsp_export_pad_mapping() {
     # priority and matches the TrimUI pads.
     MINUI_PAD_MAP_FIXED="${PROFILE_MAP_FIXED:-}"
     MINUI_PAD_FIXED_GUID="$DSP_H700_FIXED_GUID"
-    export MINUI_PAD_MAP MINUI_PAD_MAP_FIXED MINUI_PAD_FIXED_GUID
+    # DevBridge's virtual pad, which Netplay's hardware tests drive: on H700 a
+    # second "ANBERNIC-keys" with numbering of its own. On TrimUI it copies
+    # the built-in pad's ids and DSperate gives it the same body.
+    MINUI_PAD_MAP_VIRTUAL="${PROFILE_MAP_VIRTUAL:-}"
+    export MINUI_PAD_MAP MINUI_PAD_MAP_FIXED MINUI_PAD_FIXED_GUID MINUI_PAD_MAP_VIRTUAL
 
     # What to call the controls the device labels its own way: the Brick's
     # F1 and F2 are SDL's leftstick and rightstick.
@@ -142,10 +146,16 @@ dsp_seed_config() {
         return 0
     fi
 
+    # Netplay.pak's templates differ from the upstream pak's, so its seeds
+    # carry a revision and a config seeded by anything else is re-seeded
+    # once: 2 made the pad mappings positional and turned face_fix off; 3
+    # moved the face-button hotkeys to match. Later template additions reach
+    # existing configs through dsp_migrate_config instead.
+    _seed="$PROFILE_INI@3"
     if [ -f "$DSP_DEVICE_FILE" ]; then
         _seeded=""
         read -r _seeded <"$DSP_DEVICE_FILE" || true
-        if [ "$_seeded" = "$PROFILE_INI" ]; then
+        if [ "$_seeded" = "$_seed" ]; then
             return 0
         fi
     fi
@@ -165,7 +175,7 @@ dsp_seed_config() {
         -e "s|__CHEATS_PATH__|$DSP_CHEATS_DIR/usrcheat.dat|g" \
         "$_template" >"$DSP_CONFIG"
 
-    echo "$PROFILE_INI" >"$DSP_DEVICE_FILE"
+    echo "$_seed" >"$DSP_DEVICE_FILE"
     sync
 }
 
@@ -369,6 +379,8 @@ dsp_run_emulator() {
     elif [ -n "$DSP_RESUME_FLAG" ]; then
         set -- "$@" "$DSP_RESUME_FLAG"
     fi
+    # shellcheck disable=SC2086 # a deliberate word list
+    set -- "$@" $DSP_NET_ARGS
 
     dsp_mark "emulator starting"
     ./dsperate "$@"
@@ -388,6 +400,148 @@ dsp_mark() {
     echo "timing: $_up $1"
 }
 
+# Netplay.pak integration. With a Netplay session armed, put this console back
+# on the session's network (pre-launch.sh re-joins an ad hoc host) and start
+# DSperate's local wireless as the session's host or guest: the host's DS
+# answers on the LAN in melonDS's protocol, and the guest joins it by address.
+# DSperate keeps a guest trying until the host's emulator is up, so the two
+# devices can launch in either order. Nothing here runs without a session.
+dsp_netplay_args() {
+    DSP_NET_ARGS=""
+    DSP_NET_SESSION=""
+    _np="${NETPLAY_PAK:-$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak}"
+    _state="${NETPLAY_STATE:-$SDCARD_PATH/.userdata/shared/Netplay}"
+    [ -f "$_state/session" ] || return 0
+    # Netplay > Cores > Extras > DSP > "Remove from Netplay" keeps the pak.
+    if grep -q '^dsperate=0$' "$_state/settings" 2>/dev/null; then
+        echo "netplay: DSperate is off in Netplay; playing offline"
+        return 0
+    fi
+    [ -f "$_np/launcher/pre-launch.sh" ] || {
+        echo "netplay: a session is armed but $_np is missing; playing offline"
+        return 0
+    }
+
+    NETPLAY_PAK="$_np"
+    NETPLAY_STATE="$_state"
+    # shellcheck source=/dev/null
+    . "$_np/launcher/pre-launch.sh"
+    # session-cleanup.sh (run by pre-launch.sh) drops a previous boot's session.
+    [ -f "$NETPLAY_STATE/session" ] || return 0
+    DSP_NET_SESSION="$NETPLAY_STATE/session"
+
+    _role="$(sed -n 's/^role=//p' "$DSP_NET_SESSION" | head -n 1)"
+    _peer="$(sed -n 's/^peer=//p' "$DSP_NET_SESSION" | head -n 1)"
+    case "$_role" in
+    host)
+        DSP_NET_ARGS="--lan-host Netplay"
+        ;;
+    client)
+        # The app wrote it; checked again because it reaches a command line.
+        case "$_peer" in
+        *[!0-9.]* | "")
+            echo "netplay: session has no usable host address ($_peer); playing offline"
+            return 0
+            ;;
+        esac
+        DSP_NET_ARGS="--lan-join $_peer"
+        ;;
+    *)
+        echo "netplay: unknown session role '$_role'; playing offline"
+        return 0
+        ;;
+    esac
+    # How long one MP exchange may hold a frame before it is dropped. DSperate's
+    # default (25 ms) holds on Netplay's ad hoc network (3 ms round trips), but
+    # through an access point a quarter of round trips exceed it and Mario Kart
+    # gives up with a communication error; 100 ms stops that. The session may
+    # carry its own value.
+    _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$DSP_NET_SESSION" | head -n 1)"
+    if [ -z "$_timeout" ] && ! grep -q '^adhoc_ssid=' "$DSP_NET_SESSION"; then
+        _timeout=100
+    fi
+    case "$_timeout" in
+    "" | *[!0-9]*) ;;
+    *) export DS_LAN_TIMEOUT_MS="$_timeout" ;;
+    esac
+    # Netplay's verbose logs turn on DSperate's own, which include the MP wait
+    # statistics a communication error has to be diagnosed from.
+    if grep -q '^verbose_logs=1$' "$DSP_NET_SESSION" 2>/dev/null; then
+        export DS_VERBOSE=1 DS_LAN_LOG=1
+    fi
+
+    # The auto state is where this console was when it last quit, not where the
+    # other one is: a session boots fresh unless the player picked a slot.
+    [ -n "$DSP_LOAD_STATE" ] || DSP_RESUME_FLAG="--no-autoload"
+    echo "netplay: $_role session, DSperate args: $DSP_NET_ARGS ${DSP_RESUME_FLAG:-}${DSP_LOAD_STATE:+--load-state $DSP_LOAD_STATE}"
+}
+
+# Local wireless blocks the emulation thread on every MP exchange, and a
+# utilisation-driven governor (schedutil on both TrimUI and H700) reads those
+# waits as idle and clocks down: measured on Mario Kart DS over ad hoc, ~60%
+# speed on schedutil and full speed on performance, on both devices. So a
+# session pins performance and puts back what was there on the way out. The
+# record survives a crash; the next launch restores it before anything else.
+DSP_CPU_RECORD=/tmp/dsp-cpu-restore
+
+dsp_cpu_restore() {
+    [ -f "$DSP_CPU_RECORD" ] || return 0
+    while read -r _gov_file _gov; do
+        case "$_gov_file" in */scaling_governor) ;; *) continue ;; esac
+        [ -n "$_gov" ] && echo "$_gov" >"$_gov_file" 2>/dev/null
+    done <"$DSP_CPU_RECORD"
+    rm -f "$DSP_CPU_RECORD"
+}
+
+dsp_cpu_pin() {
+    dsp_cpu_restore
+    for _gov_file in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+        [ -w "$_gov_file" ] || continue
+        echo "$_gov_file $(cat "$_gov_file")" >>"$DSP_CPU_RECORD"
+        echo performance >"$_gov_file" 2>/dev/null || :
+    done
+}
+
+# On the fbdev tier DSperate triple-buffers /dev/fb0 (640x1440 on H700) and
+# leaves it that way. The next app's menu then pans anywhere in 1440 lines, and
+# DraStic's Mali driver crashes on a NULL when it starts with the pan at 960
+# and shrinks the buffer back to 960 lines under it (2026-10-24: one H700
+# DraStic launch in three after a DSP.pak race). Put the geometry back on the
+# way out; like the CPU record, a crash leaves it for the next launch.
+DSP_FB=/sys/class/graphics/fb0
+DSP_FB_RECORD=/tmp/dsp-fb-restore
+
+dsp_fb_restore() {
+    [ -f "$DSP_FB_RECORD" ] || return 0
+    read -r _size _pan <"$DSP_FB_RECORD"
+    # Size first: the old pan is only valid inside the old size.
+    [ -n "$_size" ] && echo "$_size" >"$DSP_FB/virtual_size" 2>/dev/null
+    [ -n "$_pan" ] && echo "$_pan" >"$DSP_FB/pan" 2>/dev/null
+    rm -f "$DSP_FB_RECORD"
+}
+
+dsp_fb_save() {
+    dsp_fb_restore
+    [ -w "$DSP_FB/virtual_size" ] && [ -w "$DSP_FB/pan" ] || return 0
+    echo "$(cat "$DSP_FB/virtual_size") $(cat "$DSP_FB/pan")" >"$DSP_FB_RECORD"
+}
+
+# NextUI truncates this pak's log on every launch, so with Netplay's verbose
+# logs on, keep a copy per process the way Netplay.pak's minarch wrapper does:
+# logs/netplay-games/<game>/<session id>/<time>-<role>-<pid>.log.
+dsp_archive_netplay_log() {
+    [ -n "${DSP_NET_SESSION:-}" ] || return 0
+    grep -q '^verbose_logs=1$' "$DSP_NET_SESSION" 2>/dev/null || return 0
+    _game="$(basename "$ROM_PATH" | sed 's/[^A-Za-z0-9._-]/_/g')"
+    _sid="$(sed -n 's/^session_id=//p' "$DSP_NET_SESSION" | head -n 1)"
+    _role="$(sed -n 's/^role=//p' "$DSP_NET_SESSION" | head -n 1)"
+    case "$_sid" in *[!0-9A-Fa-f]* | "") _sid=unknown-session ;; esac
+    case "$_role" in host | client) ;; *) _role=unknown ;; esac
+    _dir="$USERDATA_PATH/logs/netplay-games/${_game:-unknown-game}/$_sid"
+    mkdir -p "$_dir" 2>/dev/null || return 0
+    cp "$LOGS_PATH/$PAK_NAME.txt" "$_dir/$(date +%Y%m%d-%H%M%S)-$_role-$$.log" 2>/dev/null || :
+}
+
 cleanup() {
     rm -f /tmp/stay_awake
 
@@ -401,6 +555,9 @@ cleanup() {
         killall -q -9 dsperate 2>/dev/null || true
     fi
 
+    dsp_cpu_restore
+    dsp_fb_restore
+    dsp_archive_netplay_log
     sync
     dsp_mark "synced"
 }
@@ -429,6 +586,12 @@ main() {
     ROM_PATH="$(echo "$1" | sed "s|/media/SDCARD0/|$SDCARD_PATH/|g")"
     if [ -e "$ROM_PATH" ]; then
         ROM_PATH="$(readlink -f "$ROM_PATH")"
+        # On H700 /mnt/SDCARD is itself a symlink (to /mnt/sdcard), so the
+        # resolved path has to be put back under the name the launcher uses.
+        _card="$(readlink -f "$SDCARD_PATH")"
+        case "$ROM_PATH" in
+        "$_card"/*) ROM_PATH="$SDCARD_PATH${ROM_PATH#"$_card"}" ;;
+        esac
     fi
 
     # shellcheck source=/dev/null
@@ -461,6 +624,10 @@ main() {
     fi
 
     dsp_resume_args
+    dsp_cpu_restore
+    dsp_netplay_args
+    [ -n "$DSP_NET_ARGS" ] && dsp_cpu_pin
+    dsp_fb_save
 
     cd "$BIN_DIR" || return 1
     dsp_run_emulator
