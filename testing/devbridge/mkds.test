@@ -21,10 +21,11 @@
 # 0.3 s on another), and launched together the faster one reached its demo
 # first. The host's group then waits, seeking, until the guest arrives.
 #
-# DSperate takes keys.sh's exact holds. DraStic misses short ones and Mario
-# Kart drops the first D-pad press after its menu settles, so DraStic is
-# driven with BTN, second-long gaps and a harmless RIGHT first (see
-# nds-mkds.test for the measurements).
+# Every press is keys.sh's, held on the device for exactly what it says:
+# a DevBridge BTN is two round trips, and through a tunnel to a Brick with a
+# poor link that was seconds and DraStic dropped it. DraStic needs 0.3 s holds
+# (it misses 0.15-0.2 s), and Mario Kart drops the first D-pad press after its
+# menu settles, so a harmless RIGHT goes first, 2 s after the menu shows.
 
 all:WAIT_FOR devbridge 30000
 
@@ -34,23 +35,17 @@ host:WAIT_FOR game 30000
 [host:dsp] host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 25000
 [host:dsp] host:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
 [host:nds] host:VERIFY_WAIT {host_refs}/nds-mk-menu.png 25000
-[host:nds] host:BTN RIGHT
-[host:nds] WAIT 1000
-[host:nds] host:BTN DOWN
-[host:nds] WAIT 1500
+[host:nds] host:TRM sh {helpers}/keys.sh sleep:2 right:0.3:1 down:0.3:1.5
 [host:nds] host:VERIFY_WAIT {host_refs}/nds-mk-menu-multiplayer.png 3000
-[host:nds] host:BTN A
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
 WAIT 4000
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-groups.png 6000
 # Up from the first room wraps to CREATE GROUP.
 [host:dsp] host:TRM sh {helpers}/keys.sh up:0.2:0.8 a:0.2:2
-[host:nds] host:BTN UP
-[host:nds] WAIT 1200
-[host:nds] host:BTN A
-[host:nds] WAIT 2500
+[host:nds] host:TRM sh {helpers}/keys.sh up:0.3:1.2 a:0.3:2.5
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-normal-host.png 6000
 [host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:2
-[host:nds] host:BTN A
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-seeking-host.png 10000
 
 # --- guest: launch, MULTIPLAYER, the host's room ---------------------------
@@ -59,18 +54,15 @@ guest:WAIT_FOR game 30000
 [guest:dsp] guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 25000
 [guest:dsp] guest:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
 [guest:nds] guest:VERIFY_WAIT {guest_refs}/nds-mk-menu.png 25000
-[guest:nds] guest:BTN RIGHT
-[guest:nds] WAIT 1000
-[guest:nds] guest:BTN DOWN
-[guest:nds] WAIT 1500
+[guest:nds] guest:TRM sh {helpers}/keys.sh sleep:2 right:0.3:1 down:0.3:1.5
 [guest:nds] guest:VERIFY_WAIT {guest_refs}/nds-mk-menu-multiplayer.png 3000
-[guest:nds] guest:BTN A
+[guest:nds] guest:TRM sh {helpers}/keys.sh a:0.3:0
 # No check of the empty browser: the host's room may already be listed. A
 # before the room arrives would create a rival group; DraStic's Mario Kart
 # also ignores A for a moment after the row appears.
 guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-rooms-guest.png 20000
 [guest:dsp] guest:TRM sh {helpers}/keys.sh a:0.2:0
-[guest:nds] guest:TRM sh {helpers}/keys.sh sleep:1.5 a:0.15:0
+[guest:nds] guest:TRM sh {helpers}/keys.sh sleep:1.5 a:0.3:0
 WAIT 6000
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-lobby-host.png 10000
 guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-lobby-guest.png 10000
@@ -82,50 +74,28 @@ guest:VERIFY {guest_refs}/{guest_ds}-mk-lobby-guest.png
 
 # --- CUT OFF: the MP command/reply exchange starts ---------------------------
 [host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:0
-[host:nds] host:BTN A
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
 WAIT 10000
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-select-game.png 15000
 guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-select-game.png 15000
 
 # VS, then host Mario, guest Luigi, and karts.
 [host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:0
-[host:nds] host:BTN A
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
 WAIT 4000
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-character.png 8000
 guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-character.png 8000
 [guest:dsp] guest:TRM sh {helpers}/keys.sh right:0.2:0.6 a:0.2:3 a:0.2:0
-[guest:nds] guest:BTN RIGHT
-[guest:nds] WAIT 800
-[guest:nds] guest:BTN A
-[guest:nds] WAIT 3000
-[guest:nds] guest:BTN A
+[guest:nds] guest:TRM sh {helpers}/keys.sh right:0.3:0.8 a:0.3:3 a:0.3:0
 [host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:3 a:0.2:0
-[host:nds] host:BTN A
-[host:nds] WAIT 4000
-[host:nds] host:BTN A
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:4 a:0.3:0
 WAIT 8000
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-settings-host.png 10000
 guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-settings-guest.png 10000
 
 # Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK. The guest follows.
 [host:dsp] host:TRM sh {helpers}/keys.sh down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.8 a:0.2:4 a:0.2:3 a:0.2:3 a:0.2:0
-[host:nds] host:BTN DOWN
-[host:nds] WAIT 700
-[host:nds] host:BTN DOWN
-[host:nds] WAIT 700
-[host:nds] host:BTN DOWN
-[host:nds] WAIT 700
-[host:nds] host:BTN DOWN
-[host:nds] WAIT 700
-[host:nds] host:BTN DOWN
-[host:nds] WAIT 1200
-[host:nds] host:BTN A
-[host:nds] WAIT 4000
-[host:nds] host:BTN A
-[host:nds] WAIT 3000
-[host:nds] host:BTN A
-[host:nds] WAIT 3000
-[host:nds] host:BTN A
+[host:nds] host:TRM sh {helpers}/keys.sh down:0.3:0.7 down:0.3:0.7 down:0.3:0.7 down:0.3:0.7 down:0.3:1.2 a:0.3:4 a:0.3:3 a:0.3:3 a:0.3:0
 WAIT 15000
 all:SCREEN mk-race-start
 
@@ -138,12 +108,13 @@ all:SCREEN mk-race-30s
 WAIT 32000
 all:SCREEN mk-race-60s
 WAIT 3000
-# DSperate: a MENU tap opens the pause menu, UP wraps to Quit. DraStic: its
-# own menu (MENU, UP, UP, A).
-[host:dsp] host:TRM sh {helpers}/keys.sh menu:0.12:0.8 up:0.12:0.4 a:0.12:0
-[host:nds] host:TRM sh {helpers}/keys.sh menu:0.2:2 up:0.15:0.7 up:0.15:0.7 a:0.15:0
-[guest:dsp] guest:TRM sh {helpers}/keys.sh menu:0.12:0.8 up:0.12:0.4 a:0.12:0
-[guest:nds] guest:TRM sh {helpers}/keys.sh menu:0.2:2 up:0.15:0.7 up:0.15:0.7 a:0.15:0
+# device/quit.sh: each emulator's own menu, then SIGTERM, then SIGKILL (an
+# H700's DraStic can hang in its shutdown). The guest first, so the host's
+# radio is still there while it leaves.
+[guest:dsp] guest:TRM sh {helpers}/quit.sh dsp
+[guest:nds] guest:TRM sh {helpers}/quit.sh nds
+[host:dsp] host:TRM sh {helpers}/quit.sh dsp
+[host:nds] host:TRM sh {helpers}/quit.sh nds
 all:WAIT_FOR devbridge 45000
 host:TRM sh {helpers}/check.sh dsp mariokart {min_fps}
 guest:TRM sh {helpers}/check.sh dsp mariokart {min_fps}

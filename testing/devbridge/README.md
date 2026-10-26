@@ -16,6 +16,7 @@ the netplay logs afterwards say the devices did not play together.
 | `dsp-mkds.test` | DS local wireless (DSP.pak on both) | Mario Kart DS: group, lobby, VS race on Figure-8 Circuit |
 | `nds-mkds.test` | DS local wireless, DraStic hosting, DSperate joining | the same race between the two emulators |
 | `nds-nds-mkds.test` | DS local wireless, DraStic on both | the same race, Brick and RG35XXH both on NDS.pak |
+| `mkds.test` | DS local wireless, any pairing | the same race as a template: DSperate or DraStic on either side, filled in by `matrix.py` (the three above are the fixed-pairing versions it grew from) |
 
 Gameplay is random input from both devices (`device/gameplay.sh`). After play,
 `device/check.sh` reads each device's own netplay log and fails on divergence,

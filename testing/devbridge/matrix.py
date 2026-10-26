@@ -117,8 +117,20 @@ class Device:
     def via_adb(self):
         return bool(self.serial)
 
-    def sh(self, command, timeout=60, check=False, stdin=None):
-        """Run a shell command on the device; returns (rc, output)."""
+    def sh(self, command, timeout=60, check=False, stdin=None, tries=3):
+        """Run a shell command on the device; returns (rc, output). An SSH
+        connection that fails outright (255: a Brick with power save on
+        loses a third of its packets on some APs) is tried again."""
+        for attempt in range(tries):
+            rc, out = self._sh(command, timeout, stdin)
+            if self.via_adb or rc != 255:
+                break
+            time.sleep(5)
+        if check and rc:
+            raise Infra(f"{self}: {command}: rc {rc}: {out.strip()[-300:]}")
+        return rc, out
+
+    def _sh(self, command, timeout, stdin):
         if self.via_adb:
             argv = ["adb", "-s", self.serial, "shell", command]
             env, new_session = None, False
@@ -130,13 +142,8 @@ class Device:
                                timeout=timeout, env=env, start_new_session=new_session,
                                stdin=None if stdin is not None else subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            if check:
-                raise Infra(f"{self}: timed out: {command}")
-            return 124, ""
-        out = r.stdout + r.stderr
-        if check and r.returncode:
-            raise Infra(f"{self}: {command}: rc {r.returncode}: {out.strip()[-300:]}")
-        return r.returncode, out
+            return 124, f"timed out: {command}"
+        return r.returncode, r.stdout + r.stderr
 
     def push(self, local, remote):
         if self.via_adb:
@@ -275,9 +282,17 @@ class Cell:
 
 
 def build_plan(rig, names):
+    """Cells for each named plan, in the order named."""
+    cells = []
+    for name in names:
+        cells += build_one(rig, name)
+    return cells
+
+
+def build_one(rig, name):
     cells = []
     bb, bh = rig.pairs.get("BB"), rig.pairs.get("BH")
-    if "ds" in names:
+    if name == "ds":
         # Power save outermost: on an H700 each change is a driver reload.
         for ps in ("off", "on"):
             orients = []
@@ -289,7 +304,7 @@ def build_plan(rig, names):
                         floor = 45 if net == "adhoc" else 30
                         cells.append(Cell("ds", "mkds.test", host, guest, net, ps,
                                           DS_CHECK, ds=ds, min_fps=floor))
-    if "systems" in names:
+    if name == "systems":
         # The established tests: a Brick hosting an RG35XXH, the references
         # they were recorded with; PlayStation Brick to Brick as well.
         for net in ("adhoc", "wifi"):
@@ -429,6 +444,21 @@ class Runner:
         d.sh(f"killall {names} 2>/dev/null; sleep 3; killall -9 {names} 2>/dev/null; true", timeout=30)
         time.sleep(5)
 
+    def clear_input_binds(self, d):
+        """DevBridge binds the virtual pad over the physical one while DraStic
+        runs. One left behind with no game running made the next launch's
+        mirror copy the pad into itself, and DraStic's menus scrolled on
+        their own (DevBridge 0d13597 fixes the cause)."""
+        rc, out = d.sh("grep -c ' /dev/input/' /proc/mounts", timeout=20)
+        n = int(out.strip() or 0) if out.strip().isdigit() else 0
+        if not n:
+            return 0
+        log(f"{d}: {n} input bind(s) left with no game running; removing")
+        for _ in range(n):
+            d.sh("m=$(grep ' /dev/input/' /proc/mounts | head -1 | cut -d' ' -f2); "
+                 '[ -z "$m" ] || umount -l "$m"', timeout=20)
+        return n
+
     def wait_home(self, d, timeout=180):
         """Back on the house network, reachable directly."""
         d.tunnel_port = None
@@ -448,6 +478,7 @@ class Runner:
             d.ctl("end", check=False)
             self.wait_home(d)
         self.stop_games(d)
+        self.clear_input_binds(d)
         fg = self.foreground(d, log_path)
         if fg != "devbridge":
             # A game that exited by itself takes DevBridge a moment.
@@ -529,8 +560,11 @@ class Runner:
         guest.tunnel_port = None
         # The host's session-end message, or the guest's watchdog once the
         # AP is gone, has to bring it home by itself.
+        # .181, a Brick on this rig, has gone minutes with the house AP not
+        # answering its authentication (no Netplay involved; its twin never
+        # does), so a slow return is measured, and only no return fails.
         t0 = time.time()
-        self.wait_home(guest, 180)
+        self.wait_home(guest, 420)
         for d in (host, guest):
             self.restore_aside(d)
         back = time.time() - t0
@@ -597,6 +631,11 @@ class Runner:
             res["test_s"] = round(time.time() - t_test, 1)
             res["devbridge_rc"] = rc
             res["devbridge_error"] = self.devbridge_error(cdir / "devbridge.log")
+            # quit.sh, guest then host: how each emulator was made to exit.
+            text = (cdir / "devbridge.log").read_text(errors="replace")
+            quits = re.findall(r"^quit: (menu|term|kill)$", text, re.M)
+            if quits:
+                res["quit"] = quits
             res["checks"] = {"host": self.judge(host, cell), "guest": self.judge(guest, cell)}
             res["pass"] = rc == 0 and all(c["pass"] for c in res["checks"].values())
             if res["pass"] and recorded:
@@ -724,6 +763,9 @@ def write_report(rows, path):
             to = f"{h.get('timeouts', '-')}/{g.get('timeouts', '-')}" if "timeouts" in h or "timeouts" in g else "-"
             st = f"{h.get('stall_pct', '-')}/{g.get('stall_pct', '-')}%" if "stall_pct" in h or "stall_pct" in g else "-"
             note = r.get("error") or r.get("devbridge_error") or ""
+            forced = [q for q in r.get("quit", []) if q != "menu"]
+            if forced:
+                note = (note + " " if note else "") + f"quit by {'/'.join(r['quit'])} (guest/host)"
             if r.get("new_refs"):
                 note = (note + " " if note else "") + f"new refs: {', '.join(r['new_refs'])}"
             rp = r.get("radio_powersave") or {}
@@ -738,7 +780,8 @@ def write_report(rows, path):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--rig", default=str(HERE / "rig.json"))
-    p.add_argument("--plan", nargs="+", default=["ds", "systems"], choices=["ds", "systems"])
+    p.add_argument("--plan", nargs="+", default=["systems", "ds"], choices=["ds", "systems"],
+                   help="plans to run, in this order")
     p.add_argument("--only", help="run only cells whose id matches this regex")
     p.add_argument("--list", action="store_true", help="print the cells and exit")
     p.add_argument("--retries", type=int, default=1)
