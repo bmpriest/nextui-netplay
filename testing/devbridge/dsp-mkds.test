@@ -11,23 +11,29 @@
 # Run over Netplay's ad hoc network: through an access point the MP round
 # trips leave the race at a third of full speed.
 #
-# Run with run.sh (host first). References are per platform and role; the
-# committed set is a Brick (tg5040) hosting and an RG35XXH (h700) joining.
+# Run with run.sh (host first). References are per platform and role:
+# refs/tg5040 has both roles and refs/h700 the guest's, so a Brick can host a
+# Brick or an RG35XXH (recorded 2026-10-25 and 2026-10-23).
 
 all:WAIT_FOR devbridge 30000
-all:OPEN_GAME DSP "Nintendo DS (DSP)/mariokart.nds"
-all:WAIT_FOR game 30000
+# Host first, the guest once the host's DSperate is up. DSP.pak's launcher
+# can take seconds longer on one device than the other (11 s against 0.3 s
+# on a Brick whose card is mounted sync), and launched together the faster
+# one reached its attract demo before the slower one showed its menu.
+host:OPEN_GAME DSP "Nintendo DS (DSP)/mariokart.nds"
+host:WAIT_FOR game 30000
+guest:OPEN_GAME DSP "Nintendo DS (DSP)/mariokart.nds"
+guest:WAIT_FOR game 30000
 
 # With a save present the main menu slides in about 11 s after launch and the
 # attract demo replaces it about 8 s later. An A pressed during the slide-in
-# lands on SINGLE PLAYER, so nothing is pressed until the menu has settled.
-WAIT 10000
-host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 6000
-guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 6000
-
-# MULTIPLAYER, on both: the group browser.
-all:TRM sh {helpers}/keys.sh --bg down:0.2:0.8 a:0.2:0
-WAIT 3500
+# lands on SINGLE PLAYER, so each device waits for its own settled menu and
+# takes MULTIPLAYER there, rather than both pressing at one fixed moment.
+host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 25000
+host:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 25000
+guest:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
+WAIT 2000
 host:VERIFY_WAIT {host_refs}/dsp-mk-groups.png 6000
 guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 6000
 

@@ -64,7 +64,8 @@ which holds for exactly what it says; `--bg` lets both devices press together.
 device, and in instanced and link games each device shows its own console.
 References live in `refs/<platform>/`; a `-host` or `-guest` suffix marks
 screens that depend on the role. The committed set was recorded with a Brick
-(`tg5040`) hosting and an RG35XXH (`h700`) joining. Other pairings or the
+(`tg5040`) hosting and an RG35XXH (`h700`) joining; `dsp-mkds.test` also has
+Brick guest references, so two Bricks can run it. Other pairings or the
 reverse roles need their own references:
 
     testing/devbridge/run.sh --record HOST_ADDR GUEST_ADDR testing/devbridge/aw2.test

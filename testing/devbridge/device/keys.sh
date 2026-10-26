@@ -17,7 +17,16 @@
 
 if [ "$1" = --bg ]; then
 	shift
-	sh "$0" "$@" </dev/null >/dev/null 2>&1 &
+	# Out of the caller's session: a plain & dies with an adb shell when it
+	# returns (over SSH it survives). The Brick's BusyBox has no setsid, but
+	# start-stop-daemon -b detaches the same way.
+	if command -v setsid >/dev/null 2>&1; then
+		setsid sh "$0" "$@" </dev/null >/dev/null 2>&1 &
+	elif command -v start-stop-daemon >/dev/null 2>&1; then
+		start-stop-daemon -S -b -m -p "/tmp/netplay-bg.$$.pid" -x /bin/sh -- "$0" "$@"
+	else
+		sh "$0" "$@" </dev/null >/dev/null 2>&1 &
+	fi
 	exit 0
 fi
 
