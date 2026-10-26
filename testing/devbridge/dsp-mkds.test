@@ -27,13 +27,16 @@ guest:WAIT_FOR game 30000
 
 # With a save present the main menu slides in about 11 s after launch and the
 # attract demo replaces it about 8 s later. An A pressed during the slide-in
-# lands on SINGLE PLAYER, so each device waits for its own settled menu and
-# takes MULTIPLAYER there, rather than both pressing at one fixed moment.
-host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 25000
-host:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
-guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 25000
-guest:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
-WAIT 2000
+# lands on SINGLE PLAYER. The guest's game starts 1-2 s after the host's, so
+# its menu follows the host's by about that much: check the host's, then the
+# guest's, then take MULTIPLAYER on both at once. VERIFY_WAIT only looks at
+# the start, the middle and the end of its timeout, so the timeouts stay short
+# (checks 2 s apart); a long one let both menus run into their demos.
+WAIT 9000
+host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 4000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 4000
+all:TRM sh {helpers}/keys.sh --bg down:0.2:0.8 a:0.2:0
+WAIT 3500
 host:VERIFY_WAIT {host_refs}/dsp-mk-groups.png 6000
 guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 6000
 
