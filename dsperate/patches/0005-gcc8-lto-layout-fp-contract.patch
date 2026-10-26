@@ -1,0 +1,39 @@
+Work around GCC 8's LTO dropping layout.cpp's -ffp-contract=off.
+
+Upstream compiles src/frontend/video/layout.cpp with -ffp-contract=off so that
+screen placement, which is float arithmetic truncated to pixels, lands on the
+same pixel on every architecture; tests/layout_test.cpp pins the result with a
+hash over a sweep of layouts. With the project's LTO on, GCC 8 does not keep
+that option once layout's functions are inlined into callers compiled without
+it, and the dominant_v layout moves its second screen down a pixel in 13 of
+3942 sweep cases. Verified by bisection in the LoveRetro toolchain images,
+holding -mcpu constant at cortex-a53 so the compiler is the only variable:
+
+  GCC 8.3.0   layout.cpp off, rest LTO-linked without it   layout FAIL
+  GCC 8.3.0   same, with -ffp-contract=off on the link too  layout FAIL
+  GCC 8.3.0   layout.cpp -fno-lto, rest LTO                 layout pass
+  GCC 8.3.0   everything -ffp-contract=off, -O0 to -O3+LTO  layout pass
+  GCC 10.3.0  layout.cpp off, rest LTO-linked without it   layout pass
+
+Only GCC 8 builds the file outside LTO; GCC 9 and later keep it in. Placement
+runs only when the layout or the output size changes, never per frame, so
+nothing is lost by not inlining it. tg5040 and h700 build with GCC 8.3.0,
+tg5050 with GCC 10.3.0, so this affects two of the three platforms, and the
+shipping dsperate there as well as the test.
+
+Upstream: https://github.com/beebono/DSperate/issues/23
+
+diff --git a/src/frontend/video/CMakeLists.txt b/src/frontend/video/CMakeLists.txt
+index a568f26..9817934 100644
+--- a/src/frontend/video/CMakeLists.txt
++++ b/src/frontend/video/CMakeLists.txt
+@@ -8,3 +8,9 @@ target_include_directories(dsperate_frontend_video PUBLIC ${CMAKE_CURRENT_SOURCE
+ # Placement is float arithmetic: no fused multiply-add, so every architecture
+ # lands on the same pixel (test_layout pins it).
+ set_source_files_properties(layout.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
++# GCC 8's LTO drops that per-file -ffp-contract=off once layout's code is
++# inlined into callers built without it, so the pixels move anyway. Keep the
++# file out of LTO there; GCC 9 and later honour the option across LTO.
++if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
++  set_property(SOURCE layout.cpp APPEND PROPERTY COMPILE_OPTIONS "-fno-lto")
++endif()

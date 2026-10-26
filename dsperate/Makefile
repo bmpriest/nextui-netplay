@@ -9,26 +9,20 @@ SHELL := /bin/bash
 
 PLATFORMS := tg5040 tg5050 h700
 
-# ── Upstream repo and pinned revision ─────────────────────────────────────────
-# GPLv3. Bumping this is a deliberate act: read the upstream log for CMake
-# option changes first, because a renamed switch fails open (CMake ignores
+# ── Upstream repo and pinned version ──────────────────────────────────────────
+# GPLv3. Bumping this is a deliberate act: read the upstream release notes for
+# CMake option changes first, because a renamed switch fails open (CMake ignores
 # unknown -D cache args) and scripts/assert-build.sh is the only thing that
 # would catch it.
-#
-# Pinned to a commit rather than a tag: the LAN join and netplay fixes Netplay.pak
-# relies on landed after v3.0.5, and upstream main moves faster than its tags.
-# DSPERATE_REPO can point at a local checkout to build without the network.
-DSPERATE_REPO ?= https://github.com/beebono/DSperate
-DSPERATE_REV  := ddf2910e6d80220c6b22b4df61f0786ac9879cda
+DSPERATE_REPO := https://github.com/beebono/DSperate
+DSPERATE_TAG  := v3.0.5
 
 # ── Docker toolchain images ───────────────────────────────────────────────────
-# Pinned by digest to the same images build-platforms/platforms.conf uses for
-# the rest of Netplay.pak, so a green build stays green.
-TG5040_IMAGE := ghcr.io/loveretro/tg5040-toolchain@sha256:f131c6af64029a8723d0ce8d3c2682642f5f091b04714f6beedda9bec18477ab
-TG5050_IMAGE := ghcr.io/loveretro/tg5050-toolchain@sha256:ed4aa21844feb84561abfeb05136c8a46f9c44d1d70c30f0984c11accb34a873
+TG5040_IMAGE := ghcr.io/loveretro/tg5040-toolchain:latest
+TG5050_IMAGE := ghcr.io/loveretro/tg5050-toolchain:latest
 # The h700 image is the tg5040 image plus a patched mali-fbdev SDL2 under
 # $PREFIX_LOCAL: same cross compiler, same TrimUI SDK sysroot.
-H700_IMAGE   := ghcr.io/loveretro/h700-toolchain@sha256:bf5d8f9f5442cad789aa77176bc059ec823caefa3258bf30780eee681c777119
+H700_IMAGE   := ghcr.io/loveretro/h700-toolchain:latest
 
 # ── Platform specific CPU flags ───────────────────────────────────────────────
 TG5040_CPUFLAGS := -mcpu=cortex-a53 -mtune=cortex-a53
@@ -40,7 +34,7 @@ H700_CPUFLAGS   := -mcpu=cortex-a53 -mtune=cortex-a53
 #
 # The ceiling is per platform because the toolchains genuinely differ: tg5040
 # and h700 are GCC 8.3.0 over a glibc 2.28 sysroot, while tg5050 is GCC 10.3.0
-# over glibc 2.33. Measured at v1.15.1: tg5040 and h700 come in at GLIBC_2.18,
+# over glibc 2.33. Measured at v3.0.5: tg5040 and h700 come in at GLIBC_2.18,
 # tg5050 at GLIBC_2.33.
 #
 # Each ceiling is the toolchain's own floor, not the device's, so it fails loudly
@@ -56,6 +50,12 @@ H700_GLIBC_MAX   ?= 2.28
 # on a mismatch. See TECHNICAL.md.
 DSPERATE_PGO ?= OFF
 RUN_CTEST ?= 1
+# Parallel compile and link jobs inside the containers; empty means one per CPU.
+# Every test executable is an LTO link of the whole core, so ctest's final
+# links can exhaust a desktop Docker VM's memory at one job per core.
+# `make build JOBS=4` matches the 4-core CI runner.
+JOBS ?=
+DSP_JOBS := $(if $(JOBS),$(JOBS),$$(nproc))
 # `input` is excluded because it links SDL2 and the container cannot run it: the
 # only libSDL2 here is the sysroot's, and putting the sysroot on LD_LIBRARY_PATH
 # drags its glibc in front of the container's loader, which dies on
@@ -70,7 +70,16 @@ BUILD   := $(ROOT)/build
 DIST    := $(ROOT)/dist/$(PAK_NAME).pak
 CONFIG  := $(ROOT)/config
 PATCHES := $(ROOT)/patches
+OVERLAY := $(ROOT)/overlay
 CROSS   := aarch64-nextui-linux-gnu-
+
+# The vendored MinUI sources the clone rule copies into src/frontend/sdl/, and
+# the ctest suite it copies into tests/. stb_*.h are nothings/stb, unmodified.
+MINUI_OVERLAY := minui.h minui.cpp minui_gfx.h minui_gfx.cpp minui_menu.h minui_menu.cpp \
+	minui_pad.h minui_resample.h minui_resample.cpp minui_shader.h minui_shader.cpp minui_shader_presets.h minui_shortcuts.h \
+	minui_stb.cpp \
+	stb_image.h stb_truetype.h
+MINUI_OVERLAY_TESTS := minui_menu_test.cpp minui_shader_test.cpp
 
 DOCKER_SCRIPT := /build/scripts/docker-env.sh
 DOCKER_RUN_tg5040 := docker run --rm -v $(ROOT):/build $(TG5040_IMAGE) $(DOCKER_SCRIPT)
@@ -87,9 +96,11 @@ DOCKER_RUN_h700   := docker run --rm -v $(ROOT):/build $(H700_IMAGE)   $(DOCKER_
 # TESTS=OFF: test binaries must never reach dist. ctest gets its own build dir.
 # CHEEVOS=ON is safe: src/cheevos/cheevos_http.cpp declares curl's types itself
 #   and dlopens the library, so the sysroot needs no curl headers.
-# VULKAN=OFF: the presenter and GPU 3D raster need Vulkan 1.2 headers the
-#   NextUI sysroots predate, and no supported device has a Vulkan driver.
-# NET=ON: local wireless over the LAN is the reason Netplay.pak ships this.
+# NET=ON builds netplay (vendored slirp and enet). It is upstream's default too,
+#   but spelled out so an upstream default change cannot flip it unnoticed.
+# VULKAN=OFF: none of these SoCs has Vulkan, and upstream enables the tier
+#   whenever the build host happens to have <vulkan/vulkan.h>, so leaving it to
+#   detection would make the binary depend on the container image.
 DSP_CMAKE_COMMON := \
 	-G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
@@ -100,19 +111,26 @@ DSP_CMAKE_COMMON := \
 	-DDSPERATE_HEADLESS=OFF \
 	-DDSPERATE_TESTS=OFF \
 	-DDSPERATE_CHEEVOS=ON \
-	-DDSPERATE_VULKAN=OFF \
 	-DDSPERATE_NET=ON \
+	-DDSPERATE_VULKAN=OFF \
 	-DDSPERATE_PGO=$(DSPERATE_PGO)
 
-# Upstream now links Threads::Threads and stdc++fs (GCC < 9) for the SDL
-# frontend itself. This stays as belt and braces for the other targets
-# (dsperate-headless and the tests do not get stdc++fs): CMAKE_EXE_LINKER_FLAGS
-# lands AHEAD of the objects that reference them, where --as-needed drops them
-# again, while CMAKE_CXX_STANDARD_LIBRARIES is appended at the very end of the
-# link line. push-state/pop-state keeps --no-as-needed off everything else.
-DSP_PTHREAD_LIBS := -Wl,--push-state,--no-as-needed -lpthread -Wl,--pop-state -lstdc++fs
+# DSperate uses std::thread but never links Threads::Threads. Upstream never
+# notices because glibc 2.34 folded libpthread into libc; below that it is a
+# real library. CMAKE_EXE_LINKER_FLAGS lands AHEAD of the objects that reference
+# pthread_create, where --as-needed drops it again -- CMAKE_CXX_STANDARD_LIBRARIES
+# is appended at the very end of the link line, the one place it survives.
+# push-state/pop-state keeps --no-as-needed off everything else.
+DSP_PTHREAD_LIBS := -Wl,--push-state,--no-as-needed -lpthread -Wl,--pop-state
 
-.PHONY: all build clone verify-pin patch dist release bump-version push lint test test-native clean clean-docker
+# The test executables use std::filesystem through the core, and on GCC 8 that
+# lives in a separate libstdc++fs. Upstream links it into dsperate itself when
+# GCC < 9, but not into the tests. GCC 10 still ships the library, so this
+# needs no compiler check; it is ctest-only because the shipping binary
+# already gets it from upstream. https://github.com/beebono/DSperate/issues/24
+DSP_CTEST_LIBS := $(DSP_PTHREAD_LIBS) -lstdc++fs
+
+.PHONY: all build clone verify-pin patch dist release bump-version push lint test test-native screenshots clean clean-docker
 
 all: dist
 
@@ -120,21 +138,26 @@ all: dist
 
 clone: $(SRC)/DSperate
 
-# Only vendored third-party code (miniz, rcheevos, enet, libslirp) -- no
-# submodules. The patches are a git am series, so the checkout's own history
-# records exactly what was applied on top of the pin.
+# Only vendored third-party code (miniz, rcheevos) -- no submodules.
 $(SRC)/DSperate:
-	git clone $(DSPERATE_REPO) $@
-	cd $@ && git checkout -q $(DSPERATE_REV)
+	git clone --depth 1 --branch $(DSPERATE_TAG) $(DSPERATE_REPO) $@
+	@# The MinUI module is vendored here rather than patched in, so patch 0003
+	@# only ever modifies files upstream already has.
+	cp $(addprefix $(OVERLAY)/,$(MINUI_OVERLAY)) $@/src/frontend/sdl/
+	cp $(addprefix $(OVERLAY)/tests/,$(MINUI_OVERLAY_TESTS)) $@/tests/
 	@# A patch that no longer applies is fatal: a drifted patch must not produce
 	@# a green build with the workaround silently missing.
-	cd $@ && git -c user.name=netplay -c user.email=netplay@localhost am -q $(PATCHES)/*.patch
+	cd $@ && for p in $(PATCHES)/*.patch; do \
+		[ -e "$$p" ] || continue; \
+		echo "applying $$(basename $$p)"; \
+		git apply "$$p"; \
+	done
 
-# The pin is the commit the series was applied on, so assert that rather than
-# HEAD, which is the last patch.
+# A branch name in DSPERATE_TAG would clone fine and quietly make every build
+# non-reproducible, so assert the checkout is an exact tag.
 verify-pin: $(SRC)/DSperate
-	@test "$$(cd $(SRC)/DSperate && git rev-parse HEAD~$$(ls $(PATCHES)/*.patch | wc -l))" = "$(DSPERATE_REV)" \
-		|| { echo "error: $(SRC)/DSperate is not $(DSPERATE_REV) plus patches/"; exit 1; }
+	@test "$$(cd $(SRC)/DSperate && git describe --tags --exact-match 2>/dev/null)" = "$(DSPERATE_TAG)" \
+		|| { echo "error: $(SRC)/DSperate is not at tag $(DSPERATE_TAG)"; exit 1; }
 
 # ── Per-platform build ────────────────────────────────────────────────────────
 
@@ -150,7 +173,7 @@ define DSP_BUILD
 	    -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc $$DSP_SDL_LDFLAGS" \
 	    -DCMAKE_CXX_STANDARD_LIBRARIES="$(DSP_PTHREAD_LIBS)" \
 	    2>&1 | tee /build/build/$(1)/configure.log; \
-	  cmake --build /build/build/$(1) --target dsperate -- -j$$(nproc); \
+	  cmake --build /build/build/$(1) --target dsperate -- -j$(DSP_JOBS); \
 	  $$CC /build/scripts/pad-guid.c -o /build/build/$(1)/out/dsp-pad-guid -O2 \
 	    $$(pkg-config --cflags --libs sdl2)'
 	$(DOCKER_RUN_$(1)) /build/scripts/assert-build.sh /build/build/$(1)
@@ -211,13 +234,47 @@ ifeq ($(RUN_CTEST),1)
 	    -DCMAKE_C_FLAGS="-I$$CROSS_ROOT/include/ $(TG5040_CPUFLAGS) -pthread" \
 	    -DCMAKE_CXX_FLAGS="-I$$CROSS_ROOT/include/ $(TG5040_CPUFLAGS) -pthread" \
 	    -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc $$DSP_SDL_LDFLAGS" \
-	    -DCMAKE_CXX_STANDARD_LIBRARIES="$(DSP_PTHREAD_LIBS)"; \
-	  cmake --build /build/build/ctest -- -j$$(nproc); \
+	    -DCMAKE_CXX_STANDARD_LIBRARIES="$(DSP_CTEST_LIBS)"; \
+	  cmake --build /build/build/ctest -- -j$(DSP_JOBS); \
 	  ctest --test-dir /build/build/ctest --output-on-failure --timeout 300 \
 	    $(if $(CTEST_EXCLUDE),-E "$(CTEST_EXCLUDE)",)'
 else
 	@echo "skipping ctest (RUN_CTEST=$(RUN_CTEST))"
 endif
+
+# ── Screenshots ───────────────────────────────────────────────────────────────
+#
+# Every page of the pause menu, in both looks and at every panel size the pak
+# runs on, as PNGs in build/screenshots. scripts/render-menu.cpp links the
+# menu that ships and draws it over a stand-in game; nothing needs a device.
+# Built and run in the tg5040 container like ctest, so it runs natively on an
+# arm64 host and needs qemu anywhere else.
+#
+# The launcher fonts are fetched at a pinned commit rather than vendored:
+# MinUI carries no licence and NextUI's is noncommercial, so neither can ship
+# here. Without them, or offline, the menu's built-in font stands in.
+SCREENSHOTS := $(BUILD)/screenshots
+MINUI_FONT_URL  := https://raw.githubusercontent.com/shauninman/MinUI/53e0296ea5a2794290fb5783765af6cee0063445/skeleton/SYSTEM/res/BPreplayBold-unhinted.otf
+NEXTUI_FONT_URL := https://raw.githubusercontent.com/LoveRetro/NextUI/be751f7812bcfc1181b2f0da285bfcb02a5d57c3/skeleton/SYSTEM/res/font1.ttf
+
+screenshots: clone verify-pin
+	mkdir -p $(SCREENSHOTS)/fonts $(SCREENSHOTS)/obj
+	$(DOCKER_RUN_tg5040) bash -c 'set -euo pipefail; \
+	  F=/build/build/screenshots/fonts; O=/build/build/screenshots/obj; \
+	  fetch() { [ -s "$$2" ] || wget -q -O "$$2" "$$1" || { rm -f "$$2"; echo "screenshots: cannot fetch $$1; the built-in font stands in"; }; }; \
+	  fetch "$(MINUI_FONT_URL)" $$F/BPreplayBold-unhinted.otf; \
+	  fetch "$(NEXTUI_FONT_URL)" $$F/font1.ttf; \
+	  cd /build/src/DSperate; \
+	  for c in miniz miniz_tdef miniz_tinfl; do $$CC -O2 -w -Isrc -c src/core/cart/miniz/$$c.c -o $$O/$$c.o; done; \
+	  $$CC -O2 -Isrc -c src/core/gpu/pow_compat.c -o $$O/pow_compat.o; \
+	  $$CXX -std=c++17 -O2 -w -Isrc -c src/frontend/sdl/minui_stb.cpp -o $$O/minui_stb.o; \
+	  $$CXX -std=c++17 -O2 -Isrc -static-libstdc++ -static-libgcc /build/scripts/render-menu.cpp \
+	    src/frontend/sdl/minui_menu.cpp src/frontend/sdl/minui_gfx.cpp src/frontend/sdl/menu.cpp \
+	    src/frontend/sdl/settings.cpp src/frontend/sdl/minui_shader.cpp src/frontend/sdl/minui_resample.cpp src/frontend/video/layout.cpp \
+	    $$O/pow_compat.o \
+	    $$O/minui_stb.o $$O/miniz.o $$O/miniz_tdef.o $$O/miniz_tinfl.o \
+	    -lm -pthread -o $$O/render-menu; \
+	  $$O/render-menu /build/build/screenshots $$F/BPreplayBold-unhinted.otf $$F/font1.ttf'
 
 # ── Dist ──────────────────────────────────────────────────────────────────────
 
@@ -253,8 +310,18 @@ dist-common: clone
 	@# GPLv3: ship the licence with the binaries and record exactly what they
 	@# were built from, so the corresponding-source obligation is answerable.
 	cp $(SRC)/DSperate/LICENSE $(DIST)/LICENSE.DSperate
-	@printf 'repo %s\nrev %s\ncommit %s\npatches %s\nflags %s\n' \
-		"$(DSPERATE_REPO)" "$(DSPERATE_REV)" \
+	@# Who wrote the shaders COLOUR and PATTERN port, and under what licence.
+	cp THIRD_PARTY.md $(DIST)/THIRD_PARTY.md
+	@# The oldest save state format this build can read. launch.sh compares it
+	@# with a state's header before asking for --load-state, since a refused
+	@# state fails the run. Read from the source so a format bump needs no
+	@# change here; a missing match is fatal rather than a file launch.sh skips.
+	@v="$$(sed -n 's/^constexpr u32 OLDEST_READABLE_VERSION = \([0-9][0-9]*\);$$/\1/p' \
+		$(SRC)/DSperate/src/core/state/state.h)"; \
+		test -n "$$v" || { echo "error: OLDEST_READABLE_VERSION not found in state.h"; exit 1; }; \
+		printf '%s' "$$v" > $(DIST)/dsperate.state-version
+	@printf 'repo %s\ntag %s\ncommit %s\npatches %s\nflags %s\n' \
+		"$(DSPERATE_REPO)" "$(DSPERATE_TAG)" \
 		"$$(cd $(SRC)/DSperate && git rev-parse HEAD)" \
 		"$$(cd $(PATCHES) && ls *.patch | tr '\n' ' ')" \
 		"$(DSP_CMAKE_COMMON)" > $(DIST)/dsperate.build-info
@@ -301,7 +368,7 @@ push: release
 lint:
 	shellcheck -s sh launch.sh config/platform.sh
 	shellcheck -s bash scripts/*.sh
-	shfmt -l -d -i 4 launch.sh config/platform.sh scripts/*.sh
+	shfmt -l -d -i 4 launch.sh config/platform.sh scripts/*.sh tests/*.bash
 
 test:
 	bats tests/

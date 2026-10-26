@@ -54,8 +54,11 @@ dsp_init_env() {
     MINUI_SHARED_DIR="$SHARED_USERDATA_PATH/.minui"
     MINUI_DIR="$MINUI_SHARED_DIR/DSP"
     export MINUI_SHARED_DIR MINUI_DIR
-    MINUI_ROM_FILE="$(basename "$ROM_PATH")"
+    MINUI_ROM_FILE="${ROM_PATH##*/}"
     export MINUI_ROM_FILE
+    # The profile the config was seeded from, which the pause menu's
+    # Shortcuts page restores its defaults from.
+    export MINUI_PROFILE_INI="$PAK_DIR/configs/$PROFILE_INI.ini"
     # auto_resume.txt holds the path relative to the card, and the frontend
     # rebuilds it with a bare concat. An absolute path here becomes
     # /mnt/SDCARD/mnt/SDCARD/... and the resume silently never happens, so it
@@ -80,67 +83,52 @@ dsp_init_env() {
 
 # DSperate opens the pad with SDL_IsGameController / SDL_GameControllerOpen and
 # has no joystick fallback, and MinUI ships no GameController mapping, so
-# without this there is no input at all. The GUID is read from the device
-# because SDL derives it from evdev ids and hashes it differently across SDL
-# versions; the mapping body comes from the platform profile.
+# without one there is no input at all. The mapping body comes from the
+# platform profile; DSperate puts the pad's GUID in front of it as it starts
+# (minui_pad.h), because SDL derives the GUID from evdev ids and hashes it
+# differently across SDL versions. Reading it here instead would mean
+# starting SDL twice per launch.
 dsp_export_pad_mapping() {
     if [ -z "$PROFILE_MAP" ]; then
         echo "No pad mapping for $PLATFORM/${DEVICE:-}, leaving SDL_GAMECONTROLLERCONFIG alone"
         return 0
     fi
 
-    _guid_out="$("$BIN_DIR/dsp-pad-guid" 2>&1)" || {
-        echo "dsp-pad-guid found no pad; DSperate will start without controller input"
-        echo "$_guid_out"
-        return 0
-    }
+    MINUI_PAD_MAP="$PROFILE_MAP"
+    # NextUI h700-rc11 and later give every H700 model the TrimUI numbers and
+    # say so through the GUID, which then takes this body instead. Its SDL
+    # also carries a built-in mapping for that GUID, but the pak's takes
+    # priority and matches the TrimUI pads.
+    MINUI_PAD_MAP_FIXED="${PROFILE_MAP_FIXED:-}"
+    MINUI_PAD_FIXED_GUID="$DSP_H700_FIXED_GUID"
+    export MINUI_PAD_MAP MINUI_PAD_MAP_FIXED MINUI_PAD_FIXED_GUID
 
-    # One mapping per pad we can vouch for. The built-in pad is the first line.
-    # DevBridge's virtual controller copies its ids and button numbering on
-    # TrimUI, so it gets the same body; on H700 it is a second "ANBERNIC-keys"
-    # with its own numbering. Other pads are left to SDL's own database.
-    # DSperate opens every mapped pad.
-    _cfg=""
-    _first=""
-    _tab="$(printf '\t')"
-    while IFS="$_tab" read -r _guid _name; do
-        [ -n "$_guid" ] || continue
-        [ -n "$_name" ] || _name="Controller"
-        _map="$PROFILE_MAP"
-        if [ -z "$_first" ]; then
-            _first="$_guid"
-        elif [ "$_guid" = "$_first" ]; then
-            continue
-        elif [ "${_guid#????????}" = "${_first#????????}" ]; then
-            # Same bus, vendor, product and version, different name: on TrimUI
-            # that is DevBridge's virtual pad, which copies the built-in one.
-            :
-        elif [ -n "${PROFILE_MAP_VIRTUAL:-}" ] && [ "$_name" = "ANBERNIC-keys" ]; then
-            # The built-in pad was the first line, so a second one by this name
-            # is DevBridge's virtual pad.
-            _map="$PROFILE_MAP_VIRTUAL"
-        else
-            echo "pad: leaving $_guid ($_name) to SDL's own mappings"
-            continue
-        fi
+    # What to call the controls the device labels its own way: the Brick's
+    # F1 and F2 are SDL's leftstick and rightstick.
+    MINUI_BUTTON_LABELS="${PROFILE_LABELS:-}"
+    export MINUI_BUTTON_LABELS
+}
 
-        # NextUI h700-rc11 and later give every H700 model the TrimUI numbers
-        # and say so through the GUID. Its SDL also carries a built-in mapping
-        # for that GUID, but this one takes priority and matches the TrimUI
-        # pads, so it is still exported rather than left to SDL.
-        if [ -n "${PROFILE_MAP_FIXED:-}" ] && [ "$_guid" = "$DSP_H700_FIXED_GUID" ]; then
-            _map="$PROFILE_MAP_FIXED"
-            echo "NextUI fixed h700 pad layout, using the TrimUI button numbers"
-        fi
-        _line="$_guid,$_name,$_map,platform:Linux"
-        _cfg="${_cfg:+$_cfg
-}$_line"
-        echo "pad mapping: $_guid ($_name)"
-    done <<EOF_PADS
-$_guid_out
-EOF_PADS
+# A one-off hunt for a device's spare buttons. With probe.txt beside
+# device.txt, every control pressed in the next 15 seconds is logged before
+# the game starts, and the trigger is used up.
+dsp_probe_buttons() {
+    [ -f "$DSP_USERDATA_DIR/probe.txt" ] || return 0
+    rm -f "$DSP_USERDATA_DIR/probe.txt"
+    echo "Probing the controls for 15 seconds"
+    "$BIN_DIR/dsp-pad-guid" --probe 15 || echo "dsp-pad-guid could not probe the controls"
+}
 
-    [ -n "$_cfg" ] && export SDL_GAMECONTROLLERCONFIG="$_cfg"
+# The Visual FX values the pause menu marks as slow on this platform, and,
+# with shader-timing.txt beside device.txt, DSperate logging what COLOUR and
+# PATTERN cost a frame. The trigger stays, so it can be timed over several games.
+dsp_export_shaders() {
+    MINUI_SLOW_SHADERS="${PROFILE_SLOW_SHADERS:-}"
+    export MINUI_SLOW_SHADERS
+    if [ -f "$DSP_USERDATA_DIR/shader-timing.txt" ]; then
+        MINUI_SHADER_TIMING=1
+        export MINUI_SHADER_TIMING
+    fi
 }
 
 # Seed once per profile so remapping done in DSperate's pause menu survives later
@@ -154,12 +142,12 @@ dsp_seed_config() {
         return 0
     fi
 
-    # Bumped when the templates change in a way an existing config must pick
-    # up: 2 made the pad mappings positional and turned face_fix off; 3 moved
-    # the face-button hotkeys to match, so MENU+A (as labelled) still quits.
-    _seed="$PROFILE_INI@3"
-    if [ -f "$DSP_DEVICE_FILE" ] && [ "$(cat "$DSP_DEVICE_FILE")" = "$_seed" ]; then
-        return 0
+    if [ -f "$DSP_DEVICE_FILE" ]; then
+        _seeded=""
+        read -r _seeded <"$DSP_DEVICE_FILE" || true
+        if [ "$_seeded" = "$PROFILE_INI" ]; then
+            return 0
+        fi
     fi
 
     echo "Seeding DSperate config from the $PROFILE_INI profile"
@@ -177,8 +165,131 @@ dsp_seed_config() {
         -e "s|__CHEATS_PATH__|$DSP_CHEATS_DIR/usrcheat.dat|g" \
         "$_template" >"$DSP_CONFIG"
 
-    echo "$_seed" >"$DSP_DEVICE_FILE"
+    echo "$PROFILE_INI" >"$DSP_DEVICE_FILE"
     sync
+}
+
+# The profiles are seeded once, so a config from an older pak gains what the
+# profiles have since added, once:
+#   - a bare MENU tap opens the pause menu, as it does in minarch;
+#   - MENU+START moves the pip screen, unless MENU+START is already taken,
+#     which a config with no pause line counts as, upstream's pause being
+#     mod+start;
+#   - the state and slot chords are off, as they ship now;
+#   - the mic blow is off, rather than upstream's default of L3, which the
+#     stick profiles also give the pen's tap.
+# Anything the player set for these keys themselves is left alone, and a key
+# under [hotkeys] is the keyboard's and does not count. One awk pass, which
+# leaves the file untouched when there is nothing to add: this runs on every
+# launch, and each process costs the slower devices tens of milliseconds.
+dsp_migrate_config() {
+    [ -f "$DSP_CONFIG" ] || return 0
+
+    if awk -v out="$DSP_CONFIG.tmp" -v path="$DSP_CONFIG" '
+        function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+        function want(k, v) {
+            if (k in has) return
+            has[k] = 1
+            adds[++m] = k " = " v
+        }
+        { lines[++n] = $0 }
+        /^[[:space:]]*\[/ {
+            section = $0
+            gsub(/[[:space:]]/, "", section)
+            if (section == "[padhotkeys]" && !header) header = n
+            next
+        }
+        section == "[padhotkeys]" && index($0, "=") {
+            eq = index($0, "=")
+            has[trim(substr($0, 1, eq - 1))] = 1
+            taken[trim(substr($0, eq + 1))] = 1
+        }
+        END {
+            want("pause.alt", "mod")
+            if (("pause" in has) && !("mod+start" in taken)) want("pip_corner_next", "mod+start")
+            want("save_state", "none")
+            want("load_state", "none")
+            want("slot_next", "none")
+            want("slot_prev", "none")
+            want("mic", "none")
+            if (!m) exit 1
+            for (i = 1; i <= n; i++) {
+                print lines[i] > out
+                if (i == header) for (j = 1; j <= m; j++) print adds[j] > out
+            }
+            if (!header) {
+                print "" > out
+                print "[padhotkeys]" > out
+                for (j = 1; j <= m; j++) print adds[j] > out
+            }
+            for (j = 1; j <= m; j++) printf "Adding %s under [padhotkeys] in %s\n", adds[j], path
+        }
+    ' "$DSP_CONFIG"; then
+        mv -f "$DSP_CONFIG.tmp" "$DSP_CONFIG"
+    fi
+}
+
+# The pause menu dresses itself as the launcher that started it. NextUI keeps
+# its theme in minuisettings.txt and ships font1.ttf/font2.ttf; stock MinUI
+# has neither and uses BPreplay. Exports MINUI_STYLE, MINUI_FONT (empty means
+# the menu's built-in font) and, on NextUI, MINUI_COLOR1..7.
+dsp_detect_style() {
+    _res="$SDCARD_PATH/.system/res"
+    _settings="$SHARED_USERDATA_PATH/minuisettings.txt"
+    MINUI_STYLE="minui"
+    MINUI_FONT=""
+    # NextUI's "Screenshot saved" notice switch, on unless it says 0. Stock
+    # MinUI has no such setting, so the notice always shows there.
+    MINUI_NOTIFY_SCREENSHOT=1
+
+    if [ -f "$_settings" ] && [ -f "$_res/font1.ttf" ]; then
+        MINUI_STYLE="nextui"
+        # Read in the shell, last line winning as NextUI's own reader does,
+        # rather than a sed pipeline per key: this runs on every launch.
+        _font=""
+        _notify=""
+        for _i in 1 2 3 4 5 6 7; do
+            eval "_colour$_i="
+        done
+        _cr="$(printf '\r')"
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _line="${_line%"$_cr"}"
+            case "$_line" in
+            font=*) _font="${_line#font=}" ;;
+            notifyScreenshot=*) _notify="${_line#notifyScreenshot=}" ;;
+            color[1-7]=*)
+                _i="${_line%%=*}"
+                eval "_colour${_i#color}=\${_line#*=}"
+                ;;
+            esac
+        done <"$_settings"
+
+        # NextUI's own reading of font=: 0 is font2 and 1 is font1 (older
+        # releases wrote the number), anything else is a file name.
+        case "$_font" in
+        0) _font="font2.ttf" ;;
+        "" | 1) _font="font1.ttf" ;;
+        esac
+        [ -f "$_res/$_font" ] || _font="font1.ttf"
+        MINUI_FONT="$_res/$_font"
+
+        if [ "$_notify" = "0" ]; then
+            MINUI_NOTIFY_SCREENSHOT=0
+        fi
+
+        for _i in 1 2 3 4 5 6 7; do
+            eval "_colour=\$_colour$_i"
+            if [ -n "$_colour" ]; then
+                eval "MINUI_COLOR$_i=\$_colour"
+                export "MINUI_COLOR$_i"
+            fi
+        done
+    elif [ -f "$_res/BPreplayBold-unhinted.otf" ]; then
+        MINUI_FONT="$_res/BPreplayBold-unhinted.otf"
+    fi
+
+    export MINUI_STYLE MINUI_FONT MINUI_NOTIFY_SCREENSHOT
+    echo "pause menu: $MINUI_STYLE look, font ${MINUI_FONT:-built-in}"
 }
 
 # The launcher asks for a state through /tmp/resume_slot.txt, and the file is
@@ -188,8 +299,15 @@ dsp_seed_config() {
 #
 # This matters because the shipped config has autoload on: without translating
 # the marker, picking a game fresh from the launcher would resume it anyway.
+#
+# The state path is kept apart from the flag so dsp_run_emulator can pass it as
+# one argument. ROM names nearly always hold spaces, and DSperate takes every
+# stray word as the ROM. A slot whose state is gone (a stale marker, a deleted
+# file) or is in a format this DSperate no longer reads falls back to autoload:
+# an explicit --load-state that cannot be read fails the whole run.
 dsp_resume_args() {
-    DSP_RESUME_ARGS=""
+    DSP_RESUME_FLAG=""
+    DSP_LOAD_STATE=""
     [ -f /tmp/resume_slot.txt ] || return 0
 
     _slot="$(cat /tmp/resume_slot.txt 2>/dev/null | tr -dc '0-9')"
@@ -200,171 +318,91 @@ dsp_resume_args() {
         # Let autoload pick up the auto slot.
         ;;
     8)
-        DSP_RESUME_ARGS="--no-autoload"
+        DSP_RESUME_FLAG="--no-autoload"
         ;;
     *)
         _stem="$(basename "$ROM_PATH")"
         _stem="${_stem%.*}"
-        DSP_RESUME_ARGS="--load-state $DSP_STATES_DIR/$_stem.$_slot.dss"
+        _state="$DSP_STATES_DIR/$_stem.$_slot.dss"
+        if [ ! -f "$_state" ]; then
+            echo "resume state $_state not found, falling back to autoload"
+        elif dsp_state_readable "$_state"; then
+            DSP_LOAD_STATE="$_state"
+        fi
         ;;
     esac
 }
 
-# Netplay.pak integration. With a Netplay session armed, put this console back
-# on the session's network (pre-launch.sh re-joins an ad hoc host) and start
-# DSperate's local wireless as the session's host or guest: the host's DS
-# answers on the LAN in melonDS's protocol, and the guest joins it by address.
-# DSperate keeps a guest trying until the host's emulator is up, so the two
-# devices can launch in either order. Nothing here runs without a session.
-dsp_netplay_args() {
-    DSP_NET_ARGS=""
-    DSP_NET_SESSION=""
-    _np="${NETPLAY_PAK:-$SDCARD_PATH/Tools/$PLATFORM/Netplay.pak}"
-    _state="${NETPLAY_STATE:-$SDCARD_PATH/.userdata/shared/Netplay}"
-    [ -f "$_state/session" ] || return 0
-    # Netplay > Cores > Extras > DSP > "Remove from Netplay" keeps the pak.
-    if grep -q '^dsperate=0$' "$_state/settings" 2>/dev/null; then
-        echo "netplay: DSperate is off in Netplay; playing offline"
-        return 0
-    fi
-    [ -f "$_np/launcher/pre-launch.sh" ] || {
-        echo "netplay: a session is armed but $_np is missing; playing offline"
-        return 0
-    }
+# Whether this build of DSperate can read a save state. A state is "DSST" and
+# a little-endian u32 format version; DSperate refuses anything older than the
+# version recorded in dsperate.state-version at build time, and a refused
+# --load-state fails the run, so the slot falls back to autoload instead.
+# Only a definite mismatch says no: without the recorded version, or without
+# an od that can read the header, the state is passed through as before.
+dsp_state_readable() {
+    _min="$(cat "$PAK_DIR/dsperate.state-version" 2>/dev/null | tr -dc '0-9')"
+    [ -n "$_min" ] || return 0
 
-    NETPLAY_PAK="$_np"
-    NETPLAY_STATE="$_state"
-    # shellcheck source=/dev/null
-    . "$_np/launcher/pre-launch.sh"
-    # session-cleanup.sh (run by pre-launch.sh) drops a previous boot's session.
-    [ -f "$NETPLAY_STATE/session" ] || return 0
-    DSP_NET_SESSION="$NETPLAY_STATE/session"
-
-    _role="$(sed -n 's/^role=//p' "$DSP_NET_SESSION" | head -n 1)"
-    _peer="$(sed -n 's/^peer=//p' "$DSP_NET_SESSION" | head -n 1)"
-    case "$_role" in
-    host)
-        DSP_NET_ARGS="--lan-host Netplay"
-        ;;
-    client)
-        # The app wrote it; checked again because it reaches a command line.
-        case "$_peer" in
-        *[!0-9.]* | "")
-            echo "netplay: session has no usable host address ($_peer); playing offline"
-            return 0
-            ;;
-        esac
-        DSP_NET_ARGS="--lan-join $_peer"
-        ;;
-    *)
-        echo "netplay: unknown session role '$_role'; playing offline"
-        return 0
-        ;;
-    esac
-    # How long one MP exchange may hold a frame before it is dropped. DSperate's
-    # default (25 ms) holds on Netplay's ad hoc network (3 ms round trips), but
-    # through an access point a quarter of round trips exceed it and Mario Kart
-    # gives up with a communication error; 100 ms stops that. The session may
-    # carry its own value.
-    _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$DSP_NET_SESSION" | head -n 1)"
-    if [ -z "$_timeout" ] && ! grep -q '^adhoc_ssid=' "$DSP_NET_SESSION"; then
-        _timeout=100
-    fi
-    case "$_timeout" in
-    "" | *[!0-9]*) ;;
-    *) export DS_LAN_TIMEOUT_MS="$_timeout" ;;
-    esac
-    # Netplay's verbose logs turn on DSperate's own, which include the MP wait
-    # statistics a communication error has to be diagnosed from.
-    if grep -q '^verbose_logs=1$' "$DSP_NET_SESSION" 2>/dev/null; then
-        export DS_VERBOSE=1 DS_LAN_LOG=1
+    if [ "$(head -c 4 "$1" 2>/dev/null)" != "DSST" ]; then
+        echo "resume state $1 is not a DSperate state, falling back to autoload"
+        return 1
     fi
 
-    # The auto state is where this console was when it last quit, not where the
-    # other one is: a session boots fresh unless the player picked a slot.
-    [ -n "$DSP_RESUME_ARGS" ] || DSP_RESUME_ARGS="--no-autoload"
-    echo "netplay: $_role session, DSperate args: $DSP_NET_ARGS $DSP_RESUME_ARGS"
+    # The format version is small, so its low byte is the whole value.
+    _ver="$(od -An -tu1 -j4 -N1 "$1" 2>/dev/null | tr -dc '0-9')"
+    [ -n "$_ver" ] || return 0
+    if [ "$_ver" -lt "$_min" ]; then
+        echo "resume state $1 predates this DSperate (format $_ver, needs $_min), falling back to autoload"
+        return 1
+    fi
+    return 0
 }
 
-# Local wireless blocks the emulation thread on every MP exchange, and a
-# utilisation-driven governor (schedutil on both TrimUI and H700) reads those
-# waits as idle and clocks down: measured on Mario Kart DS over ad hoc, ~60%
-# speed on schedutil and full speed on performance, on both devices. So a
-# session pins performance and puts back what was there on the way out. The
-# record survives a crash; the next launch restores it before anything else.
-DSP_CPU_RECORD=/tmp/dsp-cpu-restore
+# Run from $BIN_DIR. No --config: the seeded file is already at the default
+# path DSperate computes from XDG_CONFIG_HOME. No layout or performance flags
+# either -- flags override the ini, which would make them uneditable from the
+# pause menu.
+dsp_run_emulator() {
+    set -- "$ROM_PATH" --fullscreen
+    if [ -n "$DSP_LOAD_STATE" ]; then
+        set -- "$@" --load-state "$DSP_LOAD_STATE"
+    elif [ -n "$DSP_RESUME_FLAG" ]; then
+        set -- "$@" "$DSP_RESUME_FLAG"
+    fi
 
-dsp_cpu_restore() {
-    [ -f "$DSP_CPU_RECORD" ] || return 0
-    while read -r _gov_file _gov; do
-        case "$_gov_file" in */scaling_governor) ;; *) continue ;; esac
-        [ -n "$_gov" ] && echo "$_gov" >"$_gov_file" 2>/dev/null
-    done <"$DSP_CPU_RECORD"
-    rm -f "$DSP_CPU_RECORD"
+    dsp_mark "emulator starting"
+    ./dsperate "$@"
+    _status=$?
+    dsp_mark "emulator exited"
+    return "$_status"
 }
 
-dsp_cpu_pin() {
-    dsp_cpu_restore
-    for _gov_file in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
-        [ -w "$_gov_file" ] || continue
-        echo "$_gov_file $(cat "$_gov_file")" >>"$DSP_CPU_RECORD"
-        echo performance >"$_gov_file" 2>/dev/null || :
-    done
-}
-
-# On the fbdev tier DSperate triple-buffers /dev/fb0 (640x1440 on H700) and
-# leaves it that way. The next app's menu then pans anywhere in 1440 lines, and
-# DraStic's Mali driver crashes on a NULL when it starts with the pan at 960
-# and shrinks the buffer back to 960 lines under it (2026-10-24: one H700
-# DraStic launch in three after a DSP.pak race). Put the geometry back on the
-# way out; like the CPU record, a crash leaves it for the next launch.
-DSP_FB=/sys/class/graphics/fb0
-DSP_FB_RECORD=/tmp/dsp-fb-restore
-
-dsp_fb_restore() {
-    [ -f "$DSP_FB_RECORD" ] || return 0
-    read -r _size _pan <"$DSP_FB_RECORD"
-    # Size first: the old pan is only valid inside the old size.
-    [ -n "$_size" ] && echo "$_size" >"$DSP_FB/virtual_size" 2>/dev/null
-    [ -n "$_pan" ] && echo "$_pan" >"$DSP_FB/pan" 2>/dev/null
-    rm -f "$DSP_FB_RECORD"
-}
-
-dsp_fb_save() {
-    dsp_fb_restore
-    [ -w "$DSP_FB/virtual_size" ] && [ -w "$DSP_FB/pan" ] || return 0
-    echo "$(cat "$DSP_FB/virtual_size") $(cat "$DSP_FB/pan")" >"$DSP_FB_RECORD"
-}
-
-# NextUI truncates this pak's log on every launch, so with Netplay's verbose
-# logs on, keep a copy per process the way Netplay.pak's minarch wrapper does:
-# logs/netplay-games/<game>/<session id>/<time>-<role>-<pid>.log.
-dsp_archive_netplay_log() {
-    [ -n "${DSP_NET_SESSION:-}" ] || return 0
-    grep -q '^verbose_logs=1$' "$DSP_NET_SESSION" 2>/dev/null || return 0
-    _game="$(basename "$ROM_PATH" | sed 's/[^A-Za-z0-9._-]/_/g')"
-    _sid="$(sed -n 's/^session_id=//p' "$DSP_NET_SESSION" | head -n 1)"
-    _role="$(sed -n 's/^role=//p' "$DSP_NET_SESSION" | head -n 1)"
-    case "$_sid" in *[!0-9A-Fa-f]* | "") _sid=unknown-session ;; esac
-    case "$_role" in host | client) ;; *) _role=unknown ;; esac
-    _dir="$USERDATA_PATH/logs/netplay-games/${_game:-unknown-game}/$_sid"
-    mkdir -p "$_dir" 2>/dev/null || return 0
-    cp "$LOGS_PATH/$PAK_NAME.txt" "$_dir/$(date +%Y%m%d-%H%M%S)-$_role-$$.log" 2>/dev/null || :
+# A "timing:" line in the log: seconds since boot, to the hundredth, then
+# what just happened. DSperate writes its own on the same clock, so the two
+# line up when working out where a slow start or exit spends its time.
+dsp_mark() {
+    _up="?"
+    if [ -r /proc/uptime ]; then
+        read -r _up _ </proc/uptime
+    fi
+    echo "timing: $_up $1"
 }
 
 cleanup() {
     rm -f /tmp/stay_awake
 
-    # DSperate writes the battery save on SIGTERM, so -9 straight away loses the
-    # last save. Give it a moment before insisting.
-    killall -q -15 dsperate 2>/dev/null || true
-    sleep 2
-    killall -q -9 dsperate 2>/dev/null || true
+    # Only when the pak itself is being stopped: after a normal exit DSperate
+    # is already gone, and waiting for it would only hold up the launcher.
+    # DSperate writes the battery save on SIGTERM, so -9 straight away loses
+    # the last save. Give it a moment before insisting.
+    if pidof dsperate >/dev/null 2>&1; then
+        killall -q -15 dsperate 2>/dev/null || true
+        sleep 2
+        killall -q -9 dsperate 2>/dev/null || true
+    fi
 
-    dsp_cpu_restore
-    dsp_fb_restore
-    dsp_archive_netplay_log
     sync
+    dsp_mark "synced"
 }
 
 main() {
@@ -375,6 +413,7 @@ main() {
     exec 2>&1
 
     echo "$0" "$@"
+    dsp_mark "launch"
 
     dsp_normalize_platform
 
@@ -390,12 +429,6 @@ main() {
     ROM_PATH="$(echo "$1" | sed "s|/media/SDCARD0/|$SDCARD_PATH/|g")"
     if [ -e "$ROM_PATH" ]; then
         ROM_PATH="$(readlink -f "$ROM_PATH")"
-        # On H700 /mnt/SDCARD is itself a symlink (to /mnt/sdcard), so the
-        # resolved path has to be put back under the name the launcher uses.
-        _card="$(readlink -f "$SDCARD_PATH")"
-        case "$ROM_PATH" in
-        "$_card"/*) ROM_PATH="$SDCARD_PATH${ROM_PATH#"$_card"}" ;;
-        esac
     fi
 
     # shellcheck source=/dev/null
@@ -412,7 +445,14 @@ main() {
         "$MINUI_SHARED_DIR" "$MINUI_DIR"
 
     dsp_seed_config
+    dsp_migrate_config
+    dsp_mark "config ready"
+    dsp_detect_style
+    dsp_mark "style read"
     dsp_export_pad_mapping
+    dsp_mark "pad mapped"
+    dsp_probe_buttons
+    dsp_export_shaders
 
     # Only on a panel whose rotation SDL cannot tell DSperate about; the fbdev
     # tier writes /dev/fb0 directly. Empty everywhere else.
@@ -421,18 +461,9 @@ main() {
     fi
 
     dsp_resume_args
-    dsp_cpu_restore
-    dsp_netplay_args
-    [ -n "$DSP_NET_ARGS" ] && dsp_cpu_pin
-    dsp_fb_save
 
-    # No --config: the seeded file is already at the default path DSperate
-    # computes from XDG_CONFIG_HOME. No layout or performance flags either --
-    # flags override the ini, which would make them uneditable from the pause
-    # menu.
     cd "$BIN_DIR" || return 1
-    # shellcheck disable=SC2086 # deliberate word lists
-    ./dsperate "$ROM_PATH" --fullscreen $DSP_RESUME_ARGS $DSP_NET_ARGS
+    dsp_run_emulator
 }
 
 if [ "${DSP_PAK_TEST:-}" != "1" ]; then

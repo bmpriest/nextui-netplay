@@ -1,3 +1,5 @@
 src/
 build/
 dist/
+tmp/
+.DS_Store
