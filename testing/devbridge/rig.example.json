@@ -1,0 +1,9 @@
+{
+  "identity": "~/.ssh/id_ed25519",
+  "devices": {
+    "b1": {"adb": "USB-SERIAL-OF-BRICK-1"},
+    "b2": {"ssh": "192.168.0.181", "password": "DEVICE-ROOT-PASSWORD"},
+    "h":  {"ssh": "192.168.0.41"}
+  },
+  "pairs": {"BB": ["b1", "b2"], "BH": ["b1", "h"]}
+}

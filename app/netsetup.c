@@ -377,15 +377,15 @@ bool NS_wifiPowerSaveNeedsReload(void) {
 	return wifi_plat("powersave-needs-reload") == 0;
 }
 
-bool NS_wifiPowerSaveReload(char* err, int errlen) {
+bool NS_wifiPowerSaveReload(bool off, char* err, int errlen) {
 	/* The reload takes the whole radio down, and on the H700 the AP's wlan1
 	 * with it: a hosted session would lose every guest. */
 	if (hotspot_processes_alive()) {
 		snprintf(err, errlen, "End the hosted session first - the reload stops its network.");
 		return false;
 	}
-	ns_log("reloading the wifi driver with power save off\n");
-	int rc = wifi_plat("powersave-reload off");
+	ns_log("reloading the wifi driver with power save %s\n", off ? "off" : "on");
+	int rc = wifi_plat(off ? "powersave-reload off" : "powersave-reload on");
 	if (rc == 0) return true;
 	/* 3 is "driver back, no address yet": the supplicant usually finishes on
 	 * its own, so power save is off even though WiFi is not quite back. */
@@ -394,7 +394,7 @@ bool NS_wifiPowerSaveReload(char* err, int errlen) {
 	         ? "Driver reloaded - WiFi is still reconnecting."
 	         : "Could not reload the WiFi driver - reboot to recover.");
 	ns_log("wifi driver reload exited %d\n", WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
-	return reloaded && !NS_wifiPowerSaveNeedsReload();
+	return reloaded && NS_wifiPowerSaveNeedsReload() != off;
 }
 
 void NS_wifiPowerSaveRestore(void) {

@@ -85,9 +85,9 @@ void NS_wifiPowerSaveDisable(void);   /* no-op when the setting is off */
 /* H700: the radio's power save only changes when its driver is reloaded. True
  * when turning it off would need that reload (platform and current state). */
 bool NS_wifiPowerSaveNeedsReload(void);
-/* Reload the driver with power save off - several seconds without WiFi. Lasts
- * until the device reboots. */
-bool NS_wifiPowerSaveReload(char* err, int errlen);
+/* Reload the driver with power save off (or back on) - several seconds
+ * without WiFi. Off lasts until the device reboots. */
+bool NS_wifiPowerSaveReload(bool off, char* err, int errlen);
 void NS_wifiPowerSaveRestore(void);
 
 /* Put the platform's own WiFi back. Safe to call at any time. The stranded

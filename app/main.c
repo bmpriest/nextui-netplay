@@ -1658,6 +1658,8 @@ static void join_peer(SDL_Surface* s, int i) {
  *   --ctl join IP | adhoc | discover [SECONDS]
  *   --ctl end
  *   --ctl powersave on|off
+ *   --ctl pak dsperate|drastic install
+ *   --ctl set adhoc_switch 0|1
  */
 static void ctl_print_status(void) {
 	NS_SessionInfo si;
@@ -1790,7 +1792,7 @@ static int ctl_main(int argc, char* argv[]) {
 		status[0] = '\0';
 		if (off) {
 			if (NS_wifiPowerSaveNeedsReload() &&
-			    !NS_wifiPowerSaveReload(status, sizeof(status)))
+			    !NS_wifiPowerSaveReload(true, status, sizeof(status)))
 				return ctl_result(false);
 			c->disable_powersave = true;
 			NS_SessionInfo armed;
@@ -1798,9 +1800,45 @@ static int ctl_main(int argc, char* argv[]) {
 		} else {
 			c->disable_powersave = false;
 			NS_wifiPowerSaveRestore();
+			/* The app leaves an H700 at power save off until the next boot;
+			 * a test run cannot wait for one. */
+			if (!strcmp(PLATFORM, "h700") && !NS_wifiPowerSaveNeedsReload() &&
+			    !NS_wifiPowerSaveReload(false, status, sizeof(status))) {
+				NS_settingsSave();
+				return ctl_result(false);
+			}
 		}
 		NS_settingsSave();
 		snprintf(status, sizeof(status), "powersave %s", off ? "disabled" : "allowed");
+		return ctl_result(true);
+	}
+
+	if (!strcmp(cmd, "pak")) {
+		/* pak dsperate|drastic install: what Settings' install prompt does. */
+		NS_ManagedPak k = !strcmp(arg, "dsperate") ? NS_PAK_DSP
+		                : !strcmp(arg, "drastic") ? NS_PAK_NDS : NS_PAK_COUNT;
+		if (k == NS_PAK_COUNT || argc < 3 || strcmp(argv[2], "install")) {
+			snprintf(status, sizeof(status), "pak dsperate|drastic install");
+			return ctl_result(false);
+		}
+		status[0] = '\0';
+		if (!NS_pakInstall(k, status, sizeof(status))) return ctl_result(false);
+		if (k == NS_PAK_DSP) NS_settings()->dsperate = true;
+		else NS_settings()->drastic = true;
+		NS_settingsSave();
+		snprintf(status, sizeof(status), "%s installed", arg);
+		return ctl_result(true);
+	}
+
+	if (!strcmp(cmd, "set")) {
+		/* set adhoc_switch 0|1 */
+		if (strcmp(arg, "adhoc_switch") || argc < 3) {
+			snprintf(status, sizeof(status), "set adhoc_switch 0|1");
+			return ctl_result(false);
+		}
+		NS_settings()->adhoc_switch = atoi(argv[2]) != 0;
+		NS_settingsSave();
+		snprintf(status, sizeof(status), "adhoc_switch=%d", NS_settings()->adhoc_switch ? 1 : 0);
 		return ctl_result(true);
 	}
 
@@ -2281,7 +2319,7 @@ int main(int argc, char* argv[]) {
 				draw_progress("Restarting the WiFi driver", 1, 1);
 				NS_Settings* c = NS_settings();
 				status[0] = '\0';
-				if (NS_wifiPowerSaveReload(status, sizeof(status))) {
+				if (NS_wifiPowerSaveReload(true, status, sizeof(status))) {
 					c->disable_powersave = true;
 					NS_settingsSave();
 					NS_SessionInfo armed;

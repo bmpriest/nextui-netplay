@@ -34,3 +34,5 @@ bin/*/udhcpd
 drastic-wifi/build*/obj/
 drastic-wifi/build*/*.stripped.so
 !cores/build-udhcpd.sh
+testing/devbridge/rig.json
+__pycache__/

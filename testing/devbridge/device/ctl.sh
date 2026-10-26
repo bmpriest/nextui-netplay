@@ -30,4 +30,8 @@ export SDCARD_PATH PLATFORM SYSTEM_PATH LOGS_PATH NETPLAY_PAK HOME LD_LIBRARY_PA
 mkdir -p "$LOGS_PATH"
 cd "$pak" || exit 1
 echo "== $(date '+%F %T') ctl $*" >> "$LOGS_PATH/netplay-ctl.txt"
-exec "$pak/bin/$PLATFORM/netplay.elf" --ctl "$@" 2>> "$LOGS_PATH/netplay-ctl.txt"
+"$pak/bin/$PLATFORM/netplay.elf" --ctl "$@" 2>> "$LOGS_PATH/netplay-ctl.txt"
+rc=$?
+# What the radio is really doing, which the setting only asks for.
+[ "$1" = status ] && echo "radio_powersave=$(sh "$pak/launcher/wifi-platform.sh" powersave-get 2>/dev/null)"
+exit $rc

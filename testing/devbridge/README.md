@@ -51,6 +51,44 @@ which keeps its LAN connection while serving the network:
 (`10.0.0.20` is the guest's lease; the host's `/tmp/netplay_udhcpd.leases`
 has it.)
 
+## The unattended matrix
+
+`matrix.py` runs the whole suite with nobody at the devices. Each cell sets
+itself up from idle and puts everything back: power save on both devices, the
+host arms headless (`device/ctl.sh`, which runs `netplay.elf --ctl`) over WiFi
+or its own ad hoc network, the guest finds it by its announcement and joins,
+the test runs, `check.sh` judges both logs, the host ends the session, and the
+guest has to come back to its house network by itself before the next cell.
+
+    cp rig.example.json rig.json     # devices, how to reach them, the pairs
+    ./matrix.py --list               # the cells
+    ./matrix.py                      # everything (hours)
+    ./matrix.py --only 'ds\..*\.adhoc' --retries 0
+    ./matrix.py --resume ../results/matrix/<run>   # skip what already passed
+
+Plans:
+
+- `ds`: Mario Kart DS (`mkds.test`, one template for every emulator pairing)
+  for Brick to Brick and Brick to RG35XXH with either hosting, DSP/DSP,
+  DraStic/DraStic and both mixed pairings, over WiFi and ad hoc, power save
+  off and on.
+- `systems`: NES, SNES, GB, GBA (gpSP and mGBA) and PlayStation with a Brick
+  hosting the RG35XXH, and PlayStation Brick to Brick, over WiFi and ad hoc.
+
+Devices are reached over USB ADB or SSH (key, or a password for a device
+without it). A guest that left the LAN for the host's ad hoc network is
+reached through an SSH tunnel via the host, which keeps its house network
+(the runner turns Ad Hoc Network Switch off). A reference a cell needs but
+`refs/` lacks is recorded in its place; captures from a passing cell are
+copied into `refs/` and listed in the report, to be looked at.
+
+Output, in `testing/results/matrix/<time>/`: `results.jsonl` (one line per
+attempt: fps, MP timeouts, stalls, arm time, how long the guest took to get
+home, the radio's real power-save state), `report.md`, and per cell the
+runner's log, the rendered script and DevBridge's session with every
+screenshot. A failed cell is retried once (`--retries`); a device that cannot
+be brought home twice running stops the run.
+
 ## How the tests are built
 
 **Input runs on the devices.** DevBridge's `BTN` sends press and release as two
