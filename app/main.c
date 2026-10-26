@@ -1649,9 +1649,172 @@ static void join_peer(SDL_Surface* s, int i) {
 	}
 }
 
+/* Headless control for unattended tests: the steps the menus take, with no
+ * screen and no pad, so a test runner can set a session up and tear it down
+ * between cases. Prints one "ok ..." or "error ..." line; exits 0 on ok.
+ *
+ *   --ctl status
+ *   --ctl host wifi|adhoc
+ *   --ctl join IP | adhoc | discover [SECONDS]
+ *   --ctl end
+ *   --ctl powersave on|off
+ */
+static void ctl_print_status(void) {
+	NS_SessionInfo si;
+	char ip[NS_IP_LEN] = "";
+	if (!NS_localIP(ip, sizeof(ip))) snprintf(ip, sizeof(ip), "none");
+	printf("ip=%s\n", ip);
+	printf("powersave_off=%d\n", NS_settings()->disable_powersave ? 1 : 0);
+	printf("adhoc_switch=%d\n", NS_settings()->adhoc_switch ? 1 : 0);
+	if (!NS_sessionInfo(&si)) { printf("armed=0\n"); return; }
+	printf("armed=1\nrole=%s\n", si.role == NS_ROLE_HOST ? "host" : "client");
+	printf("network=%s\nhost=%s\nbroker=%d\nguests=%d\n",
+	       si.network[0] ? si.network : "wifi", si.host,
+	       si.broker_running ? 1 : 0, si.guest_count);
+	for (int i = 0; i < si.guest_count && i < 4; i++)
+		printf("guest%d=%s\n", i, si.guest[i].ip);
+}
+
+static int ctl_result(bool ok) {
+	printf("%s %s\n", ok ? "ok" : "error", status[0] ? status : "-");
+	return ok ? 0 : 1;
+}
+
+static int ctl_main(int argc, char* argv[]) {
+	const char* cmd = argc > 0 ? argv[0] : "status";
+	const char* arg = argc > 1 ? argv[1] : "";
+
+	/* No InitSettings or WIFI_init: the session code needs neither, and the
+	 * former runs amixer, whose output would bury the answer. */
+	NS_init();
+	NS_cleanupStaleSession();
+	NS_wifiRecoverIfStranded();
+	if (!NS_localIP(local_ip, sizeof(local_ip))) snprintf(local_ip, sizeof(local_ip), "no network");
+
+	if (!strcmp(cmd, "status")) {
+		ctl_print_status();
+		return 0;
+	}
+
+	if (!strcmp(cmd, "host")) {
+		bool adhoc = !strcmp(arg, "adhoc");
+		if (!adhoc && strcmp(arg, "wifi")) {
+			snprintf(status, sizeof(status), "host wifi|adhoc");
+			return ctl_result(false);
+		}
+		if (NS_isArmed()) {
+			snprintf(status, sizeof(status), "already armed");
+			return ctl_result(false);
+		}
+		if (adhoc) {
+			if (!NS_canHostAdhoc()) {
+				snprintf(status, sizeof(status), "this device cannot host ad hoc");
+				return ctl_result(false);
+			}
+			NS_hotspotCredentials(hs_ssid, sizeof(hs_ssid), hs_psk, sizeof(hs_psk));
+			if (!NS_hotspotStart(hs_ssid, hs_psk, status, sizeof(status)))
+				return ctl_result(false);
+			hosting_hotspot = 1;
+			snprintf(local_ip, sizeof(local_ip), "%s", NS_HOTSPOT_HOST_IP);
+			NS_announceHotspot(hs_ssid, hs_psk);
+		} else {
+			NS_hotspotStop();
+			NS_announceHotspot(NULL, NULL);
+		}
+		status[0] = '\0';
+		do_arm(NS_ROLE_HOST, NULL);
+		return ctl_result(NS_isArmed());
+	}
+
+	if (!strcmp(cmd, "join")) {
+		if (NS_isArmed()) {
+			snprintf(status, sizeof(status), "already armed");
+			return ctl_result(false);
+		}
+		NS_Peer peer;
+		memset(&peer, 0, sizeof(peer));
+		if (!strcmp(arg, "adhoc")) {
+			peer.hotspot = true;
+		} else if (!strcmp(arg, "discover")) {
+			/* The first host heard, as the Join list's auto-join takes a
+			 * lone host. Tests run one host at a time. */
+			int secs = argc > 2 ? atoi(argv[2]) : 20;
+			NS_Peer found[NS_MAX_PEERS];
+			int n = 0;
+			NS_discoverStart();
+			for (int t = 0; t < secs * 10 && n == 0; t++) {
+				n = NS_discoverTick(found, NS_MAX_PEERS);
+				if (!n) usleep(100000);
+			}
+			NS_discoverStop();
+			if (!n) {
+				snprintf(status, sizeof(status), "no host found in %ds", secs);
+				return ctl_result(false);
+			}
+			peer = found[0];
+		} else if (arg[0]) {
+			snprintf(peer.ip, sizeof(peer.ip), "%s", arg);
+		} else {
+			snprintf(status, sizeof(status), "join IP|adhoc|discover [SECONDS]");
+			return ctl_result(false);
+		}
+
+		status[0] = '\0';
+		if (peer.hotspot) {
+			const char* ssid = peer.ssid[0] ? peer.ssid : NS_ADHOC_SSID;
+			const char* psk  = peer.psk[0]  ? peer.psk  : NS_ADHOC_PSK;
+			if (!NS_hotspotJoin(ssid, psk, status, sizeof(status)))
+				return ctl_result(false);
+			do_arm(NS_ROLE_CLIENT, NS_HOTSPOT_HOST_IP);
+		} else {
+			do_arm(NS_ROLE_CLIENT, peer.ip);
+		}
+		return ctl_result(NS_isArmed());
+	}
+
+	if (!strcmp(cmd, "end")) {
+		/* X's teardown: bindings stay, WiFi comes back. */
+		NS_endSession();
+		NS_announceStop();
+		snprintf(status, sizeof(status), "session ended");
+		return ctl_result(!NS_isArmed());
+	}
+
+	if (!strcmp(cmd, "powersave")) {
+		NS_Settings* c = NS_settings();
+		bool off = !strcmp(arg, "off");
+		if (!off && strcmp(arg, "on")) {
+			snprintf(status, sizeof(status), "powersave on|off");
+			return ctl_result(false);
+		}
+		status[0] = '\0';
+		if (off) {
+			if (NS_wifiPowerSaveNeedsReload() &&
+			    !NS_wifiPowerSaveReload(status, sizeof(status)))
+				return ctl_result(false);
+			c->disable_powersave = true;
+			NS_SessionInfo armed;
+			if (NS_sessionInfo(&armed)) NS_wifiPowerSaveDisable();
+		} else {
+			c->disable_powersave = false;
+			NS_wifiPowerSaveRestore();
+		}
+		NS_settingsSave();
+		snprintf(status, sizeof(status), "powersave %s", off ? "disabled" : "allowed");
+		return ctl_result(true);
+	}
+
+	snprintf(status, sizeof(status), "unknown command %s", cmd);
+	return ctl_result(false);
+}
+
 int main(int argc, char* argv[]) {
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--quick")) quick_mode = true;
+		if (!strcmp(argv[i], "--ctl")) {
+			setvbuf(stdout, NULL, _IOLBF, 0);
+			return ctl_main(argc - i - 1, argv + i + 1);
+		}
 	}
 
 	SDL_Surface* s = GFX_init(MODE_MAIN);

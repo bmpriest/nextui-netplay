@@ -1697,9 +1697,13 @@ bool NS_sessionInfo(NS_SessionInfo* out) {
 		char* value = strchr(line, '=');
 		if (!value) continue;
 		*value++ = '\0';
-		if (sscanf(line, "guest_%d_id", &i) == 1 && i >= 0 && i < 4)
+		/* sscanf counts conversions, not literals: "guest_%d_id" matches
+		 * guest_0_ip too, so check the field name after the number. */
+		char field[4] = "";
+		if (sscanf(line, "guest_%d_%3s", &i, field) != 2 || i < 0 || i >= 4) continue;
+		if (!strcmp(field, "id"))
 			snprintf(out->guest[i].id, sizeof(out->guest[i].id), "%s", value);
-		else if (sscanf(line, "guest_%d_ip", &i) == 1 && i >= 0 && i < 4)
+		else if (!strcmp(field, "ip"))
 			snprintf(out->guest[i].ip, sizeof(out->guest[i].ip), "%s", value);
 	}
 	fclose(f);
