@@ -658,7 +658,11 @@ class Runner:
     def run_cell(self, cell, attempt):
         host, guest = self.rig.devices[cell.host], self.rig.devices[cell.guest]
         cdir = self.out / f"{cell.id}.{attempt}"
-        cdir.mkdir(exist_ok=True)
+        n = 1
+        while cdir.exists():   # a resumed run must not mix into an old attempt's
+            n += 1
+            cdir = self.out / f"{cell.id}.{attempt}.r{n}"
+        cdir.mkdir()
         Runner.cell_log = open(cdir / "runner.log", "a")
         res = {"cell": cell.id, "attempt": attempt, "plan": cell.plan, "test": cell.test,
                "host": cell.host, "guest": cell.guest, "host_platform": host.platform,
