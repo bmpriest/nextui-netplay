@@ -7,6 +7,8 @@
 #   ctl.sh join IP | adhoc | discover [SECONDS]
 #   ctl.sh end
 #   ctl.sh powersave on|off
+#   ctl.sh pak dsperate|drastic install
+#   ctl.sh set adhoc_switch|compatibility_cores 0|1
 #
 # The same environment launch.sh gives the app, then `netplay.elf --ctl`.
 # Its stdout is the answer ("ok ..." / "error ..." last); its log goes to

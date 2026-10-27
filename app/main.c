@@ -1659,7 +1659,7 @@ static void join_peer(SDL_Surface* s, int i) {
  *   --ctl end
  *   --ctl powersave on|off
  *   --ctl pak dsperate|drastic install
- *   --ctl set adhoc_switch 0|1
+ *   --ctl set adhoc_switch|compatibility_cores 0|1
  */
 static void ctl_print_status(void) {
 	NS_SessionInfo si;
@@ -1844,14 +1844,17 @@ static int ctl_main(int argc, char* argv[]) {
 	}
 
 	if (!strcmp(cmd, "set")) {
-		/* set adhoc_switch 0|1 */
-		if (strcmp(arg, "adhoc_switch") || argc < 3) {
-			snprintf(status, sizeof(status), "set adhoc_switch 0|1");
+		/* set adhoc_switch|compatibility_cores 0|1 */
+		NS_Settings* c = NS_settings();
+		bool* value = !strcmp(arg, "adhoc_switch") ? &c->adhoc_switch
+		            : !strcmp(arg, "compatibility_cores") ? &c->compatibility_cores : NULL;
+		if (!value || argc < 3) {
+			snprintf(status, sizeof(status), "set adhoc_switch|compatibility_cores 0|1");
 			return ctl_result(false);
 		}
-		NS_settings()->adhoc_switch = atoi(argv[2]) != 0;
+		*value = atoi(argv[2]) != 0;
 		NS_settingsSave();
-		snprintf(status, sizeof(status), "adhoc_switch=%d", NS_settings()->adhoc_switch ? 1 : 0);
+		snprintf(status, sizeof(status), "%s=%d", arg, *value ? 1 : 0);
 		return ctl_result(true);
 	}
 

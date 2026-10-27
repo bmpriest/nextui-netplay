@@ -440,6 +440,10 @@ class Runner:
             # The host keeps its LAN address while it serves ad hoc, or
             # nothing could reach a tunnelled guest.
             d.ctl("set", "adhoc_switch", "0")
+            # Two Bricks on different NextUI builds carry different cores;
+            # Netplay plays them on its packaged ones only when both devices
+            # allow it. Pairs whose builds match are unaffected.
+            d.ctl("set", "compatibility_cores", "1")
             log(f"{d}: {d.platform}, helpers pushed")
 
     def devbridge(self, devices, script, log_path, timeout):
