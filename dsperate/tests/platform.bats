@@ -13,7 +13,25 @@ profile_for() {
 @test "the Brick is the one TrimUI device with no sticks" {
     profile_for tg5040 brick
     [ "$PROFILE_INI" = "no-sticks" ]
-    [ "$PROFILE_MAP" = "$DSP_MAP_TRIMUI_NOSTICK" ]
+    [ "$PROFILE_MAP" = "$DSP_MAP_TRIMUI_BRICK" ]
+}
+
+@test "the Brick's F1 and F2 are mapped as L3 and R3 and named as on the device" {
+    profile_for tg5040 brick
+    case ",$PROFILE_MAP," in
+    *,leftstick:b9,*) ;;
+    *) return 1 ;;
+    esac
+    case ",$PROFILE_MAP," in
+    *,rightstick:b10,*) ;;
+    *) return 1 ;;
+    esac
+    [ "$PROFILE_LABELS" = "leftstick=F1 rightstick=F2" ]
+    # Nothing else names its buttons its own way.
+    profile_for tg5040 smartpro
+    [ -z "$PROFILE_LABELS" ]
+    profile_for h700 rg35xxplus
+    [ -z "$PROFILE_LABELS" ]
 }
 
 @test "the Smart Pro and Brick Pro have two sticks" {
@@ -119,6 +137,17 @@ profile_for() {
     done
 }
 
+@test "no platform marks a shader slow until it has been measured" {
+    for p in tg5040:brick tg5040:smartpro tg5050: h700:rg35xxplus h700:rg40xxh h700:rg28xx; do
+        PROFILE_SLOW_SHADERS="stale"
+        profile_for "${p%%:*}" "${p##*:}"
+        [ -z "$PROFILE_SLOW_SHADERS" ] || {
+            echo "$p marks $PROFILE_SLOW_SHADERS"
+            return 1
+        }
+    done
+}
+
 @test "only TrimUI adds the system library directory" {
     profile_for tg5040 brick
     [ "$PROFILE_LD_DIRS" = "/usr/trimui/lib" ]
@@ -135,7 +164,7 @@ profile_for() {
 }
 
 @test "every mapping uses SDL positional names and binds MENU to guide" {
-    for m in "$DSP_MAP_TRIMUI" "$DSP_MAP_TRIMUI_NOSTICK" "$DSP_MAP_H700_STICKS" \
+    for m in "$DSP_MAP_TRIMUI" "$DSP_MAP_TRIMUI_NOSTICK" "$DSP_MAP_TRIMUI_BRICK" "$DSP_MAP_H700_STICKS" \
         "$DSP_MAP_H700_LSTICK" "$DSP_MAP_H700_NOSTICK"; do
         [ -n "$m" ]
         # DSperate reads the DS A button from SDL's "b", so both must be present
@@ -150,6 +179,7 @@ profile_for() {
 
 @test "only the stick profiles name stick axes" {
     [ "${DSP_MAP_TRIMUI_NOSTICK#*leftx}" = "$DSP_MAP_TRIMUI_NOSTICK" ]
+    [ "${DSP_MAP_TRIMUI_BRICK#*leftx}" = "$DSP_MAP_TRIMUI_BRICK" ]
     [ "${DSP_MAP_H700_NOSTICK#*leftx}" = "$DSP_MAP_H700_NOSTICK" ]
     [ "${DSP_MAP_TRIMUI#*leftx}" != "$DSP_MAP_TRIMUI" ]
     [ "${DSP_MAP_H700_STICKS#*rightx}" != "$DSP_MAP_H700_STICKS" ]

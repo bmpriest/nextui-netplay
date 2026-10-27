@@ -54,6 +54,7 @@ static char joined_ssid[NS_SSID_LEN];  /* recorded into the session so the */
 static char joined_psk[NS_PSK_LEN];    /* launch stub can rejoin per game */
 static NS_ProgressFn ns_progress;      /* lets the UI animate a blocking join */
 static bool file_exists(const char* p);
+static bool hotspot_processes_alive(void);
 
 /* Everything that differs per platform lives in launcher/wifi-platform.sh, and
  * this is how the app reaches it.
@@ -184,6 +185,7 @@ void NS_init(void) {
 
 const char* NS_platform(void) { return ns_platform; }
 const char* NS_pakPath(void)  { return ns_pak; }
+const char* NS_sdPath(void)   { return ns_sd; }
 const char* NS_statePath(void) { return ns_state; }
 
 /* Read the first non-loopback IPv4 from `ip addr`. Cheaper and more portable
@@ -375,9 +377,15 @@ bool NS_wifiPowerSaveNeedsReload(void) {
 	return wifi_plat("powersave-needs-reload") == 0;
 }
 
-bool NS_wifiPowerSaveReload(char* err, int errlen) {
-	ns_log("reloading the wifi driver with power save off\n");
-	int rc = wifi_plat("powersave-reload off");
+bool NS_wifiPowerSaveReload(bool off, char* err, int errlen) {
+	/* The reload takes the whole radio down, and on the H700 the AP's wlan1
+	 * with it: a hosted session would lose every guest. */
+	if (hotspot_processes_alive()) {
+		snprintf(err, errlen, "End the hosted session first - the reload stops its network.");
+		return false;
+	}
+	ns_log("reloading the wifi driver with power save %s\n", off ? "off" : "on");
+	int rc = wifi_plat(off ? "powersave-reload off" : "powersave-reload on");
 	if (rc == 0) return true;
 	/* 3 is "driver back, no address yet": the supplicant usually finishes on
 	 * its own, so power save is off even though WiFi is not quite back. */
@@ -386,7 +394,11 @@ bool NS_wifiPowerSaveReload(char* err, int errlen) {
 	         ? "Driver reloaded - WiFi is still reconnecting."
 	         : "Could not reload the WiFi driver - reboot to recover.");
 	ns_log("wifi driver reload exited %d\n", WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
-	return reloaded && !NS_wifiPowerSaveNeedsReload();
+	return reloaded && NS_wifiPowerSaveNeedsReload() != off;
+}
+
+bool NS_wifiPowerSaveRadio(bool on) {
+	return wifi_plat(on ? "powersave on" : "powersave off") == 0;
 }
 
 void NS_wifiPowerSaveRestore(void) {
@@ -422,6 +434,7 @@ static NS_Settings ns_set = {
 	.simple_client = false,
 	.add_gameswitcher = false,
 	.disable_powersave = false,
+	.adhoc_switch = false,
 	.dsperate = false,
 	.drastic = false,
 	.status_icon   = NS_ICON_OFF,
@@ -540,6 +553,16 @@ void NS_settingsLoad(void) {
 		const char* k = line;
 		int v = atoi(eq + 1);
 
+		/* The two text settings first; everything else is a number. */
+		if (!strcmp(k, "quick_menu_keys")) {
+			snprintf(ns_set.quick_keys, sizeof(ns_set.quick_keys), "%s", eq + 1);
+			continue;
+		}
+		if (!strcmp(k, "quick_menu_label")) {
+			snprintf(ns_set.quick_label, sizeof(ns_set.quick_label), "%s", eq + 1);
+			continue;
+		}
+
 		if      (!strcmp(k, "share_cores"))   ns_set.share_cores = v != 0;
 		else if (!strcmp(k, "compatibility_cores")) ns_set.compatibility_cores = v != 0;
 		else if (!strcmp(k, "force_compatibility")) ns_set.force_compatibility = v != 0;
@@ -547,6 +570,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
+		else if (!strcmp(k, "adhoc_switch")) ns_set.adhoc_switch = v != 0;
 		else if (!strcmp(k, "dsperate")) ns_set.dsperate = v != 0;
 		else if (!strcmp(k, "drastic")) ns_set.drastic = v != 0;
 		else if (!strcmp(k, "status_icon"))
@@ -586,10 +610,13 @@ void NS_settingsSave(void) {
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
+	fprintf(f, "adhoc_switch=%d\n", ns_set.adhoc_switch ? 1 : 0);
 	fprintf(f, "dsperate=%d\n", ns_set.dsperate ? 1 : 0);
 	fprintf(f, "drastic=%d\n", ns_set.drastic ? 1 : 0);
 	fprintf(f, "status_icon=%d\n", (int)ns_set.status_icon);
 	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
+	fprintf(f, "quick_menu_keys=%s\n", ns_set.quick_keys);
+	fprintf(f, "quick_menu_label=%s\n", ns_set.quick_label);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -634,6 +661,71 @@ bool NS_coreInstalled(const char* core) {
 	snprintf(cmd, sizeof(cmd),
 	         "ls '%s/Emus/%s'/*.pak/%s_libretro.so >/dev/null 2>&1", ns_sd, ns_platform, core);
 	return system(cmd) == 0;
+}
+
+/* Cores the shim drives, as install-stubs.sh's NETPLAY_CORES lists them. */
+static const char* const SHIM_CORES[] = {
+	"fbneo", "fceumm", "snes9x", "snes9x2005", "mednafen_supafaust",
+	"picodrive", "pcsx_rearmed", "gpsp", "gambatte",
+};
+
+/* A launch.sh that names the system's core: Netplay's bind-mount wrapper
+ * keeps the original beside it as launch.sh.old; a legacy stub (no .old)
+ * delegates to NextUI's own pak, so it names nothing here. */
+static bool resolve_launcher(const char* path, char* out, int len) {
+	FILE* f = fopen(path, "r");
+	if (!f) return false;
+	char line[256];
+	bool ours = false;
+	for (int i = 0; i < 4 && fgets(line, sizeof(line), f); i++)
+		if (strstr(line, "Installed by Netplay.pak")) ours = true;
+	fclose(f);
+	if (!ours) { snprintf(out, len, "%s", path); return true; }
+	char old[660];
+	snprintf(old, sizeof(old), "%s.old", path);
+	if (!file_exists(old)) return false;
+	snprintf(out, len, "%s", old);
+	return true;
+}
+
+/* The launch.sh that runs a system: a pak on the card overrides NextUI's own. */
+static bool system_launcher(const char* tag, char* out, int len) {
+	char p[640];
+	snprintf(p, sizeof(p), "%s/Emus/%s/%s.pak/launch.sh", ns_sd, ns_platform, tag);
+	if (resolve_launcher(p, out, len)) return true;
+	snprintf(p, sizeof(p), "%s/.system/%s/paks/Emus/%s.pak/launch.sh", ns_sd, ns_platform, tag);
+	return resolve_launcher(p, out, len);
+}
+
+NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len) {
+	char path[700], line[256], first[32] = "";
+	if (core && core_len) core[0] = '\0';
+	if (!system_launcher(tag, path, sizeof(path))) return NS_SYS_ABSENT;
+	FILE* f = fopen(path, "r");
+	if (!f) return NS_SYS_ABSENT;
+	/* EMU_EXE=name, at the top level (arm64) or inside a case over EMU_TAG
+	 * (my282), so anywhere on the line - as install-stubs.sh matches it. */
+	NS_SystemState state = NS_SYS_PRESENT;
+	while (state != NS_SYS_READY && fgets(line, sizeof(line), f)) {
+		char* at = strstr(line, "EMU_EXE=");
+		if (!at) continue;
+		char name[32];
+		int n = 0;
+		for (at += 8; n < (int)sizeof(name) - 1 && (isalnum((unsigned char)*at) || *at == '_'); at++)
+			name[n++] = *at;
+		name[n] = '\0';
+		if (!n) continue;
+		if (!first[0]) snprintf(first, sizeof(first), "%s", name);
+		for (size_t i = 0; i < sizeof(SHIM_CORES) / sizeof(SHIM_CORES[0]); i++) {
+			if (strcmp(name, SHIM_CORES[i])) continue;
+			snprintf(first, sizeof(first), "%s", name);
+			state = NS_SYS_READY;
+			break;
+		}
+	}
+	fclose(f);
+	if (core && core_len) snprintf(core, core_len, "%s", first);
+	return state;
 }
 
 /* pak-manage.sh's kind argument, and how an error names the pak. */
@@ -684,6 +776,9 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
 		else if (!strcmp(line, "mismatch_ignored")) out->mismatch_ignored = atoi(eq) != 0;
 		else if (!strcmp(line, "base_installed")) out->base_installed = atoi(eq) != 0;
 		else if (!strcmp(line, "unsupported")) out->unsupported = atoi(eq) != 0;
+		else if (!strcmp(line, "base_bundled")) out->base_bundled = atoi(eq) != 0;
+		else if (!strcmp(line, "present")) out->present = atoi(eq) != 0;
+		else if (!strcmp(line, "backup")) out->has_backup = atoi(eq) != 0;
 		else if (!strcmp(line, "backup_date")) snprintf(out->backup_date, sizeof(out->backup_date), "%s", eq);
 	}
 	fclose(f);
@@ -692,6 +787,7 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out) {
 
 bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "install", err, errlen); }
 bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "ignore", err, errlen); }
+bool NS_pakRemove(NS_ManagedPak pak, char* err, int errlen) { return pak_helper(pak, "remove", err, errlen); }
 bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen) {
 	char args[64];
 	snprintf(args, sizeof(args), "restore %d %d %d", restore_pak ? 1 : 0, saves ? 1 : 0, states ? 1 : 0);
@@ -1121,6 +1217,13 @@ static bool write_compat_file(const char* path,
 /* Whether this device can offer each paired core: its setting is on and its
  * paired artifact is actually staged. Each bit must be present on both devices,
  * so the masks are exchanged with the manifest and intersected. */
+bool NS_gambatteDualAvailable(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/cores/override/%s/gambatte_dual_libretro.so",
+	         ns_pak, ns_platform);
+	return file_exists(path);
+}
+
 static uint32_t instanced_available_mask(void) {
 	char path[512];
 	uint32_t mask = 0;
@@ -1296,25 +1399,33 @@ int NS_compatSync(const char* host_ip, char* err, int errlen) {
 	int n = NS_coreManifest(mine, NS_MAX_MANIFEST);
 	if (n <= 0) { snprintf(err, errlen, "no cores found locally"); return -1; }
 
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) { snprintf(err, errlen, "no socket"); return -1; }
-
 	struct sockaddr_in a;
 	memset(&a, 0, sizeof(a));
 	a.sin_family = AF_INET;
 	a.sin_port = htons(NS_CORE_PORT);
 	if (inet_pton(AF_INET, host_ip, &a.sin_addr) != 1) {
-		close(fd);
 		snprintf(err, errlen, "bad host address");
 		return -1;
 	}
 
-	core_socket_deadline(fd, CORE_IO_MS);
-
-	if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
+	/* The first packet to a host is the one most likely lost: a Brick in
+	 * power save over a busy house AP missed ARP and the join failed in 4 s
+	 * with "no route to host", while the host was serving all along. Try
+	 * for about 20 s before calling the host absent. */
+	int fd = -1;
+	for (int attempt = 1; ; attempt++) {
+		fd = socket(AF_INET, SOCK_STREAM, 0);
+		if (fd < 0) { snprintf(err, errlen, "no socket"); return -1; }
+		core_socket_deadline(fd, CORE_IO_MS);
+		if (connect(fd, (struct sockaddr*)&a, sizeof(a)) == 0) break;
+		int e = errno;
 		close(fd);
-		snprintf(err, errlen, "host is not serving cores");
-		return -1;
+		ns_log("core check: connect to %s failed (%s), attempt %d\n", host_ip, strerror(e), attempt);
+		if (attempt >= 5) {
+			snprintf(err, errlen, "host is not serving cores");
+			return -1;
+		}
+		sleep(2);
 	}
 
 	NS_CoreInfo theirs[NS_MAX_MANIFEST];
@@ -1598,13 +1709,46 @@ bool NS_sessionInfo(NS_SessionInfo* out) {
 		char* value = strchr(line, '=');
 		if (!value) continue;
 		*value++ = '\0';
-		if (sscanf(line, "guest_%d_id", &i) == 1 && i >= 0 && i < 4)
+		/* sscanf counts conversions, not literals: "guest_%d_id" matches
+		 * guest_0_ip too, so check the field name after the number. */
+		char field[4] = "";
+		if (sscanf(line, "guest_%d_%3s", &i, field) != 2 || i < 0 || i >= 4) continue;
+		if (!strcmp(field, "id"))
 			snprintf(out->guest[i].id, sizeof(out->guest[i].id), "%s", value);
-		else if (sscanf(line, "guest_%d_ip", &i) == 1 && i >= 0 && i < 4)
+		else if (!strcmp(field, "ip"))
 			snprintf(out->guest[i].ip, sizeof(out->guest[i].ip), "%s", value);
 	}
 	fclose(f);
 	return true;
+}
+
+/* Start a detached netplay-broker.elf with `mode` as its argument (NULL for
+ * the host broker), logging to `log_name` in the state directory. */
+static pid_t spawn_broker(const char* mode, const char* log_name) {
+	char executable[512];
+	snprintf(executable, sizeof(executable), "%s/bin/%s/netplay-broker.elf", ns_pak, ns_platform);
+	if (access(executable, X_OK) != 0) return -1;
+
+	pid_t pid = fork();
+	if (pid != 0) return pid;
+	setsid();
+	char log_path[512];
+	snprintf(log_path, sizeof(log_path), "%s/%s", ns_state, log_name);
+	int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	int null_fd = open("/dev/null", O_RDONLY);
+	if (null_fd >= 0) { dup2(null_fd, STDIN_FILENO); close(null_fd); }
+	if (log_fd >= 0) {
+		dup2(log_fd, STDOUT_FILENO);
+		dup2(log_fd, STDERR_FILENO);
+		if (log_fd > STDERR_FILENO) close(log_fd);
+	}
+	long max_fd = sysconf(_SC_OPEN_MAX);
+	if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
+	for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) close(fd);
+	setenv("SDCARD_PATH", ns_sd, 1);
+	setenv("PLATFORM", ns_platform, 1);
+	execl(executable, executable, mode, (char*)NULL);
+	_exit(127);
 }
 
 bool NS_brokerStart(char* err, int errlen) {
@@ -1613,37 +1757,10 @@ bool NS_brokerStart(char* err, int errlen) {
 	snprintf(stale, sizeof(stale), "%s/broker.pid", ns_state); remove(stale);
 	snprintf(stale, sizeof(stale), "%s/broker.status", ns_state); remove(stale);
 
-	char executable[512];
-	snprintf(executable, sizeof(executable), "%s/bin/%s/netplay-broker.elf", ns_pak, ns_platform);
-	if (access(executable, X_OK) != 0) {
-		snprintf(err, errlen, "persistent host broker is missing");
-		return false;
-	}
-
-	pid_t pid = fork();
+	pid_t pid = spawn_broker(NULL, "broker.log");
 	if (pid < 0) {
-		snprintf(err, errlen, "could not start host broker");
+		snprintf(err, errlen, "persistent host broker is missing or could not start");
 		return false;
-	}
-	if (pid == 0) {
-		setsid();
-		char log_path[512];
-		snprintf(log_path, sizeof(log_path), "%s/broker.log", ns_state);
-		int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-		int null_fd = open("/dev/null", O_RDONLY);
-		if (null_fd >= 0) { dup2(null_fd, STDIN_FILENO); close(null_fd); }
-		if (log_fd >= 0) {
-			dup2(log_fd, STDOUT_FILENO);
-			dup2(log_fd, STDERR_FILENO);
-			if (log_fd > STDERR_FILENO) close(log_fd);
-		}
-		long max_fd = sysconf(_SC_OPEN_MAX);
-		if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
-		for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) close(fd);
-		setenv("SDCARD_PATH", ns_sd, 1);
-		setenv("PLATFORM", ns_platform, 1);
-		execl(executable, executable, (char*)NULL);
-		_exit(127);
 	}
 
 	for (int i = 0; i < 30; i++) {
@@ -1672,6 +1789,183 @@ void NS_brokerStop(void) {
 	char path[512];
 	snprintf(path, sizeof(path), "%s/broker.pid", ns_state); remove(path);
 	snprintf(path, sizeof(path), "%s/broker.status", ns_state); remove(path);
+}
+
+/* Ending a session reaches the guests.
+ *
+ * A host that ended its session used to leave its guests armed: on ad hoc they
+ * waited for the watchdog's three strikes to notice the network had gone, and
+ * a guest whose app was reopened first got its WiFi back but kept a session to
+ * a host that no longer existed (2026-10-26). Now the host says so, and the
+ * guest agent (netplay-broker.elf --guest, running for a guest's session) ends
+ * the guest's session and, after an ad hoc one, restores its WiFi.
+ *
+ * One UDP datagram, sent three times: to every guest the host knows of (the
+ * broker's table, and the AP's own station list in case a guest joined since
+ * the broker last looked), and as broadcasts on the AP's subnet and the LAN.
+ * A guest only acts on it from its own session's host address. */
+#define SESSION_END_PORT 55440
+static const char session_end_magic[] = "NETPLAY-END 1";
+static const char session_end_ack[] = "NETPLAY-END-ACK 1";
+static const char session_end_poll[] = "NETPLAY-POLL 1";
+
+static void send_session_end(int fd, const char* ip) {
+	struct sockaddr_in to;
+	memset(&to, 0, sizeof(to));
+	to.sin_family = AF_INET;
+	to.sin_port = htons(SESSION_END_PORT);
+	if (inet_pton(AF_INET, ip, &to.sin_addr) != 1) return;
+	sendto(fd, session_end_magic, sizeof(session_end_magic) - 1, 0,
+	       (struct sockaddr*)&to, sizeof(to));
+}
+
+static void notify_guests_session_end(void) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s) || s.role != NS_ROLE_HOST) return;
+	NS_Client clients[NS_MAX_CLIENTS];
+	int stations = NS_hotspotClients(clients, NS_MAX_CLIENTS);
+
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return;
+	int on = 1;
+	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+	/* On the agents' port, so their polls reach us while we end: a guest in
+	 * power save is awake just after it sends, and our answer to its poll
+	 * gets through where a notice pushed at it while it dozed did not. */
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+	struct sockaddr_in me;
+	memset(&me, 0, sizeof(me));
+	me.sin_family = AF_INET;
+	me.sin_port = htons(SESSION_END_PORT);
+	me.sin_addr.s_addr = htonl(INADDR_ANY);
+	if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0)
+		ns_log("session end: cannot listen for guests' polls (%s)\n", strerror(errno));
+	/* Repeated until every known guest acknowledges, 250 ms apart, for up
+	 * to 4 s. A guest in power save behind an H700's AP missed bursts - one
+	 * of 180 ms, then one of 1.5 s - and came home by its watchdog a minute
+	 * later. The agent's ACK is how we know it was heard. */
+	bool acked[4] = { false, false, false, false };
+	int want = s.guest_count < 4 ? s.guest_count : 4;
+	int got = 0;
+	struct timeval tv = { .tv_sec = 0, .tv_usec = 250 * 1000 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	int round = 0, polled = 0;
+	for (; round < 16 && (got < want || round < 2); round++) {
+		for (int i = 0; i < s.guest_count; i++) if (i >= 4 || !acked[i]) send_session_end(fd, s.guest[i].ip);
+		for (int i = 0; i < stations; i++) send_session_end(fd, clients[i].ip);
+		if (hotspot_processes_alive()) send_session_end(fd, "10.0.0.255");
+		send_session_end(fd, "255.255.255.255");
+		/* Collect ACKs until this round's 250 ms are up. */
+		struct timeval start, now;
+		gettimeofday(&start, NULL);
+		for (;;) {
+			char buf[64];
+			struct sockaddr_in from;
+			socklen_t fromlen = sizeof(from);
+			ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+			if (n == (ssize_t)(sizeof(session_end_poll) - 1) && !memcmp(buf, session_end_poll, (size_t)n)) {
+				sendto(fd, session_end_magic, sizeof(session_end_magic) - 1, 0,
+				       (struct sockaddr*)&from, fromlen);
+				polled++;
+			}
+			if (n == (ssize_t)(sizeof(session_end_ack) - 1) && !memcmp(buf, session_end_ack, (size_t)n)) {
+				char ip[NS_IP_LEN];
+				inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+				for (int i = 0; i < want; i++)
+					if (!acked[i] && !strcmp(ip, s.guest[i].ip)) { acked[i] = true; got++; }
+			}
+			gettimeofday(&now, NULL);
+			if ((now.tv_sec - start.tv_sec) * 1000 + (now.tv_usec - start.tv_usec) / 1000 >= 250) break;
+			if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break;
+		}
+	}
+	close(fd);
+	ns_log("told the guests the session is over (%d known, %d on the AP; %d of %d acknowledged after %d round(s), %d poll(s) answered)\n",
+	       s.guest_count, stations, got, want, round, polled);
+}
+
+bool NS_guestAgentStart(void) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s) || s.role != NS_ROLE_CLIENT) return false;
+	pid_t pid = spawn_broker("--guest", "guest.log");
+	if (pid < 0) { ns_log("guest agent is missing - host session ends will not reach us\n"); return false; }
+	waitpid(pid, NULL, WNOHANG);
+	return true;
+}
+
+/* The guest agent: runs for a guest's session and ends it when the host says
+ * the session is over. Exits on its own once the session is gone some other
+ * way. A second agent for the same session finds the port taken and leaves. */
+int NS_guestAgentRun(void) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s) || s.role != NS_ROLE_CLIENT) return 1;
+	struct in_addr host;
+	if (inet_pton(AF_INET, s.host, &host) != 1) { ns_log("guest agent: no host address\n"); return 1; }
+
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return 1;
+	struct sockaddr_in me;
+	memset(&me, 0, sizeof(me));
+	me.sin_family = AF_INET;
+	me.sin_port = htons(SESSION_END_PORT);
+	me.sin_addr.s_addr = htonl(INADDR_ANY);
+	/* The previous session's agent can still hold the port for a moment
+	 * while it puts WiFi back (a minute on an H700). Wait for it rather than
+	 * leave this session with nobody listening for its end. */
+	bool waited = false;
+	while (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
+		if (!waited) ns_log("guest agent: port %d taken - waiting for it\n", SESSION_END_PORT);
+		waited = true;
+		if (!NS_isArmed()) { close(fd); return 0; }
+		sleep(1);
+	}
+	ns_log("guest agent: watching for the end of the session with %s\n", s.host);
+
+	struct sockaddr_in host_addr;
+	memset(&host_addr, 0, sizeof(host_addr));
+	host_addr.sin_family = AF_INET;
+	host_addr.sin_port = htons(SESSION_END_PORT);
+	host_addr.sin_addr = host;
+	for (;;) {
+		/* Ask as well as listen: in power save we are awake just after we
+		 * send, so the host's answer arrives where its pushed notice, sent
+		 * while we dozed, was lost behind an H700's AP. Nobody answers until
+		 * the host is ending the session. */
+		sendto(fd, session_end_poll, sizeof(session_end_poll) - 1, 0,
+		       (struct sockaddr*)&host_addr, sizeof(host_addr));
+		struct pollfd p = { .fd = fd, .events = POLLIN };
+		int ready = poll(&p, 1, 1000);
+		if (!NS_isArmed()) { ns_log("guest agent: session ended here - exiting\n"); break; }
+		if (ready <= 0) continue;
+
+		char buf[64];
+		struct sockaddr_in from;
+		socklen_t fromlen = sizeof(from);
+		ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+		if (n != (ssize_t)(sizeof(session_end_magic) - 1) || memcmp(buf, session_end_magic, (size_t)n)) continue;
+		if (from.sin_addr.s_addr != host.s_addr) continue;
+
+		ns_log("guest agent: the host ended the session\n");
+		/* Tell the host it was heard, so it can stop repeating. Twice: the
+		 * ACK can be lost the same way the notice was. */
+		for (int i = 0; i < 2; i++)
+			sendto(fd, session_end_ack, sizeof(session_end_ack) - 1, 0,
+			       (struct sockaddr*)&from, fromlen);
+		/* Free the port before the slow part, for the next session's agent. */
+		close(fd);
+		fd = -1;
+		/* After an ad hoc session the host's network is going away with it:
+		 * put the station network back now rather than after the watchdog's
+		 * strikes, and before ending the session, whose own restore only runs
+		 * while the host's network is still there. */
+		char record[512];
+		snprintf(record, sizeof(record), "%s/wifi_restore", ns_state);
+		if (file_exists(record)) NS_wifiRestore();
+		NS_endSession();
+		break;
+	}
+	if (fd >= 0) close(fd);
+	return 0;
 }
 
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
@@ -1795,11 +2089,12 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	 * route creates a directory per system under Emus/<PLATFORM>/ and is kept
 	 * only for devices where mounting is unavailable. bind-mount.sh clears any
 	 * stubs left by a previous version before mounting, so the two can never be
-	 * active at once - an SD stub would shadow the mount and wrap twice. */
+	 * active at once - an SD stub would shadow the mount and wrap twice.
+	 * Its output goes to this log: the fallback is only worth taking knowingly. */
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' SYSTEM_PATH='%s/.system/%s' "
 	         "USERDATA_PATH='%s/.userdata/%s' "
-	         "sh '%s/launcher/bind-mount.sh' up >/dev/null 2>&1",
+	         "sh '%s/launcher/bind-mount.sh' up 1>&2",
 	         ns_sd, ns_platform, ns_sd, ns_platform, ns_sd, ns_platform, ns_pak);
 	if (system(cmd) != 0) {
 		ns_log("bind mounts unavailable - falling back to launch stubs\n");
@@ -1839,6 +2134,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 
 void NS_disarm(void) {
 	char cmd[1200];
+	notify_guests_session_end();
 	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
@@ -1877,6 +2173,7 @@ void NS_endSession(void) {
 	char cmd[1200];
 	NS_SessionInfo session;
 	bool was_client = NS_sessionInfo(&session) && session.role == NS_ROLE_CLIENT;
+	if (!was_client) notify_guests_session_end();
 	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
@@ -1987,8 +2284,13 @@ int NS_scanAdhoc(NS_Peer* out, int max) {
 	struct scan_ctx c = { out, max, 0 };
 
 	if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
-		/* Ask for a refresh but do not wait on it - this returns at once. */
-		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 scan >/dev/null 2>&1", ctrl);
+		/* Ask for a refresh but do not wait on it - this returns at once.
+		 * Drop entries not seen for 20 s first: a host's previous network
+		 * lingers in the cache after it stops, and with nothing else listed
+		 * a lone stale SSID was taken for the host and joined in vain. */
+		snprintf(cmd, sizeof(cmd),
+		         "wpa_cli -p %s -i wlan0 bss_flush 20 >/dev/null 2>&1;"
+		         " wpa_cli -p %s -i wlan0 scan >/dev/null 2>&1", ctrl, ctrl);
 		system(cmd);
 		snprintf(cmd, sizeof(cmd),
 		         "wpa_cli -p %s -i wlan0 scan_results 2>/dev/null "
@@ -2159,7 +2461,79 @@ static bool ap_interface(char* out, int len) {
 		}
 	}
 	pclose(p);
+	if (found) return true;
+
+	/* No iw (the H700): every wireless interface has a phy80211 link in
+	 * sysfs. Its 8821cs driver creates wlan1 for exactly this, in concurrent
+	 * mode, beside the station's wlan0. */
+	DIR* d = opendir("/sys/class/net");
+	if (!d) return false;
+	struct dirent* e;
+	while (!found && (e = readdir(d))) {
+		if (e->d_name[0] == '.' || !strcmp(e->d_name, "wlan0") ||
+		    !strncmp(e->d_name, "mon.", 4) || !strncmp(e->d_name, "p2p", 3)) continue;
+		char phy[320];
+		snprintf(phy, sizeof(phy), "/sys/class/net/%s/phy80211", e->d_name);
+		if (!file_exists(phy)) continue;
+		snprintf(out, len, "%s", e->d_name);
+		found = true;
+	}
+	closedir(d);
 	return found;
+}
+
+/* Two ways to serve the ad hoc network. hostapd where the firmware has it
+ * (TrimUI); otherwise a second wpa_supplicant in AP mode on the AP interface
+ * (the H700, whose wpa_supplicant 2.10 is built with AP support and which has
+ * no hostapd). That one gets its own control socket and pid file, so stopping
+ * the AP never touches the station's supplicant, and is never found by name.
+ * udhcpd likewise: the system's, or the one this pak ships. */
+#define AP_WPA_CONF  "/tmp/netplay_apwpa.conf"
+#define AP_WPA_CTRL  "/tmp/netplay_ap_ctrl"
+#define AP_WPA_PID   "/tmp/netplay_apwpa.pid"
+#define AP_IFACE     "/tmp/netplay_ap_iface"
+
+static bool have_command(const char* name) {
+	char cmd[128];
+	snprintf(cmd, sizeof(cmd), "command -v %s >/dev/null 2>&1", name);
+	return system(cmd) == 0;
+}
+
+static bool ap_via_supplicant(void) { return !have_command("hostapd"); }
+
+/* The AP supplicant's pid, or 0 when it is not running. */
+static int ap_supplicant_pid(void) {
+	FILE* f = fopen(AP_WPA_PID, "r");
+	int pid = 0;
+	if (f) { if (fscanf(f, "%d", &pid) != 1) pid = 0; fclose(f); }
+	if (pid <= 1) return 0;
+	char path[64], comm[32] = "";
+	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+	f = fopen(path, "r");
+	if (!f) return 0;
+	if (!fgets(comm, sizeof(comm), f)) comm[0] = '\0';
+	fclose(f);
+	return !strncmp(comm, "wpa_supplicant", 14) ? pid : 0;
+}
+
+static void ap_supplicant_stop(const char* apif) {
+	int pid = ap_supplicant_pid();
+	if (pid) {
+		char cmd[256];
+		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i %s terminate >/dev/null 2>&1", AP_WPA_CTRL, apif);
+		system(cmd);
+		for (int i = 0; i < 10 && kill(pid, 0) == 0; i++) usleep(300 * 1000);
+		if (kill(pid, 0) == 0) { ns_log("AP supplicant did not exit - killing it\n"); kill(pid, SIGKILL); }
+	}
+	remove(AP_WPA_PID);
+	remove(AP_IFACE);
+}
+
+/* Fills `out` with the udhcpd to run: the system's, else this pak's. */
+static bool udhcpd_command(char* out, int len) {
+	if (have_command("udhcpd")) { snprintf(out, len, "udhcpd"); return true; }
+	snprintf(out, len, "%s/bin/%s/udhcpd", ns_pak, ns_platform);
+	return access(out, X_OK) == 0;
 }
 
 /* hostapd leaves these behind when it is killed rather than stopped, and they
@@ -2222,8 +2596,59 @@ static int quiet_channel(void) {
 /* Both interfaces share one radio and the driver permits a single channel, so
  * the AP has to sit on whatever channel the station is already using. A
  * hardcoded channel is rejected outright whenever it disagrees. */
-static int station_channel(void) {
+#define STATION_CHANNEL_FILE "/tmp/netplay_station_channel"
+
+/* The station's frequency in MHz, any band; 0 when not associated. */
+static int station_freq(void) {
 	FILE* p = popen("iw dev wlan0 link 2>/dev/null | sed -n 's/.*freq: *//p' | head -1", "r");
+	if (!p) return 0;
+	char line[32] = "";
+	int freq = 0;
+	if (fgets(line, sizeof(line), p)) freq = atoi(line);
+	pclose(p);
+	if (!freq) {
+		/* No iw (the H700): the station's supplicant knows its frequency. */
+		char ctrl[256], cmd[400];
+		if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
+			snprintf(cmd, sizeof(cmd),
+			         "wpa_cli -p %s -i wlan0 status 2>/dev/null | sed -n 's/^freq=//p' | head -1", ctrl);
+			p = popen(cmd, "r");
+			if (p) {
+				if (fgets(line, sizeof(line), p)) freq = atoi(line);
+				pclose(p);
+			}
+		}
+	}
+	return freq;
+}
+
+static int station_channel(void) {
+	int freq = station_freq();
+	if (freq < 2412 || freq > 2484) return 0;
+	int ch = freq == 2484 ? 14 : (freq - 2407) / 5;
+	/* Remembered for station_home_channel, for when it is between networks. */
+	FILE* f = fopen(STATION_CHANNEL_FILE, "w");
+	if (f) { fprintf(f, "%d\n", ch); fclose(f); }
+	return ch;
+}
+
+/* Where the station's supplicant last saw one of its networks (enabled, or
+ * only backing off after failures: TEMP-DISABLED): the strongest scan result
+ * whose SSID it is configured for, or 0. */
+static int station_scan_channel(void) {
+	char ctrl[256], cmd[1024];
+	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return 0;
+	snprintf(cmd, sizeof(cmd),
+	         "{ wpa_cli -p %s -i wlan0 list_networks 2>/dev/null |"
+	         "  awk -F'\t' 'NR>1 && !index($4, \"[DISABLED]\") {print \"N\\t\" $2}';"
+	         "  wpa_cli -p %s -i wlan0 scan_results 2>/dev/null |"
+	         "  awk -F'\t' 'NR>1 {print \"S\\t\" $5 \"\\t\" $2 \"\\t\" $3}'; } |"
+	         " awk -F'\t' 'BEGIN {best = -1000}"
+	         " $1 == \"N\" {want[$2] = 1}"
+	         " $1 == \"S\" && ($2 in want) && $4 + 0 > best {best = $4 + 0; f = $3}"
+	         " END {print f + 0}'",
+	         ctrl, ctrl);
+	FILE* p = popen(cmd, "r");
 	if (!p) return 0;
 	char line[32] = "";
 	int freq = 0;
@@ -2231,6 +2656,100 @@ static int station_channel(void) {
 	pclose(p);
 	if (freq < 2412 || freq > 2484) return 0;
 	return freq == 2484 ? 14 : (freq - 2407) / 5;
+}
+
+/* The channel an AP must share with the station network. A station between
+ * associations (a lost beacon, a router slow to answer) reads as no channel;
+ * an AP surveyed onto another channel then pinned the one-channel radio there
+ * and the station could not get back to its network for the whole session
+ * (a Brick, 2026-10-26). Wait a little for it, then use where the supplicant
+ * last saw its network, then the channel it was last on (a supplicant just
+ * reconfigured has no scan results); 0 only with no station network at all. */
+#define STATION_STEERED_FILE "/tmp/netplay_station_steered"
+
+/* An H700 on a dual-band house network roams to 5 GHz, and its driver puts a
+ * concurrent AP on the station's channel: an ad hoc network there was
+ * invisible to Bricks, whose radios are 2.4 GHz only (2026-10-26). For the
+ * session, hold the station to the same network's 2.4 GHz band - a runtime
+ * freq_list, never saved - so it keeps its LAN and the AP lands where guests
+ * can see it. station_unsteer reloads the supplicant's own configuration. */
+static bool station_configured(void);
+
+static bool station_steer_24(void) {
+	int freq = station_freq();
+	if (freq >= 2412 && freq <= 2484) return true;   /* already on 2.4 */
+	/* Between networks counts too: a station reassociating as hosting begins
+	 * (the previous session's end had just reloaded the supplicant) came up
+	 * on 5 GHz mid-start and took the AP there. So every configured network
+	 * is pinned, not only the current one. */
+	if (!station_configured()) return true;
+	char ctrl[256], cmd[768];
+	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return false;
+	snprintf(cmd, sizeof(cmd),
+	         "ok=0; for id in $(wpa_cli -p %s -i wlan0 list_networks 2>/dev/null | awk 'NR>1 {print $1}'); do"
+	         " wpa_cli -p %s -i wlan0 set_network $id freq_list"
+	         " '2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472' | grep -q OK && ok=1; done;"
+	         " [ $ok = 1 ] && wpa_cli -p %s -i wlan0 reassociate | grep -q OK", ctrl, ctrl, ctrl);
+	ns_log("station on %d MHz; holding it to 2.4 GHz for the ad hoc session\n", freq);
+	if (system(cmd) != 0) { ns_log("could not steer the station to 2.4 GHz\n"); return false; }
+	FILE* f = fopen(STATION_STEERED_FILE, "w");
+	if (f) fclose(f);
+	for (int i = 0; i < 20; i++) {
+		sleep(1);
+		freq = station_freq();
+		if (freq >= 2412 && freq <= 2484) {
+			ns_log("station moved to %d MHz after %ds\n", freq, i + 1);
+			return true;
+		}
+	}
+	ns_log("station found no 2.4 GHz network in 20s; putting it back\n");
+	snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 reconfigure >/dev/null 2>&1", ctrl);
+	system(cmd);
+	remove(STATION_STEERED_FILE);
+	return false;
+}
+
+static void station_unsteer(void) {
+	if (!file_exists(STATION_STEERED_FILE)) return;
+	char ctrl[256], cmd[512];
+	if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
+		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 reconfigure >/dev/null 2>&1", ctrl);
+		system(cmd);
+		ns_log("station free to use any band again\n");
+	}
+	remove(STATION_STEERED_FILE);
+}
+
+static bool station_configured(void) {
+	char ctrl[256], cmd[512];
+	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return false;
+	snprintf(cmd, sizeof(cmd),
+	         "wpa_cli -p %s -i wlan0 list_networks 2>/dev/null |"
+	         " awk -F'\t' 'NR>1 && !index($4, \"[DISABLED]\") {n++} END {exit !n}'", ctrl);
+	return system(cmd) == 0;
+}
+
+static int remembered_station_channel(void) {
+	struct stat st;
+	if (stat(STATION_CHANNEL_FILE, &st) != 0 || time(NULL) - st.st_mtime > 6 * 3600) return 0;
+	FILE* f = fopen(STATION_CHANNEL_FILE, "r");
+	int ch = 0;
+	if (f) { if (fscanf(f, "%d", &ch) != 1) ch = 0; fclose(f); }
+	return ch >= 1 && ch <= 14 ? ch : 0;
+}
+
+static int station_home_channel(void) {
+	int ch = station_channel();
+	if (ch || !station_configured()) return ch;
+	for (int i = 0; !ch && i < 12; i++) {
+		sleep(1);
+		ch = station_channel();
+	}
+	if (!ch && (ch = station_scan_channel()))
+		ns_log("station not associated; following its network's last scanned channel %d\n", ch);
+	if (!ch && (ch = remembered_station_channel()))
+		ns_log("station not associated; following its last channel %d\n", ch);
+	return ch;
 }
 
 /* How the platform started its own supplicant, captured before we kill it.
@@ -2245,11 +2764,13 @@ static void wifi_client_stack_down(void) {
 	saved_supplicant[0] = '\0';
 	/* Match on argv[0] only. Matching anywhere in the command line also matches
 	 * the shell running this very search - its own arguments contain the string
-	 * - and whichever /proc entry came first would win. */
+	 * - and whichever /proc entry came first would win. The supplicant serving
+	 * an H700's AP is ours, not the station's, and is skipped. */
 	FILE* p = popen(
 		"for d in /proc/[0-9]*; do "
 		"  a0=$(tr '\\0' '\\n' < $d/cmdline 2>/dev/null | head -1); "
 		"  case \"$a0\" in */wpa_supplicant|wpa_supplicant) "
+		"    tr '\\0' ' ' < $d/cmdline 2>/dev/null | grep -q netplay_apwpa && continue; "
 		"    tr '\\0' ' ' < $d/cmdline 2>/dev/null; echo; break;; "
 		"  esac; "
 		"done 2>/dev/null", "r");
@@ -2538,6 +3059,9 @@ NS_Recovery NS_wifiRecoverIfStranded(void) {
 	char path[512];
 	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
 	if (!file_exists(path)) return NS_RECOVERY_NONE;   /* never moved the stack */
+	/* A host serving its own AP after the Ad Hoc Network Switch is off its
+	 * station network on purpose; ending the session reconnects it. */
+	if (hotspot_processes_alive()) return NS_RECOVERY_NONE;
 
 	bool connected = wifi_associated(NULL);
 	bool has_ip    = wifi_has_ip();
@@ -2574,6 +3098,15 @@ NS_Recovery NS_wifiRecoverIfStranded(void) {
 		snprintf(hook, sizeof(hook), "%s/wifi_restore_hook", ns_state);
 		remove(hook);
 	}
+	/* A guest whose host's network is gone has no session left to play,
+	 * whatever its session file says - as the watchdog decides when it is
+	 * the one to notice. Reopening the app first used to bring WiFi back and
+	 * leave the guest armed for a host that no longer existed. */
+	NS_SessionInfo s;
+	if (NS_sessionInfo(&s) && s.role == NS_ROLE_CLIENT && s.network[0]) {
+		ns_log("the host's network is gone - ending the guest session\n");
+		NS_endSession();
+	}
 	return back ? NS_RECOVERY_DONE : NS_RECOVERY_FAILED;
 }
 
@@ -2602,7 +3135,8 @@ static void wifi_client_leave_adhoc(void) {
  * cleanable. */
 static bool hotspot_processes_alive(void) {
 	return system("pidof hostapd >/dev/null 2>&1") == 0
-	    || system("pidof udhcpd  >/dev/null 2>&1") == 0;
+	    || system("pidof udhcpd  >/dev/null 2>&1") == 0
+	    || ap_supplicant_pid() != 0;
 }
 
 static bool active_hotspot_interface(char* out, int len) {
@@ -2613,13 +3147,48 @@ static bool active_hotspot_interface(char* out, int len) {
 	}
 	if (!hotspot_processes_alive()) return false;
 
-	FILE* conf = fopen("/tmp/netplay_hostapd.conf", "r");
+	/* An H700's AP supplicant records its interface; hostapd's config does. */
+	FILE* conf = fopen(AP_IFACE, "r");
+	if (conf && ap_supplicant_pid()) {
+		if (fscanf(conf, "%63s", out) != 1) out[0] = '\0';
+		fclose(conf);
+		return out[0] != '\0';
+	}
+	if (conf) fclose(conf);
+	conf = fopen("/tmp/netplay_hostapd.conf", "r");
 	char line[128];
 	while (conf && fgets(line, sizeof(line), conf)) {
 		if (sscanf(line, "interface=%63s", out) == 1) break;
 	}
 	if (conf) fclose(conf);
 	return out[0] != '\0';
+}
+
+/* A host that took the Ad Hoc Network Switch left its station network for the
+ * AP and owes a reconnect. In this process that is host_switched; in an app
+ * reopened mid-session it is the wifi_restore record, which a host only writes
+ * when it switches (a guest's record goes with joined_hotspot / on_own_adhoc). */
+static bool host_switched;
+
+static bool host_owes_reconnect(void) {
+	if (host_switched) return true;
+	if (joined_hotspot || on_own_adhoc()) return false;
+	char path[512];
+	snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+	return file_exists(path);
+}
+
+static void host_switch_back(void) {
+	if (!host_switched) return;
+	ns_log("ad hoc switch: back to the station network\n");
+	host_switched = false;
+	if (wifi_client_stack_up()) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+		remove(path);
+		snprintf(path, sizeof(path), "%s/wifi_restore_hook", ns_state);
+		remove(path);
+	}
 }
 
 bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
@@ -2633,11 +3202,15 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		snprintf(err, errlen, "invalid network name or passphrase");
 		return false;
 	}
-	char cur[128];
-	if (hotspot_running && ns_ap_if[0]
-	    && system("pidof hostapd >/dev/null 2>&1") == 0) {
-		snprintf(cur, sizeof(cur),
-		         "iw dev %s info 2>/dev/null | grep -q 'ssid %s'", ns_ap_if, ssid);
+	char cur[256];
+	bool supplicant_ap = ap_via_supplicant();
+	if (hotspot_running && ns_ap_if[0] &&
+	    (supplicant_ap ? ap_supplicant_pid() != 0 : system("pidof hostapd >/dev/null 2>&1") == 0)) {
+		if (supplicant_ap)
+			snprintf(cur, sizeof(cur), "wpa_cli -p %s -i %s status 2>/dev/null | grep -qx 'ssid=%s'",
+			         AP_WPA_CTRL, ns_ap_if, ssid);
+		else
+			snprintf(cur, sizeof(cur), "iw dev %s info 2>/dev/null | grep -q 'ssid %s'", ns_ap_if, ssid);
 		if (system(cur) == 0) {
 			ns_log("AP already up on %s as %s - keeping it\n", ns_ap_if, ssid);
 			return true;
@@ -2651,8 +3224,10 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 		snprintf(err, errlen, "no AP interface on this device - it cannot host ad hoc");
 		return false;
 	}
-	if (system("command -v udhcpd >/dev/null 2>&1") != 0) {
-		/* my282 ships no udhcpd. Without it a client associates and then sits
+	char udhcpd[512];
+	if (!udhcpd_command(udhcpd, sizeof(udhcpd))) {
+		/* my282 ships no udhcpd, and neither does the H700's firmware (this
+		 * pak brings one for it). Without it a client associates and then sits
 		 * with no address, which used to read as a hang. Say so instead. */
 		snprintf(err, errlen, "no udhcpd on this device - it cannot host ad hoc");
 		return false;
@@ -2660,7 +3235,23 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
-	int ch = station_channel();
+	/* Only an H700's dual-band radio can be on 5 GHz; a Brick's is 2.4 only. */
+	if (!ns_set.adhoc_switch && supplicant_ap) station_steer_24();
+	int ch = station_home_channel();
+	/* Ad Hoc Network Switch: leave the station network so the AP can take the
+	 * quietest channel instead of whatever the router is on. Surveyed now,
+	 * while still associated; the client stack comes down just before hostapd
+	 * starts, so a failure before then leaves WiFi as it was. */
+	bool switch_station = false;
+	if (ch && ns_set.adhoc_switch) {
+		int quiet = quiet_channel();
+		if (quiet) {
+			ns_log("ad hoc switch: leaving the station network on channel %d for channel %d\n",
+			       ch, quiet);
+			ch = quiet;
+			switch_station = true;
+		}
+	}
 	if (!ch) ch = quiet_channel();
 	if (!ch) ch = 1;
 
@@ -2692,6 +3283,7 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	system("killall -q -9 hostapd 2>/dev/null");
 	system("killall -q udhcpd 2>/dev/null");
 	system("killall -q -9 udhcpd 2>/dev/null");
+	if (supplicant_ap) ap_supplicant_stop(apif);
 	sleep(1);
 
 	/* Reset the interface before handing it to hostapd.
@@ -2709,26 +3301,60 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	drop_monitor_interfaces();
 	snprintf(cmd, sizeof(cmd), "ip link set %s down 2>/dev/null", apif);      system(cmd);
 	snprintf(cmd, sizeof(cmd), "ip addr flush dev %s 2>/dev/null", apif);     system(cmd);
-	snprintf(cmd, sizeof(cmd), "iw dev %s set type managed 2>/dev/null", apif); system(cmd);
+	if (!supplicant_ap) {
+		snprintf(cmd, sizeof(cmd), "iw dev %s set type managed 2>/dev/null", apif); system(cmd);
+	}
 	sleep(1);
 
 	/* Not -B. Its exit status only says it forked, which it does even when the
 	 * channel is rejected - the old "hostapd would not start" branch could never
 	 * fire. Run it in the background and wait for it to say AP-ENABLED. */
-	ns_log("starting AP on %s channel %d (station is on %d)\n", apif, ch, station_channel());
-	system("hostapd /tmp/netplay_hostapd.conf > /tmp/netplay_hostapd.log 2>&1 &");
+	/* Takes the client stack down the way a guest's join does, leaving the
+	 * same wifi_restore record, so a crash or reboot mid-session still has a
+	 * way back. */
+	if (switch_station) {
+		wifi_client_stack_down();
+		host_switched = true;
+	}
+
+	ns_log("starting AP on %s channel %d (station is on %d) with %s\n", apif, ch, station_channel(),
+	       supplicant_ap ? "wpa_supplicant" : "hostapd");
+	if (supplicant_ap) {
+		/* wpa_supplicant's AP mode: mode=2 with a fixed frequency. ap_scan=2
+		 * makes it use the network block as given rather than scanning for it.
+		 * The same AP-ENABLED line lands in the same log as hostapd's. */
+		f = fopen(AP_WPA_CONF, "w");
+		if (!f) { snprintf(err, errlen, "cannot write AP config"); host_switch_back(); return false; }
+		fprintf(f,
+			"ctrl_interface=%s\nap_scan=2\nnetwork={\n\tssid=\"%s\"\n\tmode=2\n\tfrequency=%d\n"
+			"\tkey_mgmt=WPA-PSK\n\tproto=RSN\n\tpairwise=CCMP\n\tgroup=CCMP\n\tpsk=\"%s\"\n}\n",
+			AP_WPA_CTRL, ssid, ch == 14 ? 2484 : 2407 + 5 * ch, psk);
+		fclose(f);
+		f = fopen(AP_IFACE, "w");
+		if (f) { fprintf(f, "%s\n", apif); fclose(f); }
+		remove("/tmp/netplay_hostapd.log");
+		snprintf(cmd, sizeof(cmd), "ip link set %s up 2>/dev/null", apif); system(cmd);
+		snprintf(cmd, sizeof(cmd),
+		         "wpa_supplicant -B -D nl80211 -i %s -c " AP_WPA_CONF " -P " AP_WPA_PID
+		         " -f /tmp/netplay_hostapd.log >/dev/null 2>&1", apif);
+		system(cmd);
+	} else {
+		system("hostapd /tmp/netplay_hostapd.conf > /tmp/netplay_hostapd.log 2>&1 &");
+	}
 
 	bool up = false;
 	for (int i = 0; i < 12 && !up; i++) {
 		sleep(1);
-		if (system("pidof hostapd >/dev/null 2>&1") != 0) break;
+		if (supplicant_ap ? !ap_supplicant_pid() : system("pidof hostapd >/dev/null 2>&1") != 0) break;
 		up = system("grep -q AP-ENABLED /tmp/netplay_hostapd.log 2>/dev/null") == 0;
 	}
 	if (!up) {
 		snprintf(err, errlen, "AP would not start on %s ch%d - see netplay_hostapd.log", apif, ch);
 		ns_log("%s\n", err);
 		system("sed 's/^/[netplay-app]   hostapd: /' /tmp/netplay_hostapd.log 1>&2 2>/dev/null");
-		system("killall -q hostapd 2>/dev/null");
+		if (supplicant_ap) ap_supplicant_stop(apif);
+		else system("killall -q hostapd 2>/dev/null");
+		host_switch_back();
 		return false;
 	}
 
@@ -2737,11 +3363,14 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 	snprintf(cmd, sizeof(cmd), "ip addr add " NS_HOTSPOT_HOST_IP "/24 dev %s 2>/dev/null", apif);
 	system(cmd);
 
-	system("udhcpd /tmp/netplay_udhcpd.conf >/dev/null 2>&1");
+	snprintf(cmd, sizeof(cmd), "%s /tmp/netplay_udhcpd.conf >/dev/null 2>&1", udhcpd);
+	system(cmd);
 	if (system("pidof udhcpd >/dev/null 2>&1") != 0) {
 		snprintf(err, errlen, "AP up but udhcpd would not run - clients get no address");
 		ns_log("%s\n", err);
-		system("killall -q hostapd 2>/dev/null");
+		if (supplicant_ap) ap_supplicant_stop(apif);
+		else system("killall -q hostapd 2>/dev/null");
+		host_switch_back();
 		return false;
 	}
 	ns_log("AP up on %s as %s, serving %s\n", apif, ssid, NS_HOTSPOT_HOST_IP);
@@ -2901,6 +3530,10 @@ void NS_hotspotStop(void) {
 			sleep(1);
 		}
 
+		/* An H700's AP is its own wpa_supplicant: told to terminate, which
+		 * deauthenticates its stations the same orderly way. */
+		if (ns_ap_if[0]) ap_supplicant_stop(ns_ap_if);
+
 		system("killall -q udhcpd 2>/dev/null");
 		system("killall -q -9 udhcpd 2>/dev/null");
 		/* Put the interface back to a state the next hostapd can configure.
@@ -2914,10 +3547,23 @@ void NS_hotspotStop(void) {
 			snprintf(cmd, sizeof(cmd), "iw dev %s set type managed 2>/dev/null", ns_ap_if); system(cmd);
 		}
 		ns_log("AP stopped\n");
+		station_unsteer();
 		hotspot_running = false;
 		ns_ap_if[0] = '\0';
-		/* The host never took the client stack down, so there is nothing to
-		 * restore here. */
+		/* The host never took the client stack down, but it can still have
+		 * lost the house network: the AP holds the radio's one channel, and if
+		 * the router moves to another mid-session every rejoin fails until the
+		 * supplicant backs off and stops trying, staying off after the AP is
+		 * gone (2026-10-26, a router moving from channel 10 to 7 overnight).
+		 * Ask it to start over. A host that took the Ad Hoc Network Switch
+		 * gave the network up on purpose, and gets its client stack back. */
+		if (host_owes_reconnect()) {
+			host_switched = true;
+			host_switch_back();
+		} else if (!wifi_link_up()) {
+			ns_log("station not associated after the AP stopped - reconfiguring the supplicant\n");
+			wifi_plat("supplicant-reconfigure");
+		}
 	}
 
 	/* Restore the client stack if we moved it - judged by what the radio is
@@ -2979,6 +3625,25 @@ int NS_hotspotClients(NS_Client* out, int max) {
 	char apif[64] = "";
 	active_hotspot_interface(apif, sizeof(apif));
 	if (!apif[0]) return 0;
+
+	if (!have_command("iw")) {
+		/* No station dump without iw (the H700): a guest is anyone holding
+		 * a complete neighbour entry on the AP interface, which a guest that
+		 * took a lease and talked to us does. */
+		FILE* a = fopen("/proc/net/arp", "r");
+		char row[256];
+		int n = 0;
+		while (a && n < max && fgets(row, sizeof(row), a)) {
+			char ip[NS_IP_LEN], flags[16], hw[32], dev[64];
+			if (sscanf(row, "%15s %*s %15s %31s %*s %63s", ip, flags, hw, dev) != 4) continue;
+			if (strcmp(dev, apif) || strcmp(flags, "0x2")) continue;
+			snprintf(out[n].mac, sizeof(out[n].mac), "%s", hw);
+			snprintf(out[n].ip, sizeof(out[n].ip), "%s", ip);
+			n++;
+		}
+		if (a) fclose(a);
+		return n;
+	}
 
 	char cmd[256];
 	snprintf(cmd, sizeof(cmd),

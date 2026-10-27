@@ -72,16 +72,6 @@ setup() {
     ! grep -q "original" "$DSP_CONFIG"
 }
 
-@test "a config seeded by an older revision is re-seeded once" {
-    dsp_seed_config
-    echo "# old revision" >>"$DSP_CONFIG"
-    echo "no-sticks" >"$DSP_DEVICE_FILE"
-    dsp_seed_config
-    ! grep -q "old revision" "$DSP_CONFIG"
-    grep -q "face_fix = off" "$DSP_CONFIG"
-    grep -q "quit = mod+b" "$DSP_CONFIG"
-}
-
 @test "deleting the marker re-seeds" {
     dsp_seed_config
     echo "# stale" >>"$DSP_CONFIG"
@@ -97,162 +87,50 @@ setup() {
     [ ! -f "$DSP_CONFIG" ]
 }
 
-@test "the pad mapping is assembled from the device GUID and the profile body" {
+@test "the pad mapping body is handed to DSperate, which reads the GUID itself" {
+    unset SDL_GAMECONTROLLERCONFIG
     dsp_export_pad_mapping
-    [ -n "$SDL_GAMECONTROLLERCONFIG" ]
-    # guid,name,body,platform:Linux
-    case "$SDL_GAMECONTROLLERCONFIG" in
-    "030000004c050000c405000011010000,Fake Pad,"*",platform:Linux") ;;
-    *)
-        echo "unexpected: $SDL_GAMECONTROLLERCONFIG"
-        return 1
-        ;;
-    esac
-    [ "${SDL_GAMECONTROLLERCONFIG#*guide:b}" != "$SDL_GAMECONTROLLERCONFIG" ]
+    [ "$MINUI_PAD_MAP" = "$DSP_MAP_TRIMUI_BRICK" ]
+    [ -z "$MINUI_PAD_MAP_FIXED" ]
+    [ "$MINUI_PAD_FIXED_GUID" = "$DSP_H700_FIXED_GUID" ]
+    # Exported, so DSperate sees them, and SDL is left to DSperate.
+    [ "$(sh -c 'echo "$MINUI_PAD_MAP"')" = "$DSP_MAP_TRIMUI_BRICK" ]
+    [ -z "${SDL_GAMECONTROLLERCONFIG:-}" ]
 }
 
-# Re-root the fake card on an h700 device whose pad reports <guid>.
+@test "mapping the pad does not start SDL a second time" {
+    printf '#!/bin/sh\necho ran >>"%s"\n' "$BATS_TEST_TMPDIR/pad-guid.log" >"$PAK_DIR/$PLATFORM/dsp-pad-guid"
+    chmod +x "$PAK_DIR/$PLATFORM/dsp-pad-guid"
+    dsp_export_pad_mapping
+    [ ! -f "$BATS_TEST_TMPDIR/pad-guid.log" ]
+}
+
+# Re-root the fake card on an h700 device.
 setup_h700_pad() {
     setup_launch h700 "$1"
-    unset LD_LIBRARY_PATH SDL_GAMECONTROLLERCONFIG
+    unset LD_LIBRARY_PATH MINUI_PAD_MAP MINUI_PAD_MAP_FIXED
     dsp_platform_profile h700 "$1"
     dsp_init_env
-    stub_pad_guid "$2" "ANBERNIC-keys"
 }
 
-@test "NextUI's fixed h700 layout takes the TrimUI mapping" {
-    setup_h700_pad rg40xxh "$DSP_H700_FIXED_GUID"
+@test "an h700 model passes its own body and NextUI's fixed-layout one" {
+    setup_h700_pad rg40xxh
     dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "$DSP_H700_FIXED_GUID,ANBERNIC-keys,$DSP_MAP_TRIMUI,platform:Linux" ]
-}
+    [ "$MINUI_PAD_MAP" = "$DSP_MAP_H700_STICKS" ]
+    [ "$MINUI_PAD_MAP_FIXED" = "$DSP_MAP_TRIMUI" ]
 
-@test "NextUI's fixed h700 layout on a stickless model takes the stickless TrimUI mapping" {
-    setup_h700_pad rg35xxplus "$DSP_H700_FIXED_GUID"
+    setup_h700_pad rg35xxplus
     dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "$DSP_H700_FIXED_GUID,ANBERNIC-keys,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
-}
-
-@test "an h700 pad on the old layout keeps the per-model mapping" {
-    # Pre-rc11 NextUI, or SDL_JOYSTICK_H700_FIXED_LAYOUT=0.
-    setup_h700_pad rg40xxh 19000000010000000100000000010000
-    dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "19000000010000000100000000010000,ANBERNIC-keys,$DSP_MAP_H700_STICKS,platform:Linux" ]
-
-    setup_h700_pad rg35xxplus 19000000010000000100000000010000
-    dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "19000000010000000100000000010000,ANBERNIC-keys,$DSP_MAP_H700_NOSTICK,platform:Linux" ]
-}
-
-@test "the fixed-layout GUID changes nothing off h700" {
-    stub_pad_guid "$DSP_H700_FIXED_GUID" "Fake Pad"
-    dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "$DSP_H700_FIXED_GUID,Fake Pad,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
-}
-
-@test "DevBridge's virtual pad on TrimUI shares the built-in body" {
-    # Same bus/vendor/product/version, different name CRC in bytes 2-3.
-    stub_pad_guid 0300a3845e0400008e02000014010000 "Xbox 360 Controller" \
-        03008ece5e0400008e02000014010000 "Xbox 360 Controller"
-    dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "0300a3845e0400008e02000014010000,Xbox 360 Controller,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux
-03008ece5e0400008e02000014010000,Xbox 360 Controller,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
-}
-
-@test "DevBridge's virtual pad on h700 takes its own body" {
-    setup_launch h700 rg35xxh
-    unset LD_LIBRARY_PATH SDL_GAMECONTROLLERCONFIG
-    dsp_platform_profile h700 rg35xxh
-    dsp_init_env
-    stub_pad_guid "$DSP_H700_FIXED_GUID" ANBERNIC-keys 06000000414e4245524e49432d6b6500 ANBERNIC-keys
-    dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "$DSP_H700_FIXED_GUID,ANBERNIC-keys,$DSP_MAP_TRIMUI,platform:Linux
-06000000414e4245524e49432d6b6500,ANBERNIC-keys,$DSP_MAP_H700_VIRTUAL,platform:Linux" ]
-}
-
-@test "an unknown second pad is left to SDL" {
-    stub_pad_guid 030000004c050000c405000011010000 "Fake Pad" 05000000aaaa0000bbbb000001000000 "BT Pad"
-    dsp_export_pad_mapping
-    [ "$SDL_GAMECONTROLLERCONFIG" = "030000004c050000c405000011010000,Fake Pad,$DSP_MAP_TRIMUI_NOSTICK,platform:Linux" ]
-}
-
-@test "no session means no network arguments" {
-    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
-    dsp_netplay_args
-    [ -z "$DSP_NET_ARGS" ]
-}
-
-# A fake Netplay.pak whose pre-launch.sh does nothing, and a session file.
-setup_session() {
-    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
-    NETPLAY_PAK="$BATS_TEST_TMPDIR/Netplay.pak"
-    mkdir -p "$NETPLAY_STATE" "$NETPLAY_PAK/launcher"
-    : >"$NETPLAY_PAK/launcher/pre-launch.sh"
-    printf '%s\n' "$@" >"$NETPLAY_STATE/session"
-    DSP_RESUME_ARGS=""
-    unset DS_LAN_TIMEOUT_MS DS_VERBOSE
-}
-
-@test "a host session hosts and boots fresh" {
-    setup_session role=host adhoc_ssid=nextui-TEST
-    dsp_netplay_args
-    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
-    [ "$DSP_RESUME_ARGS" = "--no-autoload" ]
-    # Ad hoc keeps DSperate's own MP wait.
-    [ -z "${DS_LAN_TIMEOUT_MS:-}" ]
-}
-
-@test "a guest session joins the host by address" {
-    setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
-    dsp_netplay_args
-    [ "$DSP_NET_ARGS" = "--lan-join 10.0.0.1" ]
-}
-
-@test "a picked slot survives a session" {
-    setup_session role=client peer=10.0.0.1
-    DSP_RESUME_ARGS="--load-state /x.3.dss"
-    dsp_netplay_args
-    [ "$DSP_RESUME_ARGS" = "--load-state /x.3.dss" ]
-}
-
-@test "a session through an access point waits longer for MP replies" {
-    setup_session role=client peer=192.168.0.2
-    dsp_netplay_args
-    [ "$DS_LAN_TIMEOUT_MS" = "100" ]
-    setup_session role=client peer=192.168.0.2 dsp_lan_timeout_ms=60
-    dsp_netplay_args
-    [ "$DS_LAN_TIMEOUT_MS" = "60" ]
-}
-
-@test "a guest with an unusable host address plays offline" {
-    setup_session role=client "peer=10.0.0.1;reboot"
-    dsp_netplay_args
-    [ -z "$DSP_NET_ARGS" ]
-    setup_session role=client
-    dsp_netplay_args
-    [ -z "$DSP_NET_ARGS" ]
-}
-
-@test "verbose Netplay logs turn on DSperate's" {
-    setup_session role=host verbose_logs=1
-    dsp_netplay_args
-    [ "$DS_VERBOSE" = "1" ]
-}
-
-@test "no pad means no mapping rather than a broken one" {
-    printf '#!/bin/sh\nexit 1\n' >"$PAK_DIR/$PLATFORM/dsp-pad-guid"
-    chmod +x "$PAK_DIR/$PLATFORM/dsp-pad-guid"
-    unset SDL_GAMECONTROLLERCONFIG
-    run dsp_export_pad_mapping
-    [ "$status" -eq 0 ]
-    [ -z "${SDL_GAMECONTROLLERCONFIG:-}" ]
+    [ "$MINUI_PAD_MAP" = "$DSP_MAP_H700_NOSTICK" ]
+    [ "$MINUI_PAD_MAP_FIXED" = "$DSP_MAP_TRIMUI_NOSTICK" ]
 }
 
 @test "an unsupported platform yields no mapping" {
     dsp_platform_profile miyoomini ""
-    unset SDL_GAMECONTROLLERCONFIG
+    unset MINUI_PAD_MAP
     run dsp_export_pad_mapping
     [ "$status" -eq 0 ]
-    [ -z "${SDL_GAMECONTROLLERCONFIG:-}" ]
+    [ -z "${MINUI_PAD_MAP:-}" ]
 }
 
 @test "bundled binaries come first on LD_LIBRARY_PATH, then NextUI, then the system" {
@@ -317,7 +195,8 @@ setup_session() {
     echo -n "8" >/tmp/resume_slot.txt
     ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/Game.nds"
     dsp_resume_args
-    [ "$DSP_RESUME_ARGS" = "--no-autoload" ]
+    [ "$DSP_RESUME_FLAG" = "--no-autoload" ]
+    [ -z "$DSP_LOAD_STATE" ]
     [ ! -f /tmp/resume_slot.txt ]
 }
 
@@ -325,7 +204,8 @@ setup_session() {
     echo -n "9" >/tmp/resume_slot.txt
     ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/Game.nds"
     dsp_resume_args
-    [ -z "$DSP_RESUME_ARGS" ]
+    [ -z "$DSP_RESUME_FLAG" ]
+    [ -z "$DSP_LOAD_STATE" ]
     [ ! -f /tmp/resume_slot.txt ]
 }
 
@@ -336,8 +216,11 @@ setup_session() {
     echo -n "3" >/tmp/resume_slot.txt
     ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/Some Game.nds"
     dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    : >"$DSP_STATES_DIR/Some Game.3.dss"
     dsp_resume_args
-    [ "$DSP_RESUME_ARGS" = "--load-state $DSP_STATES_DIR/Some Game.3.dss" ]
+    [ "$DSP_LOAD_STATE" = "$DSP_STATES_DIR/Some Game.3.dss" ]
+    [ -z "$DSP_RESUME_FLAG" ]
     [ ! -f /tmp/resume_slot.txt ]
 }
 
@@ -345,5 +228,521 @@ setup_session() {
     rm -f /tmp/resume_slot.txt
     ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/Game.nds"
     dsp_resume_args
-    [ -z "$DSP_RESUME_ARGS" ]
+    [ -z "$DSP_RESUME_FLAG" ]
+    [ -z "$DSP_LOAD_STATE" ]
+}
+
+# Stand in for the emulator in $BIN_DIR: it records its argv, one per line, so
+# a test sees exactly how the arguments were split.
+stub_dsperate() {
+    mkdir -p "$BIN_DIR"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/argv.txt"\n' "$BATS_TEST_TMPDIR" >"$BIN_DIR/dsperate"
+    chmod +x "$BIN_DIR/dsperate"
+}
+
+# Resume <rom name> from <slot> and run the stub the way main() does.
+run_resume() {
+    ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/$1"
+    dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    stub_dsperate
+    if [ -n "$2" ]; then
+        echo -n "$2" >/tmp/resume_slot.txt
+    else
+        rm -f /tmp/resume_slot.txt
+    fi
+    dsp_resume_args
+    cd "$BIN_DIR"
+    dsp_run_emulator
+}
+
+@test "a resume passes the state path to DSperate as one argument" {
+    # The regression behind issue 4: an unquoted path split on the spaces in
+    # the ROM name, DSperate took the last word as the ROM and quit.
+    _rom="Some Game (USA) [!].nds"
+    dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    : >"$DSP_STATES_DIR/Some Game (USA) [!].3.dss"
+    run_resume "$_rom" 3
+    printf '%s\n' "$ROM_PATH" --fullscreen --load-state "$DSP_STATES_DIR/Some Game (USA) [!].3.dss" >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+@test "a resume whose state is gone falls back to autoload" {
+    # An explicit --load-state that cannot be read fails the whole run, so a
+    # stale marker must not turn into one.
+    run run_resume "Some Game (USA).nds" 2
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"resume state "*"Some Game (USA).2.dss not found, falling back to autoload"* ]]
+    [ ! -f /tmp/resume_slot.txt ]
+    printf '%s\n' "$SDCARD_PATH/Roms/Nintendo DS (DSP)/Some Game (USA).nds" --fullscreen >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+@test "a plain launch passes --no-autoload as its own argument" {
+    run_resume "Some Game (USA).nds" 8
+    printf '%s\n' "$ROM_PATH" --fullscreen --no-autoload >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+@test "the sleep slot and no marker pass only the ROM" {
+    run_resume "Some Game (USA).nds" 9
+    printf '%s\n' "$ROM_PATH" --fullscreen >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+
+    run_resume "Some Game (USA).nds" ""
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+# A state header: "DSST" and a little-endian u32 format version.
+write_state() {
+    printf "DSST\\$(printf '%03o' "$2")\\000\\000\\000" >"$1"
+}
+
+@test "a resume from a state DSperate can no longer read falls back to autoload" {
+    # DSperate refuses states older than its oldest readable format, and a
+    # refused --load-state holds the panel on an error and then fails the run.
+    printf '4' >"$PAK_DIR/dsperate.state-version"
+    dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    write_state "$DSP_STATES_DIR/Some Game (USA).3.dss" 2
+    run run_resume "Some Game (USA).nds" 3
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Some Game (USA).3.dss predates this DSperate (format 2, needs 4), falling back to autoload"* ]]
+    printf '%s\n' "$SDCARD_PATH/Roms/Nintendo DS (DSP)/Some Game (USA).nds" --fullscreen >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+@test "a resume from a current state still passes it as one argument" {
+    printf '4' >"$PAK_DIR/dsperate.state-version"
+    dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    write_state "$DSP_STATES_DIR/Some Game (USA).3.dss" 4
+    run_resume "Some Game (USA).nds" 3
+    printf '%s\n' "$ROM_PATH" --fullscreen --load-state "$DSP_STATES_DIR/Some Game (USA).3.dss" >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+@test "a resume from a file that is not a state falls back to autoload" {
+    printf '4' >"$PAK_DIR/dsperate.state-version"
+    dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    printf 'not a state' >"$DSP_STATES_DIR/Some Game (USA).3.dss"
+    run run_resume "Some Game (USA).nds" 3
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Some Game (USA).3.dss is not a DSperate state, falling back to autoload"* ]]
+    printf '%s\n' "$SDCARD_PATH/Roms/Nintendo DS (DSP)/Some Game (USA).nds" --fullscreen >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+@test "without a recorded state version the state is passed through unchecked" {
+    # A pak built before dsperate.state-version existed must keep resuming.
+    rm -f "$PAK_DIR/dsperate.state-version"
+    dsp_init_env
+    mkdir -p "$DSP_STATES_DIR"
+    write_state "$DSP_STATES_DIR/Some Game (USA).3.dss" 2
+    run_resume "Some Game (USA).nds" 3
+    printf '%s\n' "$ROM_PATH" --fullscreen --load-state "$DSP_STATES_DIR/Some Game (USA).3.dss" >"$BATS_TEST_TMPDIR/want.txt"
+    diff "$BATS_TEST_TMPDIR/want.txt" "$BATS_TEST_TMPDIR/argv.txt"
+}
+
+# A fake NextUI: its settings file and the two fonts it ships.
+fake_nextui() {
+    mkdir -p "$SDCARD_PATH/.system/res"
+    : >"$SDCARD_PATH/.system/res/font1.ttf"
+    : >"$SDCARD_PATH/.system/res/font2.ttf"
+    printf '%s\n' "$@" >"$SHARED_USERDATA_PATH/minuisettings.txt"
+}
+
+@test "the pause menu takes NextUI's look, font and theme colours" {
+    fake_nextui "font=1" "color1=0xFFFFFFFF" "color2=0x9B2257FF" "color7=0x000000FF"
+    dsp_detect_style
+    [ "$MINUI_STYLE" = "nextui" ]
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/font1.ttf" ]
+    [ "$MINUI_COLOR2" = "0x9B2257FF" ]
+    [ "$MINUI_COLOR7" = "0x000000FF" ]
+    # Exported, so DSperate sees them.
+    [ "$(sh -c 'echo "$MINUI_STYLE $MINUI_COLOR2"')" = "nextui 0x9B2257FF" ]
+}
+
+@test "NextUI's font setting is read the way NextUI reads it" {
+    fake_nextui "font=0"
+    dsp_detect_style
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/font2.ttf" ]
+
+    fake_nextui "brightness=5"
+    dsp_detect_style
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/font1.ttf" ]
+
+    : >"$SDCARD_PATH/.system/res/custom.ttf"
+    fake_nextui "font=custom.ttf"
+    dsp_detect_style
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/custom.ttf" ]
+
+    # A font named but not on the card is not handed on.
+    fake_nextui "font=gone.ttf"
+    dsp_detect_style
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/font1.ttf" ]
+}
+
+@test "a settings line written with a carriage return still reads" {
+    printf 'font=0\r\ncolor2=0x112233FF\r\n' >"$SHARED_USERDATA_PATH/minuisettings.txt"
+    mkdir -p "$SDCARD_PATH/.system/res"
+    : >"$SDCARD_PATH/.system/res/font1.ttf"
+    : >"$SDCARD_PATH/.system/res/font2.ttf"
+    dsp_detect_style
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/font2.ttf" ]
+    [ "$MINUI_COLOR2" = "0x112233FF" ]
+}
+
+@test "stock MinUI gets its own look and BPreplay" {
+    mkdir -p "$SDCARD_PATH/.system/res"
+    : >"$SDCARD_PATH/.system/res/BPreplayBold-unhinted.otf"
+    dsp_detect_style
+    [ "$MINUI_STYLE" = "minui" ]
+    [ "$MINUI_FONT" = "$SDCARD_PATH/.system/res/BPreplayBold-unhinted.otf" ]
+}
+
+@test "minuisettings.txt alone is not NextUI" {
+    # MinUI forks write the file too; NextUI is the one that ships font1.ttf.
+    printf 'brightness=5\n' >"$SHARED_USERDATA_PATH/minuisettings.txt"
+    dsp_detect_style
+    [ "$MINUI_STYLE" = "minui" ]
+}
+
+@test "no font on the card leaves the menu its built-in one" {
+    dsp_detect_style
+    [ "$MINUI_STYLE" = "minui" ]
+    [ -z "$MINUI_FONT" ]
+}
+
+@test "every profile opens the pause menu on a MENU tap" {
+    dsp_seed_config
+    grep -q '^pause.alt = mod$' "$DSP_CONFIG"
+    # And migration has nothing to add to it.
+    cp "$DSP_CONFIG" "$BATS_TEST_TMPDIR/seeded.ini"
+    dsp_migrate_config
+    cmp -s "$DSP_CONFIG" "$BATS_TEST_TMPDIR/seeded.ini"
+}
+
+@test "an older config gains the MENU tap once, under [padhotkeys]" {
+    printf '[pad]\na = b\n\n[padhotkeys]\npause = mod+y\n\n[cheevos]\nenabled = true\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    dsp_migrate_config
+    [ "$(grep -c '^pause.alt = mod$' "$DSP_CONFIG")" -eq 1 ]
+    # In the section, not after it.
+    [ "$(sed -n '/^\[padhotkeys\]/,/^\[cheevos\]/p' "$DSP_CONFIG" | grep -c '^pause.alt = mod$')" -eq 1 ]
+    grep -q '^pause = mod+y$' "$DSP_CONFIG"
+    grep -q '^enabled = true$' "$DSP_CONFIG"
+}
+
+@test "a player's own pause.alt is kept, even none" {
+    printf '[padhotkeys]\npause = mod+y\npause.alt = none\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    ! grep -q '^pause.alt = mod$' "$DSP_CONFIG"
+    grep -q '^pause.alt = none$' "$DSP_CONFIG"
+}
+
+@test "a keyboard pause.alt does not count as the pad's" {
+    printf '[hotkeys]\npause.alt = F1\n\n[padhotkeys]\npause = mod+y\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    [ "$(sed -n '/^\[padhotkeys\]/,$p' "$DSP_CONFIG" | grep -c '^pause.alt = mod$')" -eq 1 ]
+    grep -q '^pause.alt = F1$' "$DSP_CONFIG"
+}
+
+@test "a config with no [padhotkeys] gains one" {
+    printf '[pad]\na = b\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    [ "$(sed -n '/^\[padhotkeys\]/,$p' "$DSP_CONFIG" | grep -c '^pause.alt = mod$')" -eq 1 ]
+}
+
+@test "no config means nothing to migrate" {
+    rm -f "$DSP_CONFIG"
+    dsp_migrate_config
+    [ ! -f "$DSP_CONFIG" ]
+}
+
+@test "every profile already has what migration adds" {
+    for profile in no-sticks one-stick two-sticks; do
+        rm -f "$DSP_DEVICE_FILE"
+        PROFILE_INI="$profile"
+        dsp_seed_config
+        cp "$DSP_CONFIG" "$BATS_TEST_TMPDIR/seeded.ini"
+        dsp_migrate_config
+        cmp -s "$DSP_CONFIG" "$BATS_TEST_TMPDIR/seeded.ini"
+    done
+}
+
+@test "an older config gains MENU+START and loses the state and mic chords, once" {
+    printf '[padhotkeys]\npause = mod+y\npause.alt = mod\n\n[cheevos]\nenabled = true\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    dsp_migrate_config
+    section="$(sed -n '/^\[padhotkeys\]/,/^\[cheevos\]/p' "$DSP_CONFIG")"
+    [ "$(echo "$section" | grep -c '^pip_corner_next = mod+start$')" -eq 1 ]
+    for key in save_state load_state slot_next slot_prev mic; do
+        [ "$(echo "$section" | grep -c "^$key = none$")" -eq 1 ]
+    done
+}
+
+@test "a player's own state and pip chords are kept" {
+    printf '[padhotkeys]\npause = mod+y\nsave_state = mod+rightshoulder\nslot_next = none\npip_corner_next = mod+x\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    grep -q '^save_state = mod+rightshoulder$' "$DSP_CONFIG"
+    [ "$(grep -c '^slot_next' "$DSP_CONFIG")" -eq 1 ]
+    grep -q '^pip_corner_next = mod+x$' "$DSP_CONFIG"
+    ! grep -q '^pip_corner_next = mod+start$' "$DSP_CONFIG"
+    grep -q '^load_state = none$' "$DSP_CONFIG"
+}
+
+@test "MENU+START is not added where it is already taken" {
+    printf '[padhotkeys]\npause = mod+y\nscreenshot = mod+start\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    ! grep -q '^pip_corner_next' "$DSP_CONFIG"
+}
+
+@test "with no pause line, upstream's MENU+START pause keeps it" {
+    printf '[padhotkeys]\nquit = mod+a\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    ! grep -q '^pip_corner_next' "$DSP_CONFIG"
+    grep -q '^save_state = none$' "$DSP_CONFIG"
+}
+
+@test "the pause menu is told the profile it restores shortcuts from" {
+    [ "$MINUI_PROFILE_INI" = "$PAK_DIR/configs/no-sticks.ini" ]
+    [ -f "$MINUI_PROFILE_INI" ]
+}
+
+@test "the pause menu is told what the Brick calls its F1 and F2" {
+    dsp_export_pad_mapping
+    [ "$MINUI_BUTTON_LABELS" = "leftstick=F1 rightstick=F2" ]
+}
+
+@test "a device that names its buttons as SDL does exports no labels" {
+    dsp_platform_profile tg5040 smartpro
+    dsp_export_pad_mapping
+    [ -z "$MINUI_BUTTON_LABELS" ]
+}
+
+@test "the pause menu is told which shaders are slow on the platform" {
+    PROFILE_SLOW_SHADERS="colour:natural_vision pattern:beads"
+    dsp_export_shaders
+    [ "$MINUI_SLOW_SHADERS" = "colour:natural_vision pattern:beads" ]
+    PROFILE_SLOW_SHADERS=""
+    dsp_export_shaders
+    [ -z "$MINUI_SLOW_SHADERS" ]
+}
+
+@test "shader-timing.txt turns the shader timing on, and stays" {
+    unset MINUI_SHADER_TIMING
+    dsp_export_shaders
+    [ -z "${MINUI_SHADER_TIMING:-}" ]
+    touch "$DSP_USERDATA_DIR/shader-timing.txt"
+    dsp_export_shaders
+    [ "$MINUI_SHADER_TIMING" = "1" ]
+    [ -f "$DSP_USERDATA_DIR/shader-timing.txt" ]
+}
+
+@test "probe.txt runs the probe once, and nothing runs without it" {
+    printf '#!/bin/sh\necho "$@" >>"%s"\n' "$BATS_TEST_TMPDIR/probe.log" >"$PAK_DIR/$PLATFORM/dsp-pad-guid"
+    chmod +x "$PAK_DIR/$PLATFORM/dsp-pad-guid"
+    dsp_probe_buttons
+    [ ! -f "$BATS_TEST_TMPDIR/probe.log" ]
+    touch "$DSP_USERDATA_DIR/probe.txt"
+    dsp_probe_buttons
+    dsp_probe_buttons
+    [ "$(cat "$BATS_TEST_TMPDIR/probe.log")" = "--probe 15" ]
+    [ ! -f "$DSP_USERDATA_DIR/probe.txt" ]
+}
+
+@test "a probe that fails does not stop the launch" {
+    printf '#!/bin/sh\nexit 1\n' >"$PAK_DIR/$PLATFORM/dsp-pad-guid"
+    chmod +x "$PAK_DIR/$PLATFORM/dsp-pad-guid"
+    touch "$DSP_USERDATA_DIR/probe.txt"
+    run dsp_probe_buttons
+    [ "$status" -eq 0 ]
+}
+
+@test "NextUI's screenshot notice setting reaches the pause menu" {
+    mkdir -p "$SDCARD_PATH/.system/res"
+    touch "$SDCARD_PATH/.system/res/font1.ttf"
+    printf 'font=1\r\n' >"$SHARED_USERDATA_PATH/minuisettings.txt"
+    dsp_detect_style
+    [ "$MINUI_NOTIFY_SCREENSHOT" = "1" ]
+    printf 'font=1\r\nnotifyScreenshot=0\r\n' >"$SHARED_USERDATA_PATH/minuisettings.txt"
+    dsp_detect_style
+    [ "$MINUI_NOTIFY_SCREENSHOT" = "0" ]
+    printf 'notifyScreenshot=0\nnotifyScreenshot=1\n' >"$SHARED_USERDATA_PATH/minuisettings.txt"
+    dsp_detect_style
+    [ "$MINUI_NOTIFY_SCREENSHOT" = "1" ]
+}
+
+@test "stock MinUI always gets the screenshot notice" {
+    printf 'notifyScreenshot=0\n' >"$SHARED_USERDATA_PATH/minuisettings.txt"
+    dsp_detect_style
+    [ "$MINUI_STYLE" = "minui" ]
+    [ "$MINUI_NOTIFY_SCREENSHOT" = "1" ]
+}
+
+@test "an older config keeps its screenshot chord" {
+    printf '[padhotkeys]\npause = mod+y\nscreenshot = mod+b\n' >"$DSP_CONFIG"
+    dsp_migrate_config
+    grep -q '^screenshot = mod+b$' "$DSP_CONFIG"
+}
+
+@test "cleanup does not wait when DSperate has already exited" {
+    printf '#!/bin/sh\nexit 1\n' >"$STUB_BIN/pidof"
+    printf '#!/bin/sh\necho "sleep $*" >>"%s"\n' "$BATS_TEST_TMPDIR/calls.log" >"$STUB_BIN/sleep"
+    printf '#!/bin/sh\necho "killall $*" >>"%s"\n' "$BATS_TEST_TMPDIR/calls.log" >"$STUB_BIN/killall"
+    chmod +x "$STUB_BIN/pidof" "$STUB_BIN/sleep" "$STUB_BIN/killall"
+    run cleanup
+    [ "$status" -eq 0 ]
+    [ ! -f "$BATS_TEST_TMPDIR/calls.log" ]
+    echo "$output" | grep -q '^timing: .* synced$'
+}
+
+@test "cleanup stops a DSperate that is still running" {
+    printf '#!/bin/sh\nexit 0\n' >"$STUB_BIN/pidof"
+    printf '#!/bin/sh\necho "sleep $*" >>"%s"\n' "$BATS_TEST_TMPDIR/calls.log" >"$STUB_BIN/sleep"
+    printf '#!/bin/sh\necho "killall $*" >>"%s"\n' "$BATS_TEST_TMPDIR/calls.log" >"$STUB_BIN/killall"
+    chmod +x "$STUB_BIN/pidof" "$STUB_BIN/sleep" "$STUB_BIN/killall"
+    run cleanup
+    [ "$status" -eq 0 ]
+    [ "$(sed -n 1p "$BATS_TEST_TMPDIR/calls.log")" = "killall -q -15 dsperate" ]
+    [ "$(sed -n 2p "$BATS_TEST_TMPDIR/calls.log")" = "sleep 2" ]
+    [ "$(sed -n 3p "$BATS_TEST_TMPDIR/calls.log")" = "killall -q -9 dsperate" ]
+}
+
+@test "timing marks name what happened" {
+    run dsp_mark "launch"
+    [ "$status" -eq 0 ]
+    case "$output" in
+    "timing: "*" launch") ;;
+    *) return 1 ;;
+    esac
+}
+
+# ── Netplay.pak ──────────────────────────────────────────────────────────────
+
+@test "a config seeded by the upstream pak is re-seeded once" {
+    dsp_seed_config
+    echo "# upstream seed" >>"$DSP_CONFIG"
+    echo "no-sticks" >"$DSP_DEVICE_FILE"
+    dsp_seed_config
+    ! grep -q "upstream seed" "$DSP_CONFIG"
+    grep -q "face_fix = off" "$DSP_CONFIG"
+    dsp_seed_config
+    [ "$(cat "$DSP_DEVICE_FILE")" = "no-sticks@3" ]
+}
+
+@test "every profile turns face_fix off: the bodies are positional" {
+    for ini in "$REPO_ROOT"/config/dsperate/*.ini; do
+        grep -q '^face_fix = off$' "$ini" || return 1
+    done
+}
+
+@test "DevBridge's virtual pad body reaches DSperate on h700 only" {
+    [ -z "$(sh -c 'echo "${MINUI_PAD_MAP_VIRTUAL:-}"')" ]
+    dsp_export_pad_mapping
+    [ -z "$MINUI_PAD_MAP_VIRTUAL" ]
+    setup_launch h700 rg35xxh
+    dsp_platform_profile h700 rg35xxh
+    dsp_init_env
+    dsp_export_pad_mapping
+    [ "$MINUI_PAD_MAP_VIRTUAL" = "$DSP_MAP_H700_VIRTUAL" ]
+    [ "$(sh -c 'echo "$MINUI_PAD_MAP_VIRTUAL"')" = "$DSP_MAP_H700_VIRTUAL" ]
+}
+
+@test "no session means no network arguments" {
+    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+}
+
+# A fake Netplay.pak whose pre-launch.sh does nothing, and a session file.
+setup_session() {
+    NETPLAY_STATE="$BATS_TEST_TMPDIR/np-state"
+    NETPLAY_PAK="$BATS_TEST_TMPDIR/Netplay.pak"
+    mkdir -p "$NETPLAY_STATE" "$NETPLAY_PAK/launcher"
+    : >"$NETPLAY_PAK/launcher/pre-launch.sh"
+    printf '%s\n' "$@" >"$NETPLAY_STATE/session"
+    DSP_RESUME_FLAG=""
+    DSP_LOAD_STATE=""
+    unset DS_LAN_TIMEOUT_MS DS_VERBOSE
+}
+
+@test "a host session hosts and boots fresh" {
+    setup_session role=host adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
+    [ "$DSP_RESUME_FLAG" = "--no-autoload" ]
+    # Ad hoc waits 50 ms for MP replies, not DSperate's 25.
+    [ "$DS_LAN_TIMEOUT_MS" = "50" ]
+}
+
+@test "a session's own MP wait wins on ad hoc too" {
+    setup_session role=host adhoc_ssid=nextui-TEST dsp_lan_timeout_ms=25
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "25" ]
+}
+
+@test "DSperate taken out of Netplay plays offline in a session" {
+    setup_session role=host adhoc_ssid=nextui-TEST
+    printf 'dsperate=0\n' >"$NETPLAY_STATE/settings"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+    printf 'dsperate=1\n' >"$NETPLAY_STATE/settings"
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-host Netplay" ]
+}
+
+@test "a guest session joins the host by address" {
+    setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    [ "$DSP_NET_ARGS" = "--lan-join 10.0.0.1" ]
+}
+
+@test "a picked slot survives a session" {
+    setup_session role=client peer=10.0.0.1
+    DSP_LOAD_STATE="/x.3.dss"
+    dsp_netplay_args
+    [ "$DSP_LOAD_STATE" = "/x.3.dss" ]
+    [ -z "$DSP_RESUME_FLAG" ]
+}
+
+@test "a session's network arguments reach DSperate as separate words" {
+    setup_session role=client peer=10.0.0.1 adhoc_ssid=nextui-TEST
+    dsp_netplay_args
+    stub_dsperate
+    ROM_PATH="$SDCARD_PATH/Roms/Nintendo DS (DSP)/Mario Kart DS.nds"
+    cd "$BIN_DIR"
+    dsp_run_emulator
+    [ "$(cat "$BATS_TEST_TMPDIR/argv.txt")" = "$ROM_PATH
+--fullscreen
+--no-autoload
+--lan-join
+10.0.0.1" ]
+}
+
+@test "a session through an access point waits longer for MP replies" {
+    setup_session role=client peer=192.168.0.2
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "100" ]
+    setup_session role=client peer=192.168.0.2 dsp_lan_timeout_ms=60
+    dsp_netplay_args
+    [ "$DS_LAN_TIMEOUT_MS" = "60" ]
+}
+
+@test "a guest with an unusable host address plays offline" {
+    setup_session role=client "peer=10.0.0.1;reboot"
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+    setup_session role=client
+    dsp_netplay_args
+    [ -z "$DSP_NET_ARGS" ]
+}
+
+@test "verbose Netplay logs turn on DSperate's" {
+    setup_session role=host verbose_logs=1
+    dsp_netplay_args
+    [ "$DS_VERBOSE" = "1" ]
 }

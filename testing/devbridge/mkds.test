@@ -1,0 +1,120 @@
+# Mario Kart DS over the Netplay session, any pairing of DS emulators:
+# DSperate (DSP.pak) or DraStic (NDS.pak with Netplay's radio overlay) on
+# each side. matrix.py fills in which:
+#
+#   {host_ds} {guest_ds}    dsp | nds   (ref prefix, tag below)
+#   {host_pak} {guest_pak}  DSP | NDS   (OPEN_GAME tag and ROM folder)
+#   {min_fps}               check.sh's floor for the session average
+#
+# and keeps a line marked [host:dsp], [guest:nds] etc. only when that side
+# runs that emulator. Both devices need the ROM at
+# Roms/Nintendo DS (<pak>)/mariokart.nds and a Mario Kart save made once by
+# hand (the first boot asks for a nickname and emblem).
+#
+# The menu checks poll (DevBridge ee0079b): the main menu settles 9-15 s after
+# launch depending on the device and its card, and runs into the attract
+# demo about 8 s later, so a fixed wait missed it on a slow launcher.
+#
+# The two consoles are launched one after the other and each walks to the
+# group screens on its own: each game's attract demo runs on its own launch
+# clock (DSP.pak's launcher took 11 s on a Brick whose card is mounted sync,
+# 0.3 s on another), and launched together the faster one reached its demo
+# first. The host's group then waits, seeking, until the guest arrives.
+#
+# Every press is keys.sh's, held on the device for exactly what it says:
+# a DevBridge BTN is two round trips, and through a tunnel to a Brick with a
+# poor link that was seconds and DraStic dropped it. DraStic needs 0.3 s holds
+# (it misses 0.15-0.2 s), and Mario Kart drops the first D-pad press after its
+# menu settles, so a harmless RIGHT goes first, 2 s after the menu shows.
+
+all:WAIT_FOR devbridge 30000
+
+# --- host: launch, MULTIPLAYER, CREATE GROUP (Normal), seeking -------------
+host:OPEN_GAME {host_pak} "Nintendo DS ({host_pak})/mariokart.nds"
+host:WAIT_FOR game 30000
+[host:dsp] host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 25000
+[host:dsp] host:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
+[host:nds] host:VERIFY_WAIT {host_refs}/nds-mk-menu.png 25000
+[host:nds] host:TRM sh {helpers}/keys.sh sleep:2 right:0.3:1 down:0.3:1.5
+[host:nds] host:VERIFY_WAIT {host_refs}/nds-mk-menu-multiplayer.png 3000
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-groups.png 6000
+# Up from the first room wraps to CREATE GROUP.
+[host:dsp] host:TRM sh {helpers}/keys.sh up:0.2:0.8 a:0.2:2
+[host:nds] host:TRM sh {helpers}/keys.sh up:0.3:1.2 a:0.3:2.5
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-normal-host.png 6000
+[host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:2
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-seeking-host.png 10000
+
+# --- guest: launch, MULTIPLAYER, the host's room ---------------------------
+guest:OPEN_GAME {guest_pak} "Nintendo DS ({guest_pak})/mariokart.nds"
+guest:WAIT_FOR game 30000
+[guest:dsp] guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 25000
+[guest:dsp] guest:TRM sh {helpers}/keys.sh down:0.2:0.8 a:0.2:0
+[guest:nds] guest:VERIFY_WAIT {guest_refs}/nds-mk-menu.png 25000
+[guest:nds] guest:TRM sh {helpers}/keys.sh sleep:2 right:0.3:1 down:0.3:1.5
+[guest:nds] guest:VERIFY_WAIT {guest_refs}/nds-mk-menu-multiplayer.png 3000
+[guest:nds] guest:TRM sh {helpers}/keys.sh a:0.3:0
+# No check of the empty browser: the host's room may already be listed. A
+# before the room arrives would create a rival group; DraStic's Mario Kart
+# also ignores A for a moment after the row appears.
+guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-rooms-guest.png 20000
+# Press A until the lobby shows (an A in the lobby does nothing for a guest):
+# an H700's DraStic, power save on, let the first A go even after the wait.
+[guest:dsp] guest:VERIFY_UNTIL {guest_refs}/dsp-mk-lobby-guest.png 40000 every=6000 :: sh {helpers}/keys.sh a:0.2:0
+[guest:nds] guest:VERIFY_UNTIL {guest_refs}/nds-mk-lobby-guest.png 40000 every=6000 :: sh {helpers}/keys.sh sleep:1.5 a:0.3:0
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-lobby-host.png 10000
+
+# The lobby has to hold: a dropped guest falls back to 1/8.
+WAIT 15000
+host:VERIFY {host_refs}/{host_ds}-mk-lobby-host.png
+guest:VERIFY {guest_refs}/{guest_ds}-mk-lobby-guest.png
+
+# --- CUT OFF: the MP command/reply exchange starts ---------------------------
+[host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:0
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
+WAIT 10000
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-select-game.png 15000
+guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-select-game.png 15000
+
+# VS, then host Mario, guest Luigi, and karts.
+[host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:0
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:0
+WAIT 4000
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-character.png 8000
+guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-character.png 8000
+[guest:dsp] guest:TRM sh {helpers}/keys.sh right:0.2:0.6 a:0.2:3 a:0.2:0
+[guest:nds] guest:TRM sh {helpers}/keys.sh right:0.3:0.8 a:0.3:3 a:0.3:0
+[host:dsp] host:TRM sh {helpers}/keys.sh a:0.2:3 a:0.2:0
+[host:nds] host:TRM sh {helpers}/keys.sh a:0.3:4 a:0.3:0
+WAIT 8000
+host:VERIFY_WAIT {host_refs}/{host_ds}-mk-settings-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-settings-guest.png 10000
+
+# Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK. The guest follows.
+[host:dsp] host:TRM sh {helpers}/keys.sh down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.8 a:0.2:4 a:0.2:3 a:0.2:3 a:0.2:0
+[host:nds] host:TRM sh {helpers}/keys.sh down:0.3:0.7 down:0.3:0.7 down:0.3:0.7 down:0.3:0.7 down:0.3:1.2 a:0.3:4 a:0.3:3 a:0.3:3 a:0.3:0
+WAIT 15000
+all:SCREEN mk-race-start
+
+# --- a minute of racing, then both quit -------------------------------------
+# Quitting archives each launcher's verbose log, which check.sh reads. The
+# random input stops 5 s before, so a late press cannot move DraStic's menu.
+all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
+WAIT 30000
+all:SCREEN mk-race-30s
+WAIT 32000
+all:SCREEN mk-race-60s
+WAIT 3000
+# device/quit.sh: each emulator's own menu, then SIGTERM, then SIGKILL (an
+# H700's DraStic can hang in its shutdown). The guest first, so the host's
+# radio is still there while it leaves.
+[guest:dsp] guest:TRM sh {helpers}/quit.sh dsp
+[guest:nds] guest:TRM sh {helpers}/quit.sh nds
+[host:dsp] host:TRM sh {helpers}/quit.sh dsp
+[host:nds] host:TRM sh {helpers}/quit.sh nds
+all:WAIT_FOR devbridge 45000
+host:TRM sh {helpers}/check.sh dsp mariokart {min_fps}
+guest:TRM sh {helpers}/check.sh dsp mariokart {min_fps}

@@ -1,9 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bmpriest <benjamin.m.priest@gmail.com>
 Date: Fri, 23 Oct 2026 03:09:45 -0600
-Subject: [PATCH 3/3] net: keep a --lan-join guest trying until its host
+Subject: [PATCH 101/106] net: keep a --lan-join guest trying until its host
  answers
-
 
 start_client blocks for up to five seconds and a failed --lan-join was
 final, so a guest whose launcher started it before the host's emulator was
@@ -22,10 +21,10 @@ start_client keeps its old blocking behaviour on top of the same code.
  3 files changed, 112 insertions(+), 40 deletions(-)
 
 diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
-index 1849367..8c9d84d 100644
+index f28a1ad..a756692 100644
 --- a/src/frontend/sdl/main.cpp
 +++ b/src/frontend/sdl/main.cpp
-@@ -2728,6 +2728,9 @@ sdl_ready:
+@@ -2937,6 +2937,9 @@ sdl_ready:
    // --lan-join. What a session takes away, it gives back on the way out.
    // Set when a guest heard nobody: see begin_guest_scan below.
    bool guest_retry_armed = false, radio_was_on = false, scanning = false;
@@ -35,7 +34,7 @@ index 1849367..8c9d84d 100644
    bool knobs_held = false;
    int held_speed = 100; std::string held_limiter = "auto";
    int  held_fs_limit = 0;
-@@ -2768,9 +2771,20 @@ sdl_ready:
+@@ -2977,9 +2980,20 @@ sdl_ready:
        std::fprintf(stderr, "net: the frame limiter is back where it was -- the session is over\n");
      }
    };
@@ -57,7 +56,7 @@ index 1849367..8c9d84d 100644
      if (slirp) { nds.io.set_net_driver(nullptr); slirp->stop(); slirp.reset(); }
      const bool was_live = net_live;
      net_live = false;
-@@ -2808,9 +2822,20 @@ sdl_ready:
+@@ -3017,9 +3031,20 @@ sdl_ready:
          const auto role = lan->start_auto(lan_name, 2500, 16, mode == "auto");
          up = role != ds::net::LanMp::Role::None;
          if (up) VLOG("netplay: %s\n", role == ds::net::LanMp::Role::Host ? "no session heard, hosting" : ("joined " + lan->peer_name()).c_str());
@@ -80,7 +79,7 @@ index 1849367..8c9d84d 100644
        }
        if (!up) {
          std::fprintf(stderr, "lan: %s\n", lan->error().c_str());
-@@ -2840,16 +2865,6 @@ sdl_ready:
+@@ -3049,16 +3074,6 @@ sdl_ready:
    // early). Spread across frames, unlike start_auto's blocking scan.
    Uint32 scan_began_ms = 0;
    constexpr Uint32 kScanMs = 2500;   // as start_auto: a host beacons once a second
@@ -97,7 +96,7 @@ index 1849367..8c9d84d 100644
    auto begin_guest_scan = [&] {
      guest_retry_armed = false;
      if (!lan) lan = std::make_unique<ds::net::LanMp>();
-@@ -3703,6 +3718,22 @@ sdl_ready:
+@@ -3969,6 +3984,22 @@ sdl_ready:
        const bool on_air = nds.io.wifi.tx_frames() > 0;
        if (on_air && !radio_was_on && guest_retry_armed && !scanning) begin_guest_scan();
        radio_was_on = on_air;
@@ -280,3 +279,6 @@ index ab7478e..9aba536 100644
    unsigned wait_count_ = 0, wait_timeouts_ = 0;
    double wait_total_ms_ = 0, wait_max_ms_ = 0;
  };
+-- 
+2.55.0
+

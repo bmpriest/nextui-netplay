@@ -1,0 +1,1054 @@
+Draw NextUI's and rgds-core's screen shaders on the CPU: the Visual FX
+page's SHADER PRESET row and a Shaders page behind it with COLOUR, SCALING,
+FILTER, PATTERN, GLOW and CURVE, and hotkeys that step COLOUR, PATTERN and
+the preset.
+
+rgds-core runs its shaders as GLES2 fragment programs by hooking
+SDL_RenderCopy, and NextUI's minarch as GLES passes. The pak's devices draw
+through fbdev or the Allwinner display engine, where there is no GL stage,
+so each is done here: colours and filters at DS resolution, a resampler in
+place of the nearest scaler, patterns over the scaler's rows (or as the
+display engine's overlay layer), and the barrel curve over the finished
+views.
+
+The maths, the tables and the NEON kernels live in minui_shader.{h,cpp},
+minui_resample.{h,cpp} and the row names and presets in
+minui_shader_presets.h, vendored in overlay/ in the pak repo and copied into
+the tree by the Makefile before this patch is applied, so nothing here adds
+a file. The patch applies after 0003 and builds on a few of its lines: the
+game_switcher action in input.{h,cpp}, fade_out and the hotkey notice in
+main.cpp.
+
+What it changes:
+
+  gpu.{h,cpp}         Gpu::ScaleTarget gains, at its end, a colour table and
+                      function, run on each line before anything else in
+                      emit_scaled; a line filter that holds lines back (the
+                      glow's blur and FILTER need the lines below), with the
+                      rest of emit_scaled moved to emit_line; a resampler
+                      that takes the scaler's place; and a pattern's class
+                      rows, bright rows for the spread, and their kernel, run
+                      on the plain nearest path. All null by default, so an
+                      upstream build scales exactly as before. fb_ is never
+                      written: screenshots, thumbnails and states keep the
+                      game's own colours.
+  display.{h,cpp}     set_shaders(): the resampler and the pattern's rows per
+                      view in build_scale, rebuilt live as a layout change
+                      rebuilds the x-maps; under a curve, every view scaled
+                      into its side buffer and curved into the frame by
+                      finish_views, the pattern drawn after it.
+  display_disp.{h,cpp}  the patterns that only darken, drawn as the overlay
+                      layer's image in place of the LCD grid.
+  settings.{h,cpp}    SHADER PRESET after BILINEAR, and kShaderSettings, the
+                      Shaders page's table; Dep::Scaling, Pattern, Glow and
+                      Bloom.
+  main.cpp            video.preset, colour, scaling, filter, pattern, glow and
+                      curve, an unknown name being off with a warning; the
+                      colour table, built on its own thread and committed
+                      between frames, applied in the scaler and to the frames
+                      the tiers without one take whole, the pause menu's
+                      backdrop and the quit fade; the resampler and pattern
+                      handed to the scaler, over bilinear, chunky, the grid
+                      and seams as each allows; the filters per screen, auto
+                      glow being crt's halation; why a row is off; a preset
+                      setting the rows and a row edit making it custom; and
+                      colour_next, colour_prev, pattern_next, pattern_prev,
+                      preset_next and preset_prev, which step a row as the
+                      page does, say so in the notice and keep it for the
+                      game.
+  input.{h,cpp}       the six actions, unbound by default.
+  config.cpp, default.ini  document the keys.
+  CMakeLists          build minui_shader.cpp and minui_resample.cpp into
+                      dsperate; register test_minui_shader.
+
+menu.h and menu.cpp are untouched: the rows come from the settings tables.
+diff --git a/configs/default.ini b/configs/default.ini
+index 8d85ced..896e429 100644
+--- a/configs/default.ini
++++ b/configs/default.ini
+@@ -114,6 +114,35 @@
+ # chunky_threshold = 180        # extreme only: luma distance (0..255) an outlier needs to win over the mean
+ # chunky_cell = auto            # panel pixels per cell: auto (4..16, whatever divides the screen) | pair
+                                 # (2x2 DS pixels) | N (or the nearest size below N that divides the screen)
++# preset = off                  # minui-nintendo-dsperate-pak: the shader preset the rows below were set
++                                # from: off | old_tv | real_gba | real_gameboy | nextui_scanlines |
++                                # pixelperfect_sharp | pixelperfect_smooth | an rgds-core preset's name |
++                                # crt | custom. Read back as custom once a row no longer matches it
++# colour = off                  # minui-nintendo-dsperate-pak: another screen's colours, on every display
++                                # path: nds | natural_vision | nds_natural_vision | ds_classic | ds_lite |
++                                # natural | vivid | bold | gba | warm_paper | cool_crisp | pocket_green |
++                                # amber | off. Unknown names are off
++# scaling = off                 # minui-nintendo-dsperate-pak: a resampler in place of the nearest scaler,
++                                # on the scanline paths: sharp_bilinear | pixellate | sharp_shimmerless |
++                                # shimmerless_grid | shimmerless_vrgb | edge1pixel | smooth_3x | bicubic |
++                                # aa_4 | waterpaint | scale3x | off. Overrides linear, chunky, lcd_grid
++                                # and seam
++# filter = off                  # minui-nintendo-dsperate-pak: a pass over each DS pixel's neighbours, on
++                                # every display path: fast_sharpen | pixel_art_aa | off
++# pattern = off                 # minui-nintendo-dsperate-pak: a pattern over each DS pixel on the scanline
++                                # paths: lcd | zfast_lcd | scanlines | soft_grid | ds_classic | ds_lite |
++                                # gba | rgb_stripes | beads | tiles | crt | lcd3x | scanline |
++                                # res_scanlines | res_scanlines_auto | retro_v2 | off. On the display
++                                # engine, lcd, zfast_lcd, scanlines and soft_grid only. Overrides lcd_grid
++                                # and seam; linear and chunky override it unless a scaling is on
++# glow = auto                   # minui-nintendo-dsperate-pak: light spread from the picture, on every
++                                # display path: glow | bloom (bright parts only) | halation (warm, wide)
++                                # | off | auto (the crt pattern's own halation where it is drawn, else off)
++# glow_strength = auto          # 0.05..1, or auto for the glow's own
++# glow_radius = auto            # 1..8 DS pixels, or auto for the glow's own
++# bloom_threshold = auto        # bloom: 0.05..0.95 of full brightness, or auto (0.65)
++# curve = off                   # minui-nintendo-dsperate-pak: barrel bends each screen like a CRT's
++                                # glass, on the scanline paths: barrel | off. The pattern is drawn after it
+ # aa = false                    # 3D anti-aliasing: on the CPU raster the hardware's edge blend (edge
+                                 # pixels blended by coverage, when the game asks for it), on the GPU
+                                 # raster 4x MSAA. The older mode words accurate / enhanced read as true.
+diff --git a/src/core/gpu/gpu.cpp b/src/core/gpu/gpu.cpp
+index 5d2087c..1a58fe9 100644
+--- a/src/core/gpu/gpu.cpp
++++ b/src/core/gpu/gpu.cpp
+@@ -1082,6 +1082,25 @@ void Gpu::emit_bilinear(int screen, u32 line, const u32* src) {
+ 
+ void Gpu::emit_scaled(int screen, u32 line, const u32* src) {
+   const ScaleTarget& t = scale_[screen];
++  alignas(16) u32 coloured[SCREEN_W];
++  if (t.colour_lut && t.colour) { t.colour(t.colour_lut, src, coloured); src = coloured; }
++  if (!t.filter_push || !t.filter_pull || !t.filter_state) { emit_line(screen, line, src); return; }
++  // The filter holds filter_delay lines back; line 191 lets the rest out.
++  alignas(16) u32 filtered[SCREEN_W];
++  const u32 d = t.filter_delay;
++  t.filter_push(t.filter_state, line, src);
++  if (line >= d) { t.filter_pull(t.filter_state, line - d, filtered); emit_line(screen, line - d, filtered); }
++  if (line + 1 == SCREEN_H)
++    for (u32 l = line + 1 > d ? line + 1 - d : 0; l < SCREEN_H; ++l) {
++      if (l + d <= line) continue;   // already out
++      t.filter_pull(t.filter_state, l, filtered);
++      emit_line(screen, l, filtered);
++    }
++}
++
++void Gpu::emit_line(int screen, u32 line, const u32* src) {
++  const ScaleTarget& t = scale_[screen];
++  if (t.resample && t.resample_state) { t.resample(t.resample_state, t, line, src); return; }
+   if (t.bilinear && t.lin_sx && t.lin_wx) { emit_bilinear(screen, line, src); return; }
+   if (t.chunky && t.cells) {
+     if (line == 0) cell_row_[screen] = 0;
+@@ -1147,6 +1166,22 @@ void Gpu::emit_scaled(int screen, u32 line, const u32* src) {
+     seam_prev_line_[screen] = last;
+     return;
+   }
++  // Pattern: each class of row patterned once from the nearest row, then
++  // copied to that class's rows. Staged only, as the scratch is the source.
++  const PatternRows* pat = t.pattern;
++  if (pat && t.modulate && stage && pat->w == t.xrun[SCREEN_W]) {
++    kern::active::scale_row(src, t.xrun, row);
++    u32* const out = pattern_scratch_[screen];
++    u32 have = ~0u;
++    for (u32 y = y0; y < y1; ++y) {
++      if (!row_kept(t, y)) continue;
++      const u32 c = pat->row_class[y];
++      if (pat->plain[c]) { std::memcpy(row_at(t, y), row, bytes); continue; }
++      if (c != have) { t.modulate(*pat, c, row, out); have = c; }
++      std::memcpy(row_at(t, y), out, bytes);
++    }
++    return;
++  }
+   // Plain nearest: no grid, or seam blend on a view too small for its seams.
+   if (t.grid >= 256 || blend) {
+     kern::active::scale_row(src, t.xrun, row);
+diff --git a/src/core/gpu/gpu.h b/src/core/gpu/gpu.h
+index 074b475..4785fd4 100644
+--- a/src/core/gpu/gpu.h
++++ b/src/core/gpu/gpu.h
+@@ -134,6 +134,21 @@ public:
+   // pixels each. False if a cell would need more than CELL_TAPS taps.
+   static bool build_cell_axis(u32 src_n, u32 cells, u32 cell_px, CellAxis& a);
+ 
++  // A picture pattern over the scaled rows (frontend tables): each panel
++  // pixel becomes clamp(c * mul / 128 + add), per byte in pixel order. Rows
++  // share a class when their multipliers are the same; a plain class is
++  // copied as scaled. With `bright`, mul is blended towards it by how bright
++  // the pixel is: `weight`, indexed by the mean of its channels, 0..255.
++  struct PatternRows {
++    u32 w = 0;                    // entries per class: the rect's drawn width
++    const u8* mul = nullptr;      // classes * w * 4, Q7
++    const u8* add = nullptr;      // classes * w * 4
++    const u16* row_class = nullptr;   // per rect row
++    const u8* plain = nullptr;    // per class
++    const u8* bright = nullptr;   // classes * w * 4, Q7; null: mul alone
++    const u8* weight = nullptr;   // 256 entries, with bright
++  };
++
+   struct ScaleTarget {
+     u32* px = nullptr;          // top-left of this screen's rect in the frontend's buffer
+     u32 pitch = 0;              // destination pitch, in u32
+@@ -155,6 +170,26 @@ public:
+     const u8* lin_wx = nullptr;
+     // Rows of the rect, [y_lo, y_hi) (y_hi 0 = h: no crop); px points at row y_lo.
+     u32 y_lo = 0, y_hi = 0;
++    // Colour: each source line through `colour` with `colour_lut` before
++    // anything else here. The output stage's own line is left as drawn.
++    const u32* colour_lut = nullptr;
++    void (*colour)(const u32* lut, const u32* src, u32* dst) = nullptr;
++    // Pattern: on the plain nearest path, rows through `modulate`, one class at a time.
++    const PatternRows* pattern = nullptr;
++    void (*modulate)(const PatternRows& p, u32 cls, const u32* src, u32* dst) = nullptr;
++    // A filter over the lines around each (after colour, before the rest):
++    // every line goes to filter_push, and line L comes back from filter_pull
++    // once line L + filter_delay has gone in, the last ones with line 191.
++    // One filter_state per screen.
++    u32 filter_delay = 0;
++    void* filter_state = nullptr;
++    void (*filter_push)(void* state, u32 line, const u32* src) = nullptr;
++    void (*filter_pull)(void* state, u32 line, u32* out) = nullptr;
++    // A resampler of the frontend's in place of everything else here: each
++    // line (after colour and filter) goes to `resample`, which writes the
++    // rect's rows itself, through this target's geometry and pattern.
++    void* resample_state = nullptr;
++    void (*resample)(void* state, const ScaleTarget& t, u32 line, const u32* src) = nullptr;
+   };
+   // Both screens or neither: pass a null `px` to go back to fb_.
+   void set_scale_target(int screen, const ScaleTarget& t) { scale_[screen] = t; if (scale_[screen].y_hi == 0) scale_[screen].y_hi = t.h; }
+@@ -227,6 +262,7 @@ private:
+   // Scaled row staged here before the target (scanout memory, uncached CMA):
+   // duplicating straight out of it would read that memory back.
+   alignas(16) u32 row_scratch_[2][SCALED_ROW_MAX];
++  alignas(16) u32 pattern_scratch_[2][SCALED_ROW_MAX];   // a patterned row, copied to each row of its class
+   const u32* line3d_ = nullptr;   // 3D output for the line being drawn (whichever thread draws engine A)
+ 
+   // Lazy-2D state for the frame in progress.
+@@ -368,6 +404,7 @@ private:
+ 
+   void output_engine(int e, u32 line);
+   void emit_scaled(int screen, u32 line, const u32* src);
++  void emit_line(int screen, u32 line, const u32* src);   // emit_scaled after the colour and filter
+   void output_a(u32 line, u32* dst);
+   void output_b(u32* dst);
+   void capture(u32 line);
+diff --git a/src/frontend/sdl/CMakeLists.txt b/src/frontend/sdl/CMakeLists.txt
+index 750c468..26ca2e4 100644
+--- a/src/frontend/sdl/CMakeLists.txt
++++ b/src/frontend/sdl/CMakeLists.txt
+@@ -17,6 +17,8 @@ endif()
+ # vendored stb implementations, built without warnings: not ours to fix.
+ target_sources(dsperate PRIVATE minui.cpp minui_menu.cpp minui_gfx.cpp minui_stb.cpp)
+ set_source_files_properties(minui_stb.cpp PROPERTIES COMPILE_OPTIONS "-w")
++# The pak's shaders, vendored the same way.
++target_sources(dsperate PRIVATE minui_shader.cpp minui_resample.cpp)
+ # Restamped on every build; its own translation unit so a commit recompiles nothing else.
+ set(_ds_version_cpp ${CMAKE_CURRENT_BINARY_DIR}/version.cpp)
+ add_custom_target(dsperate_version
+diff --git a/src/frontend/sdl/config.cpp b/src/frontend/sdl/config.cpp
+index 92aba23..78e1104 100644
+--- a/src/frontend/sdl/config.cpp
++++ b/src/frontend/sdl/config.cpp
+@@ -269,6 +269,35 @@ R"(# DSperate settings. Command-line flags override this file. Two files next
+ # chunky_threshold = 180        # extreme only: luma distance (0..255) an outlier needs to win over the mean
+ # chunky_cell = auto            # panel pixels per cell: auto (4..16, whatever divides the screen) | pair
+                                 # (2x2 DS pixels) | N (or the nearest size below N that divides the screen)
++# preset = off                  # minui-nintendo-dsperate-pak: the shader preset the rows below were set
++                                # from: off | old_tv | real_gba | real_gameboy | nextui_scanlines |
++                                # pixelperfect_sharp | pixelperfect_smooth | an rgds-core preset's name |
++                                # crt | custom. Read back as custom once a row no longer matches it
++# colour = off                  # minui-nintendo-dsperate-pak: another screen's colours, on every display
++                                # path: nds | natural_vision | nds_natural_vision | ds_classic | ds_lite |
++                                # natural | vivid | bold | gba | warm_paper | cool_crisp | pocket_green |
++                                # amber | off. Unknown names are off
++# scaling = off                 # minui-nintendo-dsperate-pak: a resampler in place of the nearest scaler,
++                                # on the scanline paths: sharp_bilinear | pixellate | sharp_shimmerless |
++                                # shimmerless_grid | shimmerless_vrgb | edge1pixel | smooth_3x | bicubic |
++                                # aa_4 | waterpaint | scale3x | off. Overrides linear, chunky, lcd_grid
++                                # and seam
++# filter = off                  # minui-nintendo-dsperate-pak: a pass over each DS pixel's neighbours, on
++                                # every display path: fast_sharpen | pixel_art_aa | off
++# pattern = off                 # minui-nintendo-dsperate-pak: a pattern over each DS pixel on the scanline
++                                # paths: lcd | zfast_lcd | scanlines | soft_grid | ds_classic | ds_lite |
++                                # gba | rgb_stripes | beads | tiles | crt | lcd3x | scanline |
++                                # res_scanlines | res_scanlines_auto | retro_v2 | off. On the display
++                                # engine, lcd, zfast_lcd, scanlines and soft_grid only. Overrides lcd_grid
++                                # and seam; linear and chunky override it unless a scaling is on
++# glow = auto                   # minui-nintendo-dsperate-pak: light spread from the picture, on every
++                                # display path: glow | bloom (bright parts only) | halation (warm, wide)
++                                # | off | auto (the crt pattern's own halation where it is drawn, else off)
++# glow_strength = auto          # 0.05..1, or auto for the glow's own
++# glow_radius = auto            # 1..8 DS pixels, or auto for the glow's own
++# bloom_threshold = auto        # bloom: 0.05..0.95 of full brightness, or auto (0.65)
++# curve = off                   # minui-nintendo-dsperate-pak: barrel bends each screen like a CRT's
++                                # glass, on the scanline paths: barrel | off. The pattern is drawn after it
+ # aa = false                    # 3D anti-aliasing: on the CPU raster the hardware's edge blend (edge
+                                 # pixels blended by coverage, when the game asks for it), on the GPU
+                                 # raster 4x MSAA. The older mode words accurate / enhanced read as true.
+diff --git a/src/frontend/sdl/display.cpp b/src/frontend/sdl/display.cpp
+index e18efae..cbd1108 100644
+--- a/src/frontend/sdl/display.cpp
++++ b/src/frontend/sdl/display.cpp
+@@ -187,6 +187,7 @@ bool Display::open_disp(bool linear, bool vsync, int rot) {
+   if (!DispOut::available()) return false;
+   auto d = std::make_unique<DispOut>();
+   d->set_grid(disp_grid_);
++  d->set_pattern(shader::pattern_is_mask(pattern_) ? pattern_ : shader::Pattern::Off);
+   d->set_overlay(true);   // menu/OSD panel pixels: the only place on this chip to get them
+   d->set_nearest(!linear);
+   d->set_integer_scale(static_cast<int>(int_scale_));
+@@ -779,10 +780,52 @@ void Display::build_scale() {
+       if (s >= SCREEN_W - 1) { s = SCREEN_W - 2; f = 255; }
+       lsx[x - x0] = static_cast<u16>(s); lwx[x - x0] = static_cast<u8>(f);
+     }
+-    if (!v.direct) side_[v.screen].assign(static_cast<size_t>(v.rect.w) * v.rect.h, 0);
++    // The pak's SCALING and PATTERN: the view's resampler, and the pattern's
++    // rows, or with no pattern sharp-shimmerless-grid's own grid.
++    const u32 rw = static_cast<u32>(v.rect.w), rh = static_cast<u32>(v.rect.h);
++    resampler_[v.screen] = shader::make_resampler(scaling_);
++    if (resampler_[v.screen]) resampler_[v.screen]->build(rw, rh, x0, x1);
++    pattern_store_[v.screen].clear();
++    if (shader::pattern_is_table(pattern_)) {
++      shader::build_pattern(pattern_, rw, rh, x0, x1, pattern_store_[v.screen]);
++    } else if (scaling_ == shader::Scaling::ShimmerlessGrid) {
++      std::vector<double> col, row;
++      shader::shimmer_grid_shading(rw, SCREEN_W, x0, x1 - x0, col);
++      shader::shimmer_grid_shading(rh, SCREEN_H, 0, rh, row);
++      shader::build_pattern_from(col, row, pattern_store_[v.screen]);
++    }
++    // CURVE: the view's window (targets() crops a direct view's rows the same
++    // way), scaled into side_ and curved out of it.
++    const u32 y0 = v.direct ? static_cast<u32>(std::max(0, -v.rect.y)) : 0u;
++    const u32 y1 = v.direct ? static_cast<u32>(std::clamp(scaled_h_ - v.rect.y, 0, v.rect.h)) : rh;
++    curve_x0_[v.screen] = x0; curve_y0_[v.screen] = y0; curve_y1_[v.screen] = std::max(y0, y1);
++    shader::build_curve_map(curve_drawn() ? curve_ : shader::Curve::Off, rw, rh, x0, x1, y0, y1, curve_map_[v.screen]);
++    if (!curve_map_[v.screen].empty()) side_[v.screen].assign(curve_map_[v.screen].size(), 0);
++    else if (!v.direct) side_[v.screen].assign(static_cast<size_t>(v.rect.w) * v.rect.h, 0);
++    else { side_[v.screen].clear(); side_[v.screen].shrink_to_fit(); }
+   }
+ }
+ 
++void Display::set_shaders(shader::Scaling s, shader::Pattern p, shader::Curve c) {
++  if (p == pattern_ && s == scaling_ && c == curve_) return;
++  sync();
++  pattern_ = p;
++  scaling_ = s;
++  curve_ = c;
++  if (disp_) { disp_->set_pattern(shader::pattern_is_mask(p) ? p : shader::Pattern::Off); return; }
++  margins_dirty_ = true;   // a view leaving its side buffer for the frame again
++  build_scale();
++}
++
++bool Display::pattern_drawn() const {
++  if (pattern_ == shader::Pattern::Off || gpu_) return false;
++  if (disp_) return shader::pattern_is_mask(pattern_);
++  return scaled_;
++}
++
++bool Display::scaling_drawn() const { return scaling_ != shader::Scaling::Off && !gpu_ && !disp_ && scaled_; }
++bool Display::curve_drawn() const { return curve_ != shader::Curve::Off && !gpu_ && !disp_ && scaled_; }
++
+ // Screen rects are overwritten in full every frame; the rest of the surface
+ // (dominant modes leave gaps) is cleared row by row outside the rects only
+ // when the layout changed under it. `w`/`h` are the buffer's own size: on
+@@ -830,7 +873,12 @@ void Display::targets(u32* px, u32 stride, int w, int h, Target out[SCREENS]) {
+   insets_done_ = false;
+   for (int i = 0; i < nviews_; ++i) {
+     const View& v = views_[i];
+-    if (v.direct) {
++    if (!curve_map_[v.screen].empty()) {
++      // Curved: the window alone, into side_; curve_views() puts it in the frame.
++      const u32 w = static_cast<u32>(curve_map_[v.screen].size() / std::max(1u, curve_y1_[v.screen] - curve_y0_[v.screen]));
++      out[v.screen] = Target{side_[v.screen].data(), w, static_cast<u32>(v.rect.h), xrun_[v.screen].data(), seam_w_[v.screen].data(), lin_sx_[v.screen].data(), lin_wx_[v.screen].data(), grid_on(v.screen), xrun_plain_[v.screen].data(),
++                             curve_y0_[v.screen], curve_y1_[v.screen]};
++    } else if (v.direct) {
+       // px at the rect's first kept row/column; runs are relative to it (see build_scale).
+       const int x0 = std::max(0, -v.rect.x), y0 = std::max(0, -v.rect.y);
+       const int y1 = std::clamp(h - v.rect.y, 0, v.rect.h);
+@@ -859,6 +907,7 @@ void Display::blend_row(u32* dst, const u32* src, size_t n, u32 alpha) {
+ void Display::blit_insets() {
+   if (!frame_px_ || insets_done_) return;
+   insets_done_ = true;
++  if (curve_drawn()) { curve_views(); return; }
+   for (int i = 0; i < nviews_; ++i) {
+     const View& v = views_[i];
+     if (v.direct || !v.shown) continue;
+@@ -874,6 +923,39 @@ void Display::blit_insets() {
+   }
+ }
+ 
++// CURVE: every shown view out of its side buffer through its map, then the
++// pattern over the curved rows, so its lines stay straight as in NextUI. An
++// inset is clipped and blended as blit_insets() does it.
++void Display::curve_views() {
++  const u64 t0 = shader::timing_on() ? shader::timing_now() : 0;
++  for (int i = 0; i < nviews_; ++i) {
++    const View& v = views_[i];
++    const std::vector<u32>& map = curve_map_[v.screen];
++    if (!v.shown || map.empty()) continue;
++    const u32 y0 = curve_y0_[v.screen], y1 = curve_y1_[v.screen], w = static_cast<u32>(map.size() / (y1 - y0));
++    const int x0 = static_cast<int>(curve_x0_[v.screen]);
++    // Columns of the window inside the frame: all of a direct view's (build_scale cropped it).
++    const int cx0 = std::max(0, -(v.rect.x + x0)), cx1 = std::min(static_cast<int>(w), frame_w_ - v.rect.x - x0);
++    if (cx1 <= cx0) continue;
++    curve_rows_.resize(static_cast<size_t>(w) * 2);
++    u32* row = curve_rows_.data();
++    u32* lit = row + w;
++    const ds::gpu::Gpu::PatternRows* pat = curve_pattern_[v.screen] ? pattern_store_[v.screen].get() : nullptr;
++    if (pat && pat->w != w) pat = nullptr;
++    for (u32 y = y0; y < y1; ++y) {
++      const int fy = v.rect.y + static_cast<int>(y);
++      if (fy < 0 || fy >= frame_h_) continue;
++      shader::curve_row(map.data() + static_cast<size_t>(y - y0) * w, side_[v.screen].data(), w, row);
++      const u32* src = row;
++      if (pat) { shader::modulate_class(*pat, pat->row_class[y], row, lit); src = lit; }
++      u32* dst = frame_px_ + static_cast<size_t>(fy) * frame_pitch_ + v.rect.x + x0 + cx0;
++      if (v.direct || inset_alpha_ == 255) std::memcpy(dst, src + cx0, static_cast<size_t>(cx1 - cx0) * sizeof(u32));
++      else blend_row(dst, src + cx0, static_cast<size_t>(cx1 - cx0), inset_alpha_);
++    }
++  }
++  if (t0) shader::timing_add_curve(shader::timing_now() - t0);
++}
++
+ bool Display::begin_frame(Target out[SCREENS]) {
+   if (!scaled_) return false;   // GPU present or the renderer: nothing here touches the present thread's side
+   sync();
+diff --git a/src/frontend/sdl/display.h b/src/frontend/sdl/display.h
+index 5af3c2c..787d7c1 100644
+--- a/src/frontend/sdl/display.h
++++ b/src/frontend/sdl/display.h
+@@ -11,6 +11,8 @@
+ #include "display_drm.h"  // complete types for the unique_ptr
+ #include "display_fbdev.h"
+ #include "display_wl.h"
++#include "minui_resample.h"
++#include "minui_shader.h"
+ 
+ #include <SDL2/SDL.h>
+ 
+@@ -129,6 +131,21 @@ public:
+   bool gpu_present() const { return gpu_ != nullptr; }
+   bool rga_present() const { return gpu_ && gpu_->kind() == FramePresenter::Kind::Rga; }   // no seams or chunky
+   const void* cell_map(int screen) const { return cells_[screen].x.cells ? &cells_[screen] : nullptr; }
++  // minui-nintendo-dsperate-pak's SCALING, PATTERN and CURVE (minui_resample.h,
++  // minui_shader.h): a resampler and pattern tables per view on the scanline
++  // tiers, the pattern as the overlay layer on the display engine. Live: the
++  // tables are rebuilt here, between frames. Under a curve every view is
++  // scaled into its side buffer and finish_views() curves it into the frame,
++  // drawing the pattern itself afterwards when set_curve_pattern() says so.
++  void set_shaders(shader::Scaling s, shader::Pattern p, shader::Curve c);
++  bool curve_drawn() const;
++  void set_curve_pattern(int screen, bool on) { curve_pattern_[screen] = on; }
++  shader::Pattern pattern() const { return pattern_; }
++  shader::Scaling shader_scaling() const { return scaling_; }
++  bool pattern_drawn() const;   // this tier draws it at all
++  bool scaling_drawn() const;
++  const ds::gpu::Gpu::PatternRows* pattern_rows(int screen) const { return pattern_store_[screen].get(); }
++  shader::Resampler* resampler(int screen) const { return resampler_[screen].get(); }
+   // Locks the panel-sized texture and fills in one target per screen. False
+   // if the lock failed, in which case the caller must fall back to draw().
+   bool begin_frame(Target out[SCREENS]);
+@@ -280,7 +297,17 @@ private:
+   std::vector<u16>  lin_sx_[SCREENS]; // per screen, rect.w entries: bilinear source column per destination column
+   std::vector<u8>   lin_wx_[SCREENS]; // per screen, rect.w entries: weight of column lin_sx+1, 0..255
+   ds::gpu::Gpu::CellMap cells_[SCREENS];   // chunky cell tables; x.cells == 0 when the pair path is in use
+-  std::vector<u32>  side_[SCREENS];   // scaled pixels of a non-direct view
++  shader::Pattern   pattern_ = shader::Pattern::Off;
++  shader::Scaling   scaling_ = shader::Scaling::Off;
++  shader::Curve     curve_ = shader::Curve::Off;
++  shader::PatternStore pattern_store_[SCREENS];
++  std::vector<u32>  curve_map_[SCREENS];   // per view: build_curve_map's, empty with no curve
++  u32               curve_x0_[SCREENS] = {}, curve_y0_[SCREENS] = {}, curve_y1_[SCREENS] = {};   // its window in the rect
++  bool              curve_pattern_[SCREENS] = {};
++  std::vector<u32>  curve_rows_;   // two scratch rows
++  void curve_views();
++  std::unique_ptr<shader::Resampler> resampler_[SCREENS];
++  std::vector<u32>  side_[SCREENS];   // scaled pixels of a non-direct view, or of every view under a curve
+   std::vector<u32>  src_side_[SCREENS];  // display-engine tier: the 1:1 scaler output per screen (effects_at_source)
+   bool              src_chunky_[SCREENS] = {true, true};   // chunky applies to this screen's view there
+   u32*              frame_px_ = nullptr;   // the buffer begin_frame handed out, for end_frame's insets
+diff --git a/src/frontend/sdl/display_disp.cpp b/src/frontend/sdl/display_disp.cpp
+index 0d8f00e..3c59b92 100644
+--- a/src/frontend/sdl/display_disp.cpp
++++ b/src/frontend/sdl/display_disp.cpp
+@@ -5,6 +5,7 @@
+ #include "display.h"
+ 
+ #include "core/gpu/gpu.h"
++#include "minui_shader.h"
+ 
+ #include <cmath>
+ #include <cstdio>
+@@ -195,7 +196,7 @@ bool DispOut::open(int rot, bool vsync) {
+   for (int l = 0; l < 4; ++l) if (l != ui_layer_) { layer_ = l; break; }
+   grid_layer_ = -1; grid_enabled_ = false; grid_dirty_ = false; grid_dims_ = Dims{};
+   ov_active_ = false; ov_taken_ = false; ov_stage_.clear(); ov_sent_.clear();
+-  if (grid_alpha_ || overlay_wanted_) {
++  if (grid_alpha_ || overlay_wanted_ || mask_ != shader::Pattern::Off) {
+     grid_off_ = buf_bytes_ * BUFS;
+     const size_t need = static_cast<size_t>(panel_w_) * panel_h_ * sizeof(u32);
+     if (grid_off_ + need <= fix.smem_len) {
+@@ -338,8 +339,26 @@ void DispOut::draw_grid(Dims d) {
+   if (grid_layer_ < 0 || d.w <= 0 || d.h <= 0) return;
+   const size_t n = static_cast<size_t>(panel_w_) * panel_h_;
+   grid_stage_.assign(n, 0u);
+-  if (!grid_alpha_) { grid_dims_ = d; grid_dirty_ = false; return; }
++  if (!grid_alpha_ && mask_ == shader::Pattern::Off) { grid_dims_ = d; grid_dirty_ = false; return; }
+   const Fit f = fit(d);
++  if (mask_ != shader::Pattern::Off) {
++    // The pak's pattern instead of the grid, over each view the canvas shows
++    // at the DS's own size: there one composite pixel is one DS pixel.
++    for (const ViewRect& r : views_) {
++      if (!r.shown || r.w != static_cast<int>(W) || r.h != static_cast<int>(H)) continue;
++      int cx, cy, cw, ch;
++      comp_rect(r, cx, cy, cw, ch);
++      auto pxof = [&](int x) { return f.x + static_cast<int>(static_cast<s64>(x - f.sx) * static_cast<s64>(f.w) / static_cast<s64>(f.sw)); };
++      auto pyof = [&](int y) { return f.y + static_cast<int>(static_cast<s64>(y - f.sy) * static_cast<s64>(f.h) / static_cast<s64>(f.sh)); };
++      const int px0 = pxof(cx), px1 = pxof(cx + cw), py0 = pyof(cy), py1 = pyof(cy + ch);
++      if (px1 - px0 <= cw || py1 - py0 <= ch) continue;   // 1x or smaller: nothing to draw
++      if (px0 < 0 || py0 < 0 || px1 > panel_w_ || py1 > panel_h_) continue;   // overscale crops it
++      shader::draw_mask(mask_, grid_stage_.data(), panel_w_, px0, px1, py0, py1, cw, ch, rot_);
++    }
++    grid_dims_ = d;
++    grid_dirty_ = false;
++    return;
++  }
+   const u32 seam = static_cast<u32>(grid_alpha_) << 24;
+   std::vector<u8> col_seam(static_cast<size_t>(panel_w_)), row_seam(static_cast<size_t>(panel_h_));
+   auto seams = [&](int p0, int p1, int cells, u8* out) {
+diff --git a/src/frontend/sdl/display_disp.h b/src/frontend/sdl/display_disp.h
+index 98a6d4a..2751952 100644
+--- a/src/frontend/sdl/display_disp.h
++++ b/src/frontend/sdl/display_disp.h
+@@ -19,6 +19,7 @@
+ #pragma once
+ 
+ #include "core/types.h"
++#include "minui_shader_presets.h"
+ 
+ #include <condition_variable>
+ #include <cstddef>
+@@ -63,7 +64,11 @@ public:
+   // composite at no per-frame cost; redrawn when the layout changes. Set
+   // before open(); 0 = no grid.
+   void set_grid(u8 alpha) { grid_alpha_ = alpha; }
+-  bool grid() const { return grid_layer_ >= 0 && grid_alpha_ != 0; }
++  bool grid() const { return grid_layer_ >= 0 && (grid_alpha_ != 0 || mask_ != shader::Pattern::Off); }
++  // minui-nintendo-dsperate-pak's PATTERN, as that layer's image in place of
++  // the grid: a pattern that only darkens (shader::pattern_is_mask), drawn
++  // over the views shown 1:1 on the canvas. Live; redrawn before the next flip.
++  void set_pattern(shader::Pattern p) { if (p != mask_) { mask_ = p; grid_dirty_ = true; } }
+ 
+   // The grid's layer doubles as a drawing surface for the frontend (pause
+   // menu, OSD) at panel resolution, since the DE has only two pipes and no
+@@ -124,6 +129,7 @@ private:
+   size_t buf_bytes_ = 0;            // one composite's allocation (the largest canvas)
+   int  layer_ = -1, ui_layer_ = -1;
+   u8   grid_alpha_ = 0;
++  shader::Pattern mask_ = shader::Pattern::Off;
+   int  grid_layer_ = -1;            // the grid's layer; -1 = no grid
+   bool grid_enabled_ = false;
+   bool grid_dirty_ = false;         // redraw the grid image before the next flip
+diff --git a/src/frontend/sdl/input.cpp b/src/frontend/sdl/input.cpp
+index 36e188e..8d1453c 100644
+--- a/src/frontend/sdl/input.cpp
++++ b/src/frontend/sdl/input.cpp
+@@ -28,14 +28,14 @@ const char* const kPadDefaults[B::BTN_COUNT] = {"b", "a", "back", "start", "dpri
+ const char* const kActionNames[static_cast<int>(Action::Count)] = {
+   "quit", "pause", "fast_forward", "fast_forward_toggle", "save_state", "load_state", "slot_next", "slot_prev",
+   "volume_up", "volume_down", "mute", "layout_next", "layout_prev", "screen_swap", "pip_corner_next", "fullscreen", "screenshot", "lid", "mic", "fps",
+-  "game_switcher"};
++  "game_switcher", "colour_next", "colour_prev", "pattern_next", "pattern_prev", "preset_next", "preset_prev"};
+ const char* const kKeyHotDefaults[static_cast<int>(Action::Count)] = {
+   "Escape", "p", "Tab", "none", "F5", "F7", "F3", "F2", "=", "-", "0", "F4", "F10", "F6", "F8", "f", "F9", "l", "m", "none",
+-  "none"};
++  "none", "none", "none", "none", "none", "none", "none"};
+ const char* const kPadHotDefaults[static_cast<int>(Action::Count)] = {
+   "mod+start+back", "mod+start", "mod++righttrigger", "none", "mod+rightshoulder", "mod+leftshoulder", "mod+dpright", "mod+dpleft",
+   "none", "none", "none", "mod+back", "mod+x", "mod+y", "none", "none", "none", "none", "leftstick", "none",
+-  "none"};
++  "none", "none", "none", "none", "none", "none", "none"};
+ 
+ // Controls that are neither a DS button nor a hotkey: hotkey modifier and
+ // the pad-driven pen. Kept as one copy readable from both configure() and
+diff --git a/src/frontend/sdl/input.h b/src/frontend/sdl/input.h
+index 868c77d..3e862e3 100644
+--- a/src/frontend/sdl/input.h
++++ b/src/frontend/sdl/input.h
+@@ -18,7 +18,7 @@ class Config;
+ enum class Action : u8 {
+   Quit, Pause, FastForward, FastForwardToggle, SaveState, LoadState, SlotNext, SlotPrev,
+   VolumeUp, VolumeDown, Mute, LayoutNext, LayoutPrev, ScreenSwap, PipCornerNext, Fullscreen, Screenshot, Lid, Mic, FpsToggle,
+-  GameSwitcher, Count
++  GameSwitcher, ColourNext, ColourPrev, PatternNext, PatternPrev, PresetNext, PresetPrev, Count
+ };
+ const char* action_name(Action a);
+ 
+diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
+index 321d9ae..f28a1ad 100644
+--- a/src/frontend/sdl/main.cpp
++++ b/src/frontend/sdl/main.cpp
+@@ -830,6 +830,19 @@ struct VideoSetup {
+   std::vector<ds::sdl::Display::Mode> layout_cycle;
+   bool   gpu_present = false;
+   ds::sdl::Display::GpuPresentMode gpu_mode = ds::sdl::Display::GpuPresentMode::Auto;   // video.gpu_present: true (auto: Vulkan, else RGA) | rga | vulkan
++  // minui-nintendo-dsperate-pak's COLOUR and PATTERN (minui_shader.h).
++  ds::sdl::shader::Colour colour = ds::sdl::shader::Colour::Off;
++  ds::sdl::shader::Pattern pattern = ds::sdl::shader::Pattern::Off;
++  ds::sdl::shader::Scaling scaling = ds::sdl::shader::Scaling::Off;
++  ds::sdl::shader::Filter filter = ds::sdl::shader::Filter::Off;
++  ds::sdl::shader::Curve curve = ds::sdl::shader::Curve::Off;
++  ds::sdl::shader::Glow glow = ds::sdl::shader::Glow::Auto;
++  std::string glow_strength, glow_radius, bloom_threshold;   // "auto" or a number, as the rows keep them
++  // SCALING takes precedence over bilinear and chunky; without it they take
++  // precedence over the pattern.
++  ds::sdl::shader::Pattern drawn_pattern() const {
++    return scaling == ds::sdl::shader::Scaling::Off && (linear || chunky) ? ds::sdl::shader::Pattern::Off : pattern;
++  }
+   // Boot-only, see above.
+   ds::frontend::Sink panel_sink = ds::frontend::Sink::Count;   // Disp/Fbdev when one owns the panel (frontend/video/select.h)
+   ds::frontend::Sink want_sink = ds::frontend::Sink::Count;    // explicit video.sink among the window sinks
+@@ -855,6 +868,26 @@ bool parse_layout_cycle(const std::string& cyc, std::vector<ds::sdl::Display::Mo
+   return true;
+ }
+ 
++// The shader rows. An unknown name is a warning and off, not a failed
++// parse: a preset renamed in a later pak must not stop a game from starting.
++void parse_shaders(const ds::sdl::Config& cfg, VideoSetup& vs) {
++  namespace sh = ds::sdl::shader;
++  const std::string c = cfg.str("video.colour", "off"), p = cfg.str("video.pattern", "off");
++  const std::string sc = cfg.str("video.scaling", "off"), f = cfg.str("video.filter", "off"), cu = cfg.str("video.curve", "off");
++  if (!sh::parse_colour(c, vs.colour)) std::fprintf(stderr, "unknown colour %s; off\n", c.c_str());
++  if (!sh::parse_scaling(sc, vs.scaling)) std::fprintf(stderr, "unknown scaling %s; off\n", sc.c_str());
++  if (!sh::parse_filter(f, vs.filter)) std::fprintf(stderr, "unknown filter %s; off\n", f.c_str());
++  if (!sh::parse_curve(cu, vs.curve)) std::fprintf(stderr, "unknown curve %s; off\n", cu.c_str());
++  // sharp_bilinear was a PATTERN before SCALING had a row of its own.
++  if (p == "sharp_bilinear") { if (vs.scaling == sh::Scaling::Off) vs.scaling = sh::Scaling::SharpBilinear; vs.pattern = sh::Pattern::Off; }
++  else if (!sh::parse_pattern(p, vs.pattern)) std::fprintf(stderr, "unknown pattern %s; off\n", p.c_str());
++  const std::string g = cfg.str("video.glow", "auto");
++  if (!ds::sdl::shader::parse_glow(g, vs.glow)) std::fprintf(stderr, "unknown glow %s; auto\n", g.c_str());
++  vs.glow_strength = cfg.str("video.glow_strength", "auto");
++  vs.glow_radius = cfg.str("video.glow_radius", "auto");
++  vs.bloom_threshold = cfg.str("video.bloom_threshold", "auto");
++}
++
+ std::string layout_cycle_string(const std::vector<ds::sdl::Display::Mode>& cycle) {
+   std::string s;
+   for (ds::sdl::Display::Mode m : cycle) { if (!s.empty()) s += ','; s += ds::sdl::Display::mode_name(m); }
+@@ -902,6 +935,7 @@ bool parse_video(const ds::sdl::Config& cfg, VideoSetup& vs) {
+     else if (c == "extreme") vs.chunky = 6;
+     else if (!(c == "false" || c == "0" || c == "no" || c == "off" || c.empty())) { std::fprintf(stderr, "unknown chunky %s (mean | extreme | mode | tl | min | max | false)\n", c.c_str()); return false; }
+   }
++  parse_shaders(cfg, vs);
+   vs.layout = Disp::Layout{};
+   vs.layout_cycle.clear();
+   {
+@@ -942,6 +976,7 @@ bool sync_dual_modes(ds::sdl::Display& a, ds::sdl::Display& b) {
+ // come back through here with new values.
+ bool open_displays(const VideoSetup& vs, ds::sdl::Display& display, ds::sdl::Display& display2) {
+   display.set_gpu_present(vs.gpu_present, vs.gpu_mode); display2.set_gpu_present(vs.gpu_present, vs.gpu_mode);
++  display.set_shaders(vs.scaling, vs.drawn_pattern(), vs.curve); display2.set_shaders(vs.scaling, vs.drawn_pattern(), vs.curve);
+   if (vs.dual_window) {
+     display.set_sinks(ds::frontend::Sink::Count, vs.want_sink); display2.set_sinks(ds::frontend::Sink::Count, vs.want_sink);
+     display.set_chunky(vs.chunky != 0, vs.chunky_cell); display2.set_chunky(vs.chunky != 0, vs.chunky_cell);
+@@ -1606,6 +1641,37 @@ sdl_ready:
+   ds::sdl::MinUi::add_pad_mapping();
+   input.open_controllers();
+   std::vector<u32> menu_fb[2] = {std::vector<u32>(ds::SCREEN_W * ds::SCREEN_H), std::vector<u32>(ds::SCREEN_W * ds::SCREEN_H)};
++  // COLOUR: the scaler's table, and the frames that never reach the scaler
++  // coloured into shade_fb. zfast_lcd's gamma rides in the table whenever
++  // the display draws that pattern. The table is built on a thread of its
++  // own and committed at the top of the frame loop once it is done. GLOW:
++  // one filter per screen, after the colour, configured between frames;
++  // auto is the crt pattern's halation whenever the display draws it.
++  ds::sdl::shader::ColourTable colour_table;
++  ds::sdl::shader::GlowFilter glow_filter[2];
++  ds::sdl::shader::NeighbourFilter neighbour_filter[2];
++  ds::sdl::shader::FilterChain filter_chain[2];   // FILTER, then GLOW
++  for (int i = 0; i < 2; ++i) filter_chain[i].set(&neighbour_filter[i], &glow_filter[i]);
++  std::vector<u32> shade_fb[2] = {std::vector<u32>(ds::SCREEN_W * ds::SCREEN_H), std::vector<u32>(ds::SCREEN_W * ds::SCREEN_H)};
++  std::vector<u32> glow_fb[2] = {std::vector<u32>(ds::SCREEN_W * ds::SCREEN_H), std::vector<u32>(ds::SCREEN_W * ds::SCREEN_H)};
++  auto restage_shaders = [&] {
++    const bool drawn = display.pattern_drawn();
++    const ds::sdl::shader::Tone tone = drawn ? ds::sdl::shader::pattern_tone(vs.drawn_pattern()) : ds::sdl::shader::Tone::None;
++    if (!colour_table.wants(vs.colour, tone)) colour_table.stage(vs.colour, tone);
++    const bool crt = vs.drawn_pattern() == ds::sdl::shader::Pattern::Crt && drawn;
++    const ds::sdl::shader::GlowSpec g = ds::sdl::shader::glow_spec(vs.glow, vs.glow_strength, vs.glow_radius, vs.bloom_threshold, crt);
++    for (auto& f : glow_filter) f.configure(g);
++    for (auto& f : neighbour_filter) f.configure(vs.filter);
++  };
++  restage_shaders();
++  colour_table.finish();   // the first frame in the game's colour
++  // A frame copy in the game's COLOUR and GLOW, for the paths that never
++  // reach the scaler. The GPU's own buffers stay as drawn.
++  auto shade_copy = [&](int i, const u32* src) -> const u32* {
++    if (colour_table.lut()) { colour_table.apply(src, shade_fb[i].data(), shade_fb[i].size()); src = shade_fb[i].data(); }
++    if (filter_chain[i].on()) { filter_chain[i].frame(src, glow_fb[i].data()); src = glow_fb[i].data(); }
++    return src;
++  };
+   {
+     const std::string pl = cfg.str("cart.preload", "auto");
+     ds::cart::RomSource::set_preload(pl == "true" || pl == "on" || pl == "1" ? ds::cart::RomSource::Preload::On : pl == "false" || pl == "off" || pl == "0" ? ds::cart::RomSource::Preload::Off : ds::cart::RomSource::Preload::Auto);
+@@ -1638,6 +1704,26 @@ sdl_ready:
+                                       static_cast<const ds::gpu::Gpu::CellMap*>((dual_window && display2.only_screen() == i ? display2 : display).cell_map(i)),
+                                       vs.linear && !at_source, target[i].lin_sx, target[i].lin_wx};
+       st.y_lo = target[i].y_lo; st.y_hi = target[i].y_hi;   // crop window (integer overscale)
++      Disp& d = dual_window && display2.only_screen() == i ? display2 : display;
++      d.set_curve_pattern(i, false);
++      if (!plain) {
++        // The pak's COLOUR, its FILTER and GLOW, its SCALING, which takes the
++        // scaler's place, then its PATTERN, which stands in for the grid and seams.
++        if (colour_table.lut()) { st.colour_lut = colour_table.lut(); st.colour = ds::sdl::shader::colour_line; }
++        if (filter_chain[i].on()) {
++          st.filter_delay = filter_chain[i].delay(); st.filter_state = static_cast<ds::sdl::shader::LineFilter*>(&filter_chain[i]);
++          st.filter_push = ds::sdl::shader::LineFilter::push_hook; st.filter_pull = ds::sdl::shader::LineFilter::pull_hook;
++        }
++        ds::sdl::shader::Resampler* rs = d.scaling_drawn() ? d.resampler(i) : nullptr;
++        if (rs) { st.resample = ds::sdl::shader::Resampler::hook; st.resample_state = rs; }
++        // Under a CURVE the display draws the pattern, after it.
++        if (!at_source && (rs || (!st.bilinear && !st.chunky)))
++          if (const ds::gpu::Gpu::PatternRows* pr = d.pattern_rows(i)) {
++            if (d.curve_drawn()) d.set_curve_pattern(i, true);
++            else { st.pattern = pr; st.modulate = ds::sdl::shader::modulate_class; }
++            st.grid = 256; st.blend = 0;
++          }
++      }
+       nds.gpu.set_scale_target(i, st);
+     }
+   };
+@@ -1700,7 +1786,8 @@ sdl_ready:
+       const u32 k = start * static_cast<u32>(FADE_STEPS - step) / FADE_STEPS;
+       const u32* fb[2];
+       for (int i = 0; i < 2; ++i) {
+-        const u32* src = nds.gpu.framebuffer(i);
++        // In the game's COLOUR and GLOW, as it was on screen: these go through the scaler plain.
++        const u32* src = shade_copy(i, nds.gpu.framebuffer(i));
+         u32* dst = menu_fb[i].data();
+         for (size_t j = 0; j < menu_fb[i].size(); ++j) {
+           const u32 c = src[j];
+@@ -2263,6 +2350,7 @@ sdl_ready:
+       return false;
+     }
+     apply_visibility();
++    restage_shaders();   // zfast_lcd's gamma and crt's glow follow whether the new display draws them
+     // A new window forgets a text page is on it, else the menu's glyphs merge.
+     display.set_page(paused);
+     menu_dirty = true;
+@@ -2309,9 +2397,23 @@ sdl_ready:
+       if (std::strcmp(key, "video.layout") == 0) return Disp::mode_name(effective_mode());
+       Disp::Mode m;
+       if (cycle_key(key, m)) return in_cycle(m) ? "true" : "false";
++      // SHADER PRESET is the preset saved, while the shader rows still match it.
++      if (std::strcmp(key, "video.preset") == 0) {
++        const std::string saved = cfg.str(key, "off");
++        const ds::sdl::shader::Preset* p = ds::sdl::shader::find_preset(saved);
++        return p && saved != "custom" && ds::sdl::shader::preset_matches(*p, [this](const char* k) { return cfg.str(k, ""); }) ? saved : "custom";
++      }
+       return cfg.str(key, "");
+     }
+ 
++    // A shader row the player moves makes SHADER PRESET custom.
++    static bool shader_row(const char* key) {
++      for (const char* k : ds::sdl::shader::kPresetKeys) if (!std::strcmp(key, k)) return true;
++      for (const char* k : ds::sdl::shader::kGlowNumberKeys) if (!std::strcmp(key, k)) return true;
++      return false;
++    }
++    bool applying_preset = false;
++
+     void set(const char* key, const std::string& value) override {
+       if (is_user_key(key) && user_in_firmware()) { user_set(key, value); return; }
+       // A checkbox edits the ring; ticking a mode reinserts it in Display::Mode order.
+@@ -2331,6 +2433,16 @@ sdl_ready:
+         return;
+       }
+       if (std::strcmp(key, "video.layout") == 0) pending_mode = value;
++      // A preset writes every shader row, each the way a row is written.
++      if (std::strcmp(key, "video.preset") == 0) {
++        if (const ds::sdl::shader::Preset* p = ds::sdl::shader::find_preset(value); p && value != "custom") {
++          applying_preset = true;
++          for (const auto& kv : ds::sdl::shader::preset_values(*p)) set(kv.first.c_str(), kv.second);
++          applying_preset = false;
++        }
++      } else if (!applying_preset && shader_row(key) && cfg.str("video.preset", "off") != "custom") {
++        set("video.preset", "custom");
++      }
+       cfg.set(key, value);
+       apply(key, value);
+       const std::string& path = per_game && !game_ini.empty() ? game_ini : global_ini;
+@@ -2338,12 +2450,14 @@ sdl_ready:
+         std::fprintf(stderr, "settings: cannot write %s\n", path.c_str());
+     }
+ 
+-    bool reopen_wanted = false, layout_wanted = false, fullscreen_wanted = false;
++    bool reopen_wanted = false, layout_wanted = false, fullscreen_wanted = false, shaders_wanted = false;
+     std::function<void()> relayout;
+     std::function<void()> refullscreen;
++    std::function<void()> reshade;
+     void commit() override {
+       // Layout first: reopen carries the live layout across.
+       if (layout_wanted) { layout_wanted = false; relayout(); }
++      if (shaders_wanted) { shaders_wanted = false; reshade(); }
+       if (fullscreen_wanted) { fullscreen_wanted = false; refullscreen(); }
+       if (reopen_wanted) { reopen_wanted = false; reopen(); }
+     }
+@@ -2569,9 +2683,21 @@ sdl_ready:
+       Disp::Mode m;
+       if (cycle_key(s.key, m))
+         return std::strcmp(value, "false") != 0 || !in_cycle(m) || vs.layout_cycle.size() > 1;
++      // CUSTOM is what SHADER PRESET says once a row moves; it is never picked.
++      if (!std::strcmp(s.key, "video.preset")) return std::strcmp(value, "custom") != 0;
++      // The display engine draws only the patterns that darken, as its overlay layer.
++      if (!std::strcmp(s.key, "video.pattern") && display.disp()) {
++        ds::sdl::shader::Pattern p;
++        return ds::sdl::shader::parse_pattern(value, p) && (p == ds::sdl::shader::Pattern::Off || ds::sdl::shader::pattern_is_mask(p));
++      }
+       if (std::strcmp(s.key, "video.chunky") != 0 || panel_effects()) return true;
+       return !std::strcmp(value, "false") || !std::strcmp(value, "mean");
+     }
++    // A PATTERN is drawn in place of the grid and seams.
++    bool scaling_on() const { return cfg.str("video.scaling", "off") != "off" && display.scaling() && !display.disp() && !display.gpu_present(); }
++    bool pattern_on() const {
++      return cfg.str("video.pattern", "off") != "off" && (scaling_on() || (!cfg.flag("video.linear", false) && cfg.str("video.chunky", "false") == "false"));
++    }
+ 
+     bool enabled(const ds::sdl::Setting& s) const override { return !*disabled_reason(s); }
+ 
+@@ -2590,16 +2716,41 @@ sdl_ready:
+         return cfg.num("emu.frameskip", 0) > 0 ? "" : "ONLY WITH FRAMESKIP ON";
+       case ds::sdl::Dep::PanelEffects:
+         if (display.rga_present()) return "";   // off: exact at whole-number scales, bilinear between
+-        return panel_effects() ? "" : "THIS SCREEN SCALES IN HARDWARE";
++        if (!panel_effects()) return "THIS SCREEN SCALES IN HARDWARE";
++        return scaling_on() ? "A SHADER SCALES IT" : "";
+       case ds::sdl::Dep::GridSeam:
+         if (display.rga_present()) return std::strcmp(s.key, "video.seam") == 0 ? "THE RGA DRAWS THE DARK GRID ONLY" : "";
+         if (!panel_effects()) return "THIS SCREEN SCALES IN HARDWARE";
+-        return flag("video.linear", false) ? "BILINEAR IS ON" : "";
++        if (scaling_on()) return "A SHADER SCALES IT";
++        if (flag("video.linear", false)) return "BILINEAR IS ON";
++        return pattern_on() ? "A PATTERN IS ON" : "";
++      case ds::sdl::Dep::Scaling:
++        if (display.gpu_present()) return "NOT ON THE GPU PRESENT";
++        if (display.disp()) return "THIS SCREEN SCALES IN HARDWARE";
++        return display.scaling() ? "" : "NOT ON THE SDL RENDERER";
++      case ds::sdl::Dep::Glow:
++      case ds::sdl::Dep::Bloom: {
++        const std::string g = cfg.str("video.glow", "auto");
++        // crt is drawn only where the scaler draws panel pixels (it is no mask).
++        const bool crt = cfg.str("video.pattern", "off") == "crt" && pattern_on() && display.scaling() && !display.disp() && !display.gpu_present();
++        if (g == "off") return "GLOW IS OFF";
++        if (g == "auto" && !crt) return "AUTO GLOWS WITH THE CRT PATTERN ONLY";
++        if (s.depends == ds::sdl::Dep::Bloom && g != "bloom") return "BLOOM ONLY";
++        return "";
++      }
++      case ds::sdl::Dep::Pattern:
++        if (display.gpu_present()) return "NOT ON THE GPU PRESENT";
++        if (!display.disp() && !display.scaling()) return "NOT ON THE SDL RENDERER";
++        if (scaling_on()) return "";
++        if (flag("video.linear", false)) return "BILINEAR IS ON";
++        return cfg.str("video.chunky", "false") != "false" ? "CHUNKY IS ON" : "";
+       case ds::sdl::Dep::Chunky:
+         if (display.rga_present()) return "NOT ON THE RGA PRESENT";
++        if (scaling_on()) return "A SHADER SCALES IT";
+         return flag("video.linear", false) ? "BILINEAR IS ON" : "";
+       case ds::sdl::Dep::ChunkyCell:
+         if (display.rga_present()) return "NOT ON THE RGA PRESENT";
++        if (scaling_on()) return "A SHADER SCALES IT";
+         if (flag("video.linear", false)) return "BILINEAR IS ON";
+         return cfg.str("video.chunky", "false") == "false" ? "ONLY WITH CHUNKY ON" : "";
+       case ds::sdl::Dep::Windowed:
+@@ -2670,6 +2821,14 @@ sdl_ready:
+     if (dual_window) display2.toggle_fullscreen();
+     menu_dirty = true;
+   };
++  // COLOUR, PATTERN and GLOW, live: the tables rebuilt between frames, no reopen.
++  host.reshade = [&] {
++    parse_shaders(cfg, vs);
++    display.set_shaders(vs.scaling, vs.drawn_pattern(), vs.curve);
++    if (dual_window) display2.set_shaders(vs.scaling, vs.drawn_pattern(), vs.curve);
++    restage_shaders();
++    menu_dirty = true;
++  };
+   // Declared here since host.apply needs to call it (NETWORK FEATURES is live).
+   std::function<void(const std::string&)> set_net_mode;
+   // Push one changed key into the running machine. Anything not named here
+@@ -2698,6 +2857,10 @@ sdl_ready:
+     if (is("video.gpu_present")) { host.reopen_wanted = true; return; }
+     if (is("video.fps")) { fps_osd = on; if (on && !show_fps) { fps_mark = SDL_GetPerformanceCounter(); emu_ticks = draw_ticks = wait_ticks = 0; } return; }
+     if (is("video.pip_touch_hold")) { pip_touch_hold = std::max(0, std::atoi(v.c_str())); return; }
++    // COLOUR and GLOW show at once, on the picture behind the menu; PATTERN when it closes.
++    if (is("video.colour") || is("video.filter") || is("video.glow") || is("video.glow_strength") || is("video.glow_radius") ||
++        is("video.bloom_threshold")) { host.reshade(); return; }
++    if (is("video.pattern") || is("video.scaling") || is("video.curve")) { host.shaders_wanted = true; return; }
+     // Everything below moves the picture, so it's applied on menu close (Host::commit).
+     if (is("video.fullscreen")) { host.fullscreen_wanted = true; return; }
+     if (is("video.layout_cycle")) {
+@@ -3390,6 +3553,8 @@ sdl_ready:
+   minui.mark("running");
+   while (!input.quit() && !g_signalled && (frame_limit == 0 || frames < static_cast<u64>(frame_limit))) {
+     if (frames == 120) ds::place_foreign_threads();
++    // A COLOUR built on its own thread goes in between frames, nothing in flight.
++    if (colour_table.commit()) menu_dirty = true;
+     SDL_Event e;
+     input.set_menu_open(menu.open());
+     while (SDL_PollEvent(&e)) input.handle(e, display, dual_window ? &display2 : nullptr);
+@@ -3476,6 +3641,38 @@ sdl_ready:
+         if (!session.game_ini.empty()) ds::sdl::Config::store(session.game_ini, "video.screen", l.primary ? "bottom" : "top");
+         break;
+       }
++      // The pak's SHADER PRESET, COLOUR and PATTERN, stepped as the menu
++      // steps them (the same values allowed), shown in the notice and kept
++      // for the game; a preset writes every shader row, and a row moved on
++      // its own makes the preset custom.
++      case A::ColourNext: case A::ColourPrev: case A::PatternNext: case A::PatternPrev: case A::PresetNext: case A::PresetPrev: {
++        const char* key = a == A::ColourNext || a == A::ColourPrev ? "video.colour"
++                        : a == A::PatternNext || a == A::PatternPrev ? "video.pattern" : "video.preset";
++        const ds::sdl::Setting* row = nullptr;
++        for (const ds::sdl::Setting* t : {ds::sdl::kVideoSettings, ds::sdl::kShaderSettings})
++          for (int r = 0; t[r].key; ++r) if (!std::strcmp(t[r].key, key)) row = &t[r];
++        if (!row) break;
++        if (const char* why = host.disabled_reason(*row); *why) {
++          menu.notify(std::string(row->label) + ": " + why, SDL_GetTicks());
++          break;
++        }
++        const bool fwd = a == A::ColourNext || a == A::PatternNext || a == A::PresetNext;
++        const std::string next = ds::sdl::step_value(*row, host.get(key), fwd ? 1 : -1, host);
++        auto keep = [&](const std::string& k, const std::string& v) {
++          cfg.set(k, v);
++          if (!session.game_ini.empty()) ds::sdl::Config::store(session.game_ini, k, v);
++        };
++        if (const ds::sdl::shader::Preset* p = !std::strcmp(key, "video.preset") ? ds::sdl::shader::find_preset(next) : nullptr) {
++          for (const auto& kv : ds::sdl::shader::preset_values(*p)) keep(kv.first, kv.second);
++        } else {
++          keep("video.preset", "custom");
++        }
++        keep(key, next);
++        host.reshade();
++        VLOG("%s: %s\n", key, next.c_str());
++        menu.notify(menu.setting_notice(key, next), SDL_GetTicks());
++        break;
++      }
+       case A::PipCornerNext: {
+         if (dual_window) break;
+         Disp::Layout l = display.current_layout();
+@@ -3562,7 +3759,8 @@ sdl_ready:
+         const u32* src[2] = {nds.gpu.framebuffer(0), nds.gpu.framebuffer(1)};
+         const u32* fb[2];
+         for (int i = 0; i < 2; ++i) {
+-          std::memcpy(menu_fb[i].data(), src[i], menu_fb[i].size() * 4);
++          // The game in its COLOUR and GLOW behind the menu; the scaler draws this plain.
++          std::memcpy(menu_fb[i].data(), shade_copy(i, src[i]), menu_fb[i].size() * 4);
+           ds::sdl::dim_framebuffer(menu_fb[i].data(), static_cast<u32>(menu_fb[i].size()));
+           fb[i] = menu_fb[i].data();
+         }
+@@ -3804,6 +4002,9 @@ sdl_ready:
+     }
+ #endif
+     toast_step();
++    ds::sdl::shader::timing_frame(SDL_GetTicks(), colour_table.colour(), display.scaling_drawn() ? display.shader_scaling() : ds::sdl::shader::Scaling::Off,
++                                  neighbour_filter[0].kind(), display.pattern_drawn() ? display.pattern() : ds::sdl::shader::Pattern::Off,
++                                  glow_filter[0].spec().kind, vs.curve);
+ 
+     if (!shortcuts_note.empty()) {
+       Toast t;
+@@ -3941,6 +4142,9 @@ sdl_ready:
+         if (dual_window) display2.present();
+       } else {
+         const u32* fb[2] = {nds.gpu.framebuffer(0), nds.gpu.framebuffer(1)};
++        // The pak's COLOUR and GLOW, on the tiers that take the frames whole;
++        // the GPU's own buffers stay as drawn for screenshots and states.
++        for (int i = 0; i < 2; ++i) fb[i] = shade_copy(i, fb[i]);
+         if (cursor) {
+           std::memcpy(cursor_fb.data(), fb[1], cursor_fb.size() * 4);
+           draw_cursor(CursorDst{cursor_fb.data(), ds::SCREEN_W, ds::SCREEN_H, nullptr}, input.stylus_x(), input.stylus_y(), cursor_size);
+diff --git a/src/frontend/sdl/settings.cpp b/src/frontend/sdl/settings.cpp
+index 8659268..182fba4 100644
+--- a/src/frontend/sdl/settings.cpp
++++ b/src/frontend/sdl/settings.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ // DSperate - Nintendo DS emulator. Copyright (C) 2026 DSperate contributors.
+ #include "frontend/sdl/settings.h"
++#include "frontend/sdl/minui_shader_presets.h"
+ 
+ #include <algorithm>
+ #include <cmath>
+@@ -111,6 +112,9 @@ const Setting kVideoSettings[] = {
+        "WHOLE PANEL PIXELS PER DS PIXEL. UNDER LETTERBOXES, OVER CROPS"),
+   boolean("video.linear", "BILINEAR", "false", FlagDeferred, Dep::PanelEffects,
+           "SMOOTH SCALING. OVERRIDES THE GRID, SEAMS AND CHUNKY"),
++  // minui-nintendo-dsperate-pak's shaders: every row on kShaderSettings at once.
++  pick("video.preset", "SHADER PRESET", shader::kPresets, shader::kPresetCount, "off", FlagDeferred, Dep::None,
++       "NEXTUI'S AND RGDS-CORE'S SHADERS. SETS THE SHADER ROWS; CHANGING ONE MAKES IT CUSTOM"),
+   percent("video.lcd_grid", "LCD GRID", 0, 100, 10, "0", FlagDeferred, Dep::GridSeam,
+           "A DARK SEAM AROUND EVERY DS PIXEL, LIKE THE ORIGINAL SCREEN"),
+   pick("video.seam", "SEAM", kSeam, 3, "dark", FlagDeferred, Dep::GridSeam,
+@@ -181,6 +185,31 @@ const Setting kUserSettings[] = {
+   end(),
+ };
+ 
++// minui-nintendo-dsperate-pak's (minui_shader.h, minui_resample.h). COLOUR,
++// FILTER and GLOW work on the DS's own pixels and so everywhere; SCALING,
++// PATTERN and CURVE need the panel's.
++const Setting kShaderSettings[] = {
++  pick("video.colour", "COLOUR", shader::kColours, shader::kColourCount, "off", FlagLive, Dep::None,
++       "THE COLOURS OF ANOTHER SCREEN: A DS, A GBA, A MOOD"),
++  pick("video.scaling", "SCALING", shader::kScalings, shader::kScalingCount, "off", FlagDeferred, Dep::Scaling,
++       "HOW THE PICTURE IS RESAMPLED TO THE PANEL. OVERRIDES BILINEAR, CHUNKY, THE GRID AND SEAMS"),
++  pick("video.filter", "FILTER", shader::kFilters, shader::kFilterCount, "off", FlagLive, Dep::None,
++       "EACH DS PIXEL AGAINST ITS NEIGHBOURS: SHARPENED, OR PIXEL ART EDGES SMOOTHED"),
++  pick("video.pattern", "PATTERN", shader::kPatterns, shader::kPatternCount, "off", FlagDeferred, Dep::Pattern,
++       "AN LCD GRID, SCANLINES OR PIXEL SHAPES OVER THE PICTURE. OVERRIDES THE GRID AND SEAMS"),
++  pick("video.glow", "GLOW", shader::kGlows, shader::kGlowCount, "auto", FlagLive, Dep::None,
++       "LIGHT SPREAD FROM THE PICTURE. BLOOM: BRIGHT PARTS ONLY. AUTO: THE CRT PATTERN'S OWN"),
++  percent("video.glow_strength", "GLOW STRENGTH", 5, 100, 5, "auto", FlagLive, Dep::Glow,
++          "HOW MUCH LIGHT IS SPREAD. AUTO IS THE GLOW'S OWN", "auto", "AUTO"),
++  number("video.glow_radius", "GLOW RADIUS", 1, 8, 1, "auto", FlagLive, Dep::Glow,
++         "HOW FAR IT SPREADS, IN DS PIXELS. AUTO IS THE GLOW'S OWN", "auto", "AUTO", " PX"),
++  percent("video.bloom_threshold", "BLOOM THRESHOLD", 5, 95, 5, "auto", FlagLive, Dep::Bloom,
++          "HOW BRIGHT A PART MUST BE TO BLOOM. AUTO IS 65%", "auto", "AUTO"),
++  pick("video.curve", "CURVE", shader::kCurves, shader::kCurveCount, "off", FlagDeferred, Dep::Scaling,
++       "THE SCREEN BULGED LIKE A TUBE TV'S, AS NEXTUI'S OLD TV"),
++  end(),
++};
++
+ int settings_count(const Setting* table) {
+   int n = 0;
+   while (table[n].key) ++n;
+diff --git a/src/frontend/sdl/settings.h b/src/frontend/sdl/settings.h
+index 2cd73a5..68ccd0b 100644
+--- a/src/frontend/sdl/settings.h
++++ b/src/frontend/sdl/settings.h
+@@ -43,6 +43,10 @@ enum class Dep : u8 {
+   // a peer or server instead of the emulator.
+   NetSession,
+   ShortcutsPath,      // a folder for NAND title shortcuts: paths.dsi_games, else paths.games
++  Pattern,            // the tier draws a pattern (scanline tiers, or a mask on the display engine), linear and chunky off
++  Glow,               // a glow is on (video.glow, or auto under the crt pattern)
++  Bloom,              // Glow, and it is bloom
++  Scaling,            // the tier draws panel pixels on the CPU (the scanline tiers), for a shader resampler
+ };
+ 
+ struct Setting {
+@@ -110,6 +114,9 @@ extern const Setting kEmuSettings[];
+ extern const Setting kVideoSettings[];
+ extern const Setting kLayoutSettings[];
+ extern const Setting kUserSettings[];
++// minui-nintendo-dsperate-pak's Shaders (Advanced) page, which only its own
++// menu shows; Visual FX carries the SHADER PRESET row that sets these.
++extern const Setting kShaderSettings[];
+ int settings_count(const Setting* table);
+ 
+ std::string display_value(const Setting& s, const std::string& value);
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index a00d628..a6c7070 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -80,6 +80,15 @@ set_source_files_properties(../src/frontend/sdl/minui_stb.cpp PROPERTIES COMPILE
+ target_link_libraries(test_minui_menu PRIVATE dsperate_core)
+ add_test(NAME minui_menu COMMAND test_minui_menu)
+ 
++# The pak's COLOUR and PATTERN shaders, vendored by minui-nintendo-dsperate-pak:
++# the tables against the shaders' own maths, the NEON kernel against its
++# reference (the GCC 8 toolchains miscompiled one before, see patch 0002), and
++# the scaler drawing them. No SDL.
++add_executable(test_minui_shader minui_shader_test.cpp ../src/frontend/sdl/minui_shader.cpp ../src/frontend/sdl/minui_resample.cpp
++  ../src/frontend/sdl/settings.cpp)
++target_link_libraries(test_minui_shader PRIVATE dsperate_core dsperate_frontend_video)
++add_test(NAME minui_shader COMMAND test_minui_shader)
++
+ # The settings file, likewise frontend code: the menu and the layout hotkeys
+ # both rewrite single keys in it, and it had no tests at all.
+ add_executable(test_config config_test.cpp ../src/frontend/sdl/config.cpp)

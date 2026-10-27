@@ -82,8 +82,11 @@
 
 /* Recovery is a bounded transaction. The frame counter jumps beyond every
  * input that could have been queued before the barrier, so a delayed pre-reset
- * packet cannot be mistaken for input on the recovered timeline. */
-#define RECOVERY_TIMEOUT_MS 10000
+ * packet cannot be mistaken for input on the recovered timeline. The bound
+ * covers sending the state: PlayStation's is 330KB deflated, and over a
+ * poor house AP link (a Brick, 1 s round trips) that took 10 s, so a 10 s
+ * window counted from the guest's start expired mid-transfer. */
+#define RECOVERY_TIMEOUT_MS 30000
 #define RECOVERY_FRAME_JUMP 512
 #define PEER_WAIT_TIMEOUT_MS 30000
 /* How long one call into a link core may take before the session identifies it
@@ -1929,6 +1932,16 @@ static void recovery_fail(const char* message) {
 	shim_log("%s\n", message);
 }
 
+/* Our current state as the basis for a delta transfer of the host's: see
+ * NetLink_setStateBasis. Best effort - without it the state crosses whole. */
+static void offer_state_basis(void) {
+	void* buf = NULL;
+	size_t sz = 0;
+	if (!capture_authoritative_state(&buf, &sz, NULL)) return;
+	NetLink_setStateBasis(NETLINK_STATE_AUTHORITATIVE, buf, sz);
+	free(buf);
+}
+
 /* Every TCP generation is a new synchronization barrier. This covers both a
  * guest relaunch (the live host donates its current state) and a host relaunch
  * (the new host first loads its last peer-confirmed checkpoint). */
@@ -1974,6 +1987,11 @@ static void netplay_handshake(void) {
 			recovery_fail("Could not inspect local save memory. Exit the game.");
 			return;
 		}
+		/* The guest is paused until the host's state arrives, which replaces
+		 * whatever it is running, so capturing its own state here cannot leak a
+		 * serialize side effect into play. Sent before the identity, on the same
+		 * stream, so the host already holds our hashes when it decides to send. */
+		if (NetLink_getRole() == NETLINK_ROLE_CLIENT) offer_state_basis();
 		connection_identity_sent = NetLink_sendSessionIdentity(&mine);
 	}
 
@@ -1985,6 +2003,7 @@ static void netplay_handshake(void) {
 			return;
 		}
 		connection_identity_checked = 1;
+		recovery_clock_start();
 		shim_log("ROM and core identity match peer; agreed input delay %d\n",
 		         input_delay);
 	}
@@ -2265,12 +2284,16 @@ static bool peer_pause_tick(unsigned frame) {
 static bool netplay_recovery_tick(void) {
 	if (recovery_failed) return true;
 
-	if (connection_sync_pending && !connection_identity_checked && recovery_timed_out()) {
-		recovery_fail("Peer identity handshake timed out.");
-		return true;
-	}
-
-	if (recovery_phase != RECOVERY_IDLE && recovery_timed_out()) {
+	/* Each side sends its identity once its own ROM hash is done, and a disc
+	 * image hashes in seconds on one device and well over ten on another, so
+	 * the identity gets the peer wait. The sync itself gets a fresh window once
+	 * both sides are known to be ready. */
+	if (connection_sync_pending && !connection_identity_checked) {
+		if (elapsed_ms(&recovery_started) > peer_wait_timeout_ms()) {
+			recovery_fail("Peer identity handshake timed out.");
+			return true;
+		}
+	} else if (recovery_phase != RECOVERY_IDLE && recovery_timed_out()) {
 		recovery_fail("Authoritative synchronization timed out.");
 		return true;
 	}
@@ -2351,6 +2374,7 @@ static bool netplay_recovery_tick(void) {
 		}
 
 		if (recovery_phase == RECOVERY_HOST_WAIT_ACK) {
+			NetLink_serviceStateResend();
 			uint32_t epoch;
 			bool loaded;
 			if (NetLink_takeResyncAck(&epoch, &loaded) && epoch == recovery_epoch) {
@@ -2610,6 +2634,7 @@ static bool netplay_checkDivergence(void) {
 					recovery_fail("Repeated desyncs. Press A to continue solo.");
 					return true;
 				}
+				offer_state_basis();   /* replaced by the host's state anyway */
 				if (!NetLink_requestResync(f)) return true;
 				recovery_phase = RECOVERY_CLIENT_WAIT_BEGIN;
 				recovery_clock_start();
@@ -3655,6 +3680,12 @@ static bool dual_check_agreement(void) {
 			dual_recoverable_fail("Could not verify the linked consoles.");
 			return true;
 		}
+		/* Asked every time, not once at bootstrap: a core's state can grow
+		 * mid-session (mGBA's does once the game first writes its save), and
+		 * serializing into the old size then fails. Both replicas hold the
+		 * same state, so they agree on the size too. */
+		size_t now = core.dual_serialize_size();
+		if (now) dual_state_size = now;
 		if (dual_state_size && dual_state_size != dual_hash_buf_len) {
 			free(dual_hash_buf);
 			dual_hash_buf = malloc(dual_state_size);
@@ -3662,7 +3693,13 @@ static bool dual_check_agreement(void) {
 		}
 		if (dual_hash_buf) {
 			memset(dual_hash_buf, 0, dual_hash_buf_len);
-			if (core.dual_serialize(dual_hash_buf, dual_hash_buf_len)) {
+			if (!core.dual_serialize(dual_hash_buf, dual_hash_buf_len)) {
+				static bool reported;
+				if (!reported)
+					shim_log("paired state could not be serialized at frame %u (%zu bytes); "
+					         "this check is skipped\n", dual_frame, dual_hash_buf_len);
+				reported = true;
+			} else {
 				uint32_t mine = hash_bytes(dual_hash_buf, dual_hash_buf_len);
 				unsigned slot = (dual_frame / HASH_INTERVAL) % HASH_HISTORY;
 				own_hashes[slot] = (StateHash){ dual_frame, mine, 1 };

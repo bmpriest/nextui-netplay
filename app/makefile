@@ -36,7 +36,7 @@ PLATDIR  = $(WS)/$(PLATFORM)/platform
 # my355 generic aarch64 builds and missed h700's GLES linking exception.
 include $(PLATDIR)/makefile.env
 
-SOURCE   = main.c netsetup.c \
+SOURCE   = main.c netsetup.c hints.c chordcap.c \
            $(COMMON)/api.c $(COMMON)/utils.c $(COMMON)/config.c $(COMMON)/scaler.c \
            $(PLATDIR)/platform.c
 

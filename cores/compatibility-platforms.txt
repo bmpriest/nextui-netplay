@@ -1,0 +1,13 @@
+Compatibility core ABI mapping
+
+armv7:
+  my282
+
+aarch64:
+  tg5040
+  tg5050
+  my355
+  h700
+
+Each directory contains the same pinned core revisions and portable feature
+profile for its ABI. Netplay.pak selects the directory from PLATFORM at launch.

@@ -1,16 +1,30 @@
-Build the dedicated paired frontend when NETPLAY_DUAL_INSTANCE=1.
+Build the dedicated paired frontend when NETPLAY_DUAL_INSTANCE is set.
 
 The frontend source is maintained in Netplay.pak and copied into the pinned
 mGBA checkout by the source rule before this patch is applied.
 
---- a/libretro-build/Makefile.common
-+++ b/libretro-build/Makefile.common
-@@ -114,7 +114,7 @@ SOURCES_C :=   $(CORE_DIR)/src/arm/arm.c \
- 					$(CORE_DIR)/src/gba/cart/vfame.c \
- 					$(CORE_DIR)/src/gba/video.c \
- 					$(CORE_DIR)/src/platform/libretro/memory.c \
--					$(CORE_DIR)/src/platform/libretro/libretro.c \
-+					$(if $(filter 1,$(NETPLAY_DUAL_INSTANCE)),$(CORE_DIR)/src/platform/libretro/libretro_dual.c,$(CORE_DIR)/src/platform/libretro/libretro.c) \
- 					$(CORE_DIR)/src/sm83/isa-sm83.c \
- 					$(CORE_DIR)/src/sm83/sm83.c \
- 					$(CORE_DIR)/src/third-party/inih/ini.c \
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 04abc2e6b..f695671f0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1027,10 +1027,19 @@ endif()
+ 
+ if(BUILD_LIBRETRO)
+ 	file(GLOB RETRO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/libretro/*.c)
++	# Netplay.pak: NETPLAY_DUAL_INSTANCE builds its paired frontend in place of
++	# the stock one; it resamples with mGBA's own resampler, kept above.
++	if(NETPLAY_DUAL_INSTANCE)
++		list(FILTER RETRO_SRC EXCLUDE REGEX "/libretro\\.c$")
++	else()
++		list(FILTER RETRO_SRC EXCLUDE REGEX "/libretro_dual\\.c$")
++	endif()
+ 	set(LIBRETRO_CORE_SRC ${CORE_SRC})
+ 	list(APPEND LIBRETRO_CORE_SRC ${VFS_SRC})
+ 	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/core/(scripting|library|mem-search|rewind|input)\\.c$")
+-	list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/util/(audio-resampler|interpolator)\\.c$")
++	if(NOT NETPLAY_DUAL_INSTANCE)
++		list(FILTER LIBRETRO_CORE_SRC EXCLUDE REGEX "/util/(audio-resampler|interpolator)\\.c$")
++	endif()
+ 	# Netplay.pak: the lockstep SIO drivers, which link two consoles in one
+ 	# process, are left out of the libretro core list.
+ 	list(APPEND LIBRETRO_CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/gba/sio/lockstep.c ${CMAKE_CURRENT_SOURCE_DIR}/src/gb/sio/lockstep.c)

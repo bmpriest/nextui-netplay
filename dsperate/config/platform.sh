@@ -38,8 +38,15 @@
 # TrimUI pads: buttons from 0, analog triggers on axes 2 and 5.
 DSP_MAP_TRIMUI='a:b0,b:b1,x:b2,y:b3,back:b6,guide:b8,start:b7,leftshoulder:b4,rightshoulder:b5,lefttrigger:a2,righttrigger:a5,leftstick:b9,rightstick:b10,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,leftx:a0,lefty:a1,rightx:a3,righty:a4'
 
-# TrimUI Brick: no sticks at all, so no leftstick/rightstick and no axes.
+# No sticks at all, so no leftstick/rightstick and no axes. The pad layout
+# NextUI gives every no-stick H700 model.
 DSP_MAP_TRIMUI_NOSTICK='a:b0,b:b1,x:b2,y:b3,back:b6,guide:b8,start:b7,leftshoulder:b4,rightshoulder:b5,lefttrigger:a2,righttrigger:a5,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2'
+
+# TrimUI Brick: no sticks, but F1 and F2 send the buttons L3 and R3 do on the
+# other TrimUI pads (b9 and b10, found with dsp-pad-guid --probe), so they
+# are mapped as those and named F1 and F2 in the pause menu.
+DSP_MAP_TRIMUI_BRICK="$DSP_MAP_TRIMUI_NOSTICK,leftstick:b9,rightstick:b10"
+DSP_LABELS_TRIMUI_BRICK="leftstick=F1 rightstick=F2"
 
 # h700 with two sticks: L3 at 12 shifts L2/R2 to 13/14, R3 takes 15.
 DSP_MAP_H700_STICKS='a:b4,b:b3,x:b5,y:b6,back:b9,guide:b11,start:b10,leftshoulder:b7,rightshoulder:b8,lefttrigger:b13,righttrigger:b14,leftstick:b12,rightstick:b15,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,leftx:a0,lefty:a1,rightx:a2,righty:a3'
@@ -79,14 +86,24 @@ DSP_H700_FIXED_GUID='19000000010000000100000000016e01'
 #                      maps it already
 #   PROFILE_ROTATE     DS_ROTATE value, empty for none
 #   PROFILE_LD_DIRS    extra LD_LIBRARY_PATH entries, space separated
+#   PROFILE_LABELS     the pause menu's names for buttons not labelled the
+#                      way SDL names them, as name=LABEL pairs, space separated
+#   PROFILE_SLOW_SHADERS
+#                      the shader values measured too slow here, as
+#                      colour:<name>, scaling:<name>, pattern:<name> and so on, space
+#                      separated. The pause menu says so beside them. Filled
+#                      from the "shader timing:" log lines (TECHNICAL.md)
 dsp_platform_profile() {
     _platform="$1"
     _device="$2"
 
     PROFILE_MAP_FIXED=""
     PROFILE_MAP_VIRTUAL=""
+    PROFILE_LABELS=""
     PROFILE_ROTATE=""
     PROFILE_LD_DIRS=""
+    # Nothing measured too slow yet, on any platform.
+    PROFILE_SLOW_SHADERS=""
 
     case "$_platform" in
     tg5040)
@@ -96,7 +113,8 @@ dsp_platform_profile() {
         # The Brick is the one TrimUI device with no sticks at all.
         brick)
             PROFILE_INI="no-sticks"
-            PROFILE_MAP="$DSP_MAP_TRIMUI_NOSTICK"
+            PROFILE_MAP="$DSP_MAP_TRIMUI_BRICK"
+            PROFILE_LABELS="$DSP_LABELS_TRIMUI_BRICK"
             ;;
         *)
             PROFILE_INI="two-sticks"

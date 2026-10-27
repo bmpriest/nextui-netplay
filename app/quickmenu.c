@@ -1,5 +1,6 @@
 /*
- * Netplay quick menu - START in NextUI's menus opens a small Netplay menu
+ * Netplay quick menu - START (or the buttons chosen in Settings) in NextUI's
+ * menus opens a small Netplay menu
  * drawn over NextUI by Varnish.pak, so hosting does not mean leaving the menu
  * you are in to open the Netplay app.
  *
@@ -38,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -183,15 +185,90 @@ static bool process_running(const char* name) {
 	return found;
 }
 
-/* NextUI in front: its menus, not a game (minarch) or a pak, which replace
- * nextui.elf while they run. */
-static bool in_nextui_menus(void) {
-	return process_running("nextui.elf") && !process_running("minarch.elf");
+/* Seconds since nextui.elf started, or -1 when it is not running. */
+static double nextui_age(void) {
+	DIR* d = opendir("/proc");
+	struct dirent* e;
+	double age = -1;
+	while (d && age < 0 && (e = readdir(d))) {
+		if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+		char path[288], buf[512];
+		snprintf(path, sizeof(path), "/proc/%s/stat", e->d_name);
+		FILE* f = fopen(path, "r");
+		if (!f) continue;
+		size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+		fclose(f);
+		buf[n] = '\0';
+		char* close_paren = strrchr(buf, ')');
+		if (!strstr(buf, "(nextui.elf)") || !close_paren) continue;
+		/* starttime is field 22; the fields after "comm)" start at 3. */
+		unsigned long long start = 0;
+		char* p = close_paren + 2;
+		for (int field = 3; field < 22 && p; field++) {
+			p = strchr(p, ' ');
+			if (p) p++;
+		}
+		if (p) start = strtoull(p, NULL, 10);
+		double uptime = 0;
+		FILE* u = fopen("/proc/uptime", "r");
+		if (u) { if (fscanf(u, "%lf", &uptime) != 1) uptime = 0; fclose(u); }
+		age = uptime - (double)start / sysconf(_SC_CLK_TCK);
+	}
+	if (d) closedir(d);
+	return age;
 }
+
+/* NextUI in front: its menus, not a game (minarch) or a pak, which replace
+ * nextui.elf while they run. And settled: for its first seconds NextUI is
+ * loading minuisettings.txt, which on builds without its CFG_init fix means
+ * rewriting it with defaults for the keys not yet read. Drawing then makes
+ * Varnish reload its theme, through nextval.elf, which loads and saves that
+ * half-written file: a Game Switcher open did exactly that and reset Wi-Fi
+ * and the sleep timeouts on a Brick (2026-10-23). */
+#define NEXTUI_SETTLE_S 3.0
+
+static bool in_nextui_menus(void) {
+	return nextui_age() >= NEXTUI_SETTLE_S && !process_running("minarch.elf");
+}
+
+/* The chosen combination as evdev key codes; none means START. Re-read with
+ * the setting, so a change in the app applies within seconds. */
+static int chord[4];
+static int chord_count;
 
 static bool setting_enabled(void) {
 	NS_settingsLoad();
+	chord_count = 0;
+	const char* p = NS_settings()->quick_keys;
+	while (*p && chord_count < 4) {
+		int code = atoi(p);
+		if (code > 0 && code < KEY_CNT) chord[chord_count++] = code;
+		while (*p && *p != ',') p++;
+		if (*p == ',') p++;
+	}
 	return NS_settings()->quick_menu;
+}
+
+static bool chord_held(void) {
+	for (int i = 0; i < chord_count; i++)
+		if (!key_held[chord[i]]) return false;
+	return chord_count > 0;
+}
+
+/* The Game Switcher's Netplay entry asks for the menu by leaving this file
+ * (launcher/gameswitcher-launch.sh); it opens once NextUI is back in front. */
+static char open_path[512];
+
+static bool open_requested(void) {
+	struct stat st;
+	if (stat(open_path, &st) != 0) return false;
+	if (time(NULL) - st.st_mtime > 15) {   /* stale: NextUI never came back */
+		remove(open_path);
+		return false;
+	}
+	if (!in_nextui_menus()) return false;
+	remove(open_path);
+	return true;
 }
 
 static double now_s(void) {
@@ -423,6 +500,8 @@ int main(void) {
 	layout = !strcmp(NS_platform(), "my355") ? LAYOUT_KEYBOARD
 	       : !strcmp(NS_platform(), "h700") ? LAYOUT_H700 : LAYOUT_GAMEPAD;
 	snprintf(pid_path, sizeof(pid_path), "%s/quick-menu.pid", NS_statePath());
+	snprintf(open_path, sizeof(open_path), "%s/quick-menu.open", NS_statePath());
+	setting_enabled();
 	write_pid(pid_path);
 	NS_setProgressCallback(on_progress);
 	/* A previous instance killed mid-menu may have left its parts up. */
@@ -430,8 +509,9 @@ int main(void) {
 
 	open_devices();
 	double reopened = now_s(), checked = now_s();
+	bool latched = false;   /* the combination is still held from last time */
 	while (!stopping) {
-		wait_input(2000);
+		wait_input(500);
 		Button b = read_press();
 
 		if (now_s() - checked > 5) {
@@ -442,8 +522,16 @@ int main(void) {
 			reopened = now_s();
 			open_devices();
 		}
-		if (b == QB_START && in_nextui_menus())
+		bool fire;
+		if (chord_count) {
+			bool held = chord_held();
+			fire = held && !latched;
+			latched = held;
+		} else fire = b == QB_START;
+		if ((fire && in_nextui_menus()) || open_requested()) {
 			run_menu();
+			latched = chord_held();
+		}
 	}
 
 	varnish_hide(CLIENT);

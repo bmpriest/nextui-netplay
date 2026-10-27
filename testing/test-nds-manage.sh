@@ -62,3 +62,26 @@ echo "$OUT" | grep -q '^unsupported=1$'
 ! run install >/dev/null 2>&1
 grep -q '^# upstream$' "$SD/Emus/tg5040/NDS.pak/launch.sh"
 echo '  ok   another DraStic build is reported unsupported and left untouched'
+
+# A card without NDS.pak: Netplay installs the bundled release, then the overlay.
+printf 'supported-drastic\n' > "$SD/Emus/tg5040/NDS.pak/drastic/drastic"
+mkdir -p "$NP/cores/nds/base/NDS.pak/drastic"
+cp "$ROOT/drastic.bin" "$NP/cores/nds/base/NDS.pak/drastic/drastic"
+printf '#!/bin/sh\n# upstream release\n' > "$NP/cores/nds/base/NDS.pak/launch.sh"
+OUT=$(run status); echo "$OUT" | grep -q '^base_bundled=1$'
+echo "$OUT" | grep -q '^present=1$'
+run install | grep -q '^ok=1$'
+test "$(cat "$SD/Emus/tg5050/NDS.pak/drastic/libs/libdrastic_wifi.so")" = radio-tg5050
+grep -q '^# netplay$' "$SD/Emus/tg5050/NDS.pak/launch.sh"
+test -d "$SD/Roms/Nintendo DS (NDS)"
+grep -q '^base.tg5050=1$' "$STATE/nds/install.manifest"
+! grep -q '^base.tg5040=' "$STATE/nds/install.manifest"
+test "$(cat "$SD/Emus/tg5040/NDS.pak/drastic/config/drastic.cfg")" = mine
+echo '  ok   a platform without NDS.pak gets the bundled release plus local wireless'
+
+run remove | grep -q '^ok=1$'
+test ! -e "$SD/Emus/tg5040/NDS.pak"
+test ! -e "$SD/Emus/tg5050/NDS.pak"
+test ! -e "$STATE/nds/install.manifest"
+OUT=$(run status); echo "$OUT" | grep -q '^present=0$'
+echo '  ok   remove deletes NDS.pak from the card and forgets the install'

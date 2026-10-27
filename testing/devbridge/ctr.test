@@ -1,0 +1,72 @@
+# Crash Team Racing - shared-screen lockstep (PCSX ReARMed), two players.
+#
+# Title -> VS. -> Single -> 2P -> each device confirms its own racer (host
+# Crash, guest Cortex) -> Crash Cove, 3 laps -> 90 seconds of driving from both
+# -> both logs must show agreement.
+#
+# The state is 4.4MB, so this is also the test of a large authoritative sync:
+# it crosses deflated (~330KB) and the guest, slower to hash the disc image,
+# must still be waited for. Menus confirm with Cross (B). Run with run.sh.
+#
+# Check windows are 20 s or more: checks poll (DevBridge ee0079b) and return
+# at the first match, and over WiFi a lockstep stall ("Waiting for other
+# player") held screens past the short windows written for three-look checks.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME PS "Sony PlayStation (PS)/CTR - Crash Team Racing (USA).chd"
+WAIT 3000
+guest:OPEN_GAME PS "Sony PlayStation (PS)/CTR - Crash Team Racing (USA).chd"
+all:WAIT_FOR game 40000
+# Disc load, the sync and the Naughty Dog / Universal intros, into the attract
+# race (at 40 s the Naughty Dog crate is still spinning).
+WAIT 55000
+all:SCREEN ctr-intro
+
+# Start skips to the title and opens the mode list; VS. is fourth. The list
+# is waited for: presses sent while it is still sliding in are lost, and the
+# game then starts Adventure. Only the list box is compared, since the flag
+# behind it waves through the box: the right screen scored up to 20, the title
+# without the list ~59.
+# One START skips the intro to the title, the next opens the list; a START
+# that lands on the open list starts Adventure. Over WiFi the input delay and
+# stalls moved where fixed-timed presses landed, so press only while the list
+# is not showing, checking 6 s after each (DevBridge VERIFY_UNTIL).
+host:VERIFY_UNTIL {host_refs}/ctr-modes.png 60000 every=6000 region=0.58,0.22,0.4,0.55 threshold=30 :: sh {helpers}/keys.sh start:0.3:0
+# The check passes as soon as the box shows (DevBridge polls since ee0079b)
+# and a DOWN sent while it settles is lost: a Brick landed on ARCADE. Wait,
+# then make sure VS. is the highlighted row (ARCADE scores 47 there).
+host:TRM sh {helpers}/keys.sh sleep:2.5 down:0.3:0.6 down:0.3:0.6 down:0.3:0.8
+host:VERIFY_WAIT {host_refs}/ctr-modes-vs.png 20000 region=0.58,0.40,0.35,0.22 threshold=20
+all:SCREEN ctr-modes
+# VS. -> Single -> 2P.
+host:TRM sh {helpers}/keys.sh b:0.3:3 b:0.3:3 b:0.3:3
+# Only the portrait grid: the karts above it turn (8 apart on the right
+# screen, the mode list 59).
+host:VERIFY_WAIT {host_refs}/ctr-characters.png 20000 region=0.24,0.57,0.5,0.4 threshold=20
+all:SCREEN ctr-characters
+
+# Each player confirms their own racer: a racer the guest picks can only have
+# come over the network.
+host:TRM sh {helpers}/keys.sh --bg b:0.3:0
+guest:TRM sh {helpers}/keys.sh --bg b:0.3:0
+WAIT 3000
+all:SCREEN ctr-levels
+
+# Crash Cove is preselected, then 3 laps, then the track loads.
+host:TRM sh {helpers}/keys.sh b:0.3:3 b:0.3:0
+WAIT 20000
+all:SCREEN ctr-race
+
+# Accelerate (Cross) most of the time, steer and hop (R1) some of it.
+host:TRM sh {helpers}/gameplay.sh --bg 90 b b b b+left b+right b+left b+right b+r1+left b+r1+right
+guest:TRM sh {helpers}/gameplay.sh --bg 90 b b b b+left b+right b+left b+right b+r1+left b+r1+right
+WAIT 93000
+all:SCREEN ctr-after-play
+
+host:TRM sh {helpers}/check.sh shared CTR 50
+guest:TRM sh {helpers}/check.sh shared CTR 50
+
+# quit.sh: MinArch's own menu, then SIGTERM, then SIGKILL (QUIT_GAME's remote
+# presses stretched through a tunnel and left a Brick in the game).
+all:TRM sh {helpers}/quit.sh minarch
+all:WAIT_FOR devbridge 30000

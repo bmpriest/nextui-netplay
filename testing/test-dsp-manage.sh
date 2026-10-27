@@ -58,3 +58,16 @@ echo '  ok   restores the original pak and saves, keeping overwritten progress'
 # mGBA's bookkeeping is a separate namespace.
 test ! -e "$STATE/mgba"
 echo '  ok   DSP and mGBA bookkeeping do not overlap'
+
+run install | grep -q '^ok=1$'
+OUT=$(run status); echo "$OUT" | grep -q '^present=1$'
+echo "$OUT" | grep -q '^backup=1$'
+echo '  ok   status reports the pak present and a backup to restore'
+
+run remove | grep -q '^ok=1$'
+test ! -e "$SD/Emus/tg5040/DSP.pak"
+test ! -e "$SD/Emus/h700/DSP.pak"
+test "$(cat "$SD/Emus/tg5040/DSP.pak.bak/tg5040/dsperate")" = old
+OUT=$(run status); echo "$OUT" | grep -q '^present=0$'
+echo "$OUT" | grep -q '^managed=0$'
+echo '  ok   remove deletes DSP.pak and leaves the old copy where install put it'

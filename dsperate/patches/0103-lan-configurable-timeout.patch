@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bmpriest <benjamin.m.priest@gmail.com>
 Date: Fri, 23 Oct 2026 03:54:25 -0600
-Subject: [PATCH] net: make the LAN MP wait configurable, and report it under
- DS_VERBOSE
+Subject: [PATCH 103/106] net: make the LAN MP wait configurable, and report it
+ under DS_VERBOSE
 
 A reply or host-packet wait could block the emulation thread for at most
 25 ms, then the exchange was dropped. That suits a wired LAN, but a Wi-Fi
@@ -20,10 +20,10 @@ and timeouts every ten seconds of a live session.
  3 files changed, 31 insertions(+), 5 deletions(-)
 
 diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
-index 8c9d84d..64c40b0 100644
+index a756692..7f0fae5 100644
 --- a/src/frontend/sdl/main.cpp
 +++ b/src/frontend/sdl/main.cpp
-@@ -2781,6 +2781,15 @@ sdl_ready:
+@@ -2990,6 +2990,15 @@ sdl_ready:
      t.frames = frames;
      toast_queue.push_back(std::move(t));
    };
@@ -39,7 +39,7 @@ index 8c9d84d..64c40b0 100644
    set_net_mode = [&](const std::string& mode) {
      // Down first: a guest says goodbye rather than going silent.
      join_pending = false;
-@@ -2815,7 +2824,7 @@ sdl_ready:
+@@ -3024,7 +3033,7 @@ sdl_ready:
          VLOG("internet: up, DNS %s\n", where.c_str());
        }
      } else if (mode == "auto" || mode == "guest" || mode == "host" || mode == "join") {
@@ -48,7 +48,7 @@ index 8c9d84d..64c40b0 100644
        bool up = lan->ok();
        if (up && (mode == "auto" || mode == "guest")) {
          // Same scan either way; auto may fall back to hosting, guest may not.
-@@ -2867,7 +2876,7 @@ sdl_ready:
+@@ -3076,7 +3085,7 @@ sdl_ready:
    constexpr Uint32 kScanMs = 2500;   // as start_auto: a host beacons once a second
    auto begin_guest_scan = [&] {
      guest_retry_armed = false;
@@ -57,7 +57,7 @@ index 8c9d84d..64c40b0 100644
      if (!lan->ok() || !lan->start_discovery()) {
        std::fprintf(stderr, "lan: %s\n", lan->error().c_str());
        lan.reset();
-@@ -3712,6 +3721,14 @@ sdl_ready:
+@@ -3978,6 +3987,14 @@ sdl_ready:
      const Uint64 t0 = SDL_GetPerformanceCounter();
  #if DSPERATE_NET
      if (lan) lan->process();   // ENet and discovery, once per frame, on this thread
@@ -130,3 +130,6 @@ index 9aba536..de8c934 100644
    static constexpr u32 STALE_MS = 128;   // stale-packet window; melonDS uses 16
    int last_host_id_ = -1;
    _ENetPeer* last_host_peer_ = nullptr;
+-- 
+2.55.0
+

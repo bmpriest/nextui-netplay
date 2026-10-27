@@ -2,6 +2,8 @@ Add explicit NextUI targets. Unknown platform names otherwise silently select
 the Windows/x86 fallback, which can make a cross-build fail far from the actual
 configuration error. h700 uses tg5040; my355 uses tg5050.
 
+diff --git a/Makefile b/Makefile
+index f5e3bf2..55069cb 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -536,6 +536,53 @@ else ifeq ($(platform), miyoomini)

@@ -14,11 +14,11 @@ hardware.
 
 | Piece | Where | What it does |
 |---|---|---|
-| `dsperate/` | this repo | Builds DSP.pak: upstream DSperate pinned by commit, plus `patches/`, launcher, pad profiles |
+| `dsperate/` | this repo | Builds DSP.pak: minui-nintendo-dsperate-pak 0.2.0 (DSperate v3.0.5, its pause menu and shaders) plus Netplay's `patches/01xx`, launcher and pad profiles |
 | `make cores-dsp` | Makefile | Builds tg5040, tg5050 and h700, stages `dist/dsp/<platform>/DSP.pak` (one platform's binaries each) |
 | `cores/dsp/<platform>/DSP.pak` | in Netplay.pak | The payload `pak-manage.sh` installs |
 | `launcher/pak-manage.sh dsp` | in Netplay.pak | Install / status / ignore / restore, shared with MGBA.pak (`pak-manage.sh mgba`) |
-| Settings > Nintendo DS (DSperate) | the app | Turns the install on (with backups) and off (with restore choices) |
+| Configuration > Cores > Extras > DSP | the app | Installs (with backups); then takes it out of Netplay, deletes it (`pak-manage.sh dsp remove`) or restores the backup |
 | `Emus/<platform>/DSP.pak/launch.sh` | on the card | With a session armed: re-joins the session network, then starts DSperate as `--lan-host Netplay` or `--lan-join <host>` |
 
 DSperate speaks melonDS's LAN protocol (UDP discovery on 7063, ENet on 7064).
@@ -42,24 +42,33 @@ Nothing below happens without `.userdata/shared/Netplay/session`.
    log is archived to `logs/netplay-games/<game>/<session>/` like the
    minarch wrapper's.
 6. The MP wait bound: 100 ms on a session without an ad hoc network (an
-   access point), DSperate's 25 ms on ad hoc, or `dsp_lan_timeout_ms=<n>` from
-   the session file if present (see the access-point measurements below).
+   access point), 50 ms on ad hoc, or `dsp_lan_timeout_ms=<n>` from the
+   session file if present (see the measurements below).
 
 ## Patches on top of upstream
 
-`dsperate/patches/` is a `git am` series against the pinned commit. The
-Makefile fails if any patch stops applying.
+`dsperate/` is [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak)
+0.2.0, which builds DSperate v3.0.5 with its own patches (`0002`-`0006`: GCC 8
+workarounds, the MinUI integration, the shaders) and the pause menu in
+`overlay/`. Netplay's patches are `0101` and up, applied after upstream's. The
+Makefile fails if any patch stops applying. `dsperate/TECHNICAL.md` says how
+to regenerate them.
 
 | Patch | Why |
 |---|---|
-| 0001 GCC 8 NEON workaround | The NextUI toolchains are GCC 8.3, which miscompiles one NEON scaler (kept from minui-nintendo-dsperate-pak) |
-| 0002 MinUI integration | Power button, game-switcher slot thumbnails/markers, `emu.state_key=rom`, minarch-style screenshots; rebased onto upstream main. In a network session the game-switcher hotkey writes no state |
-| 0003 non-blocking `--lan-join` | A failed join was final, and Netplay starts the two devices independently. The guest now keeps trying from the frame loop (a "WAITING FOR HOST" toast) and goes live when the host's emulator answers |
-| 0004 every controller | Only the first pad was opened, so DevBridge's virtual pad (and Bluetooth pads) were ignored. Face-button correction is now per pad |
-| 0005 configurable MP wait | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS` (default 25 ms, as upstream) and wait statistics under `DS_VERBOSE` |
-| 0006 late transport says `begin()` | The bug that made Mario Kart fail with "Communication error": see below |
+| 0101 non-blocking `--lan-join` | A failed join was final, and Netplay starts the two devices independently. The guest now keeps trying from the frame loop (a "WAITING FOR HOST" toast) and goes live when the host's emulator answers |
+| 0102 every controller | Only the first pad was opened, so DevBridge's virtual pad (and Bluetooth pads) were ignored. Face-button correction is now per pad |
+| 0103 configurable MP wait | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS` (default 25 ms, as upstream) and wait statistics under `DS_VERBOSE` |
+| 0104 late transport says `begin()` | The bug that made Mario Kart fail with "Communication error": see below |
+| 0105 game switcher in a session | Upstream refuses MENU + SELECT during a network session; here it leaves for the game switcher with the battery save and no state |
+| 0106 DevBridge's virtual pad | The pak's mapping only reached SDL's first joystick; DSperate now maps the virtual pad too (`MINUI_PAD_MAP_VIRTUAL` on h700) |
+| 0107 VCOUNT writes | Dropped, so each session kept a random frame phase and most paid two or three MP exchanges a frame: see below |
 
-### The communication-error bug (0006)
+The pad mappings are positional and `pad.face_fix` is off (the kernel codes it
+trusts are not positional on these pads), so a config seeded by the upstream
+pak is re-seeded once (seed marker `<profile>@3`).
+
+### The communication-error bug (0104)
 
 `MpTransport::begin()` tells the other consoles this console's radio is on.
 The host needs it before it will wait for that console's MP replies. It was
@@ -72,6 +81,36 @@ when a transport is attached to a radio that is already on.
 That ordering is ordinary under Netplay, because the guest's emulator can start
 before the host's. Upstream's own late-join path (the guest scan that starts
 once the game is on the air) had the same gap.
+
+### The session-to-session slowdown (0107)
+
+On two Bricks the same Mario Kart DS race ran anywhere from 40 to 58 fps
+depending on the session, steady within each. The radio was not it: idle
+round trips were 3 ms at -11 dBm, and the time per MP exchange was the same in
+fast and slow sessions. What differed was the number of exchanges per frame,
+fixed for the whole session: one in the fast ones, two or three in the slow.
+
+Counting the protocol (a diagnostic build, 2026-10-26) showed every extra
+exchange was a retry. The host's command reached the guest while the guest's
+W_AIDLow was 0, so the guest answered with a blank; the host's ack listed it
+as failed and the game sent the command again until a retry landed after the
+guest's game had set its AID for that frame.
+
+On hardware the client's frames are lined up with the host's: Nintendo's
+wireless library writes VCOUNT during VBlank to nudge its display timing to
+the host's. DSperate dropped VCOUNT writes, so the two emulators kept whatever
+frame phase they started with, and in most sessions the host's command came
+before the guest was ready. Mario Kart writes VCOUNT about once a second on
+each console. With 0107 every session ran one exchange per frame and raced at
+52-54 fps (three of three), where before 40-58 (about 49 on average, twelve
+sessions).
+
+What is left is the lockstep itself. Frames now line up as on hardware, so both
+consoles reach each exchange together: the host waits about 5.8 ms (the 3 ms
+round trip plus the guest catching up) and the guest waits for both the
+command and the ack. The occasional unfixed session that raced at 58 fps did so
+because its guest happened to run a little ahead. Further gains would have to
+come from the link's round trip.
 
 ## Measured
 
@@ -106,6 +145,24 @@ on. So it is one DS per device over the LAN protocol.
 
 The shipped configuration passes the full test (lobby, race, quit, both logs
 checked) at a 57 fps session average on both devices.
+
+### MP wait on ad hoc: 25 ms against 50 ms
+
+Two Bricks (DSP.pak 0.2.0), `testing/devbridge/dsp-mkds.test`, three runs
+each, 2026-10-26. Timeouts are per device over the whole session; race fps is
+the last seventy seconds.
+
+| MP wait | Timeouts | Race fps | Time waiting | `check.sh` (50 fps) |
+|---|---|---|---|---|
+| 25 ms (DSperate's default) | 120–284 | 40.6–46.3 | 34–43 % | 0 of 3 pass |
+| 50 ms | 8–33 | 44.7–58.2 | 25–38 % | 2 of 3 pass |
+
+A reply that misses 25 ms usually arrives soon after; giving up costs Mario
+Kart a retried exchange, so the longer bound times out about ten times less
+and is faster on average, at the price of a worst-case 50 ms hitch. An earlier
+run the same night at 25 ms had a burst of 50-60 timeouts in ten seconds and
+the game ended the session at kart select. Ad hoc sessions therefore default
+to 50 ms.
 
 - **Use ad hoc.** Through the access point, round trips here have a median of
   10 ms with a long tail (25 % over 25 ms, max ~115 ms). Mario Kart makes

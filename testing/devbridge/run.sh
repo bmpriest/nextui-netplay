@@ -96,8 +96,10 @@ for test in "$@"; do
 		fi
 	} > "$script"
 
-	# check.sh only trusts logs newer than this
-	sshd "$host" "touch $HELPERS/started"
+	# check.sh only trusts logs newer than this. The host's confirmed checkpoint
+	# outlives a clean exit (a relaunched host resumes from it), so without
+	# clearing it a test would start where the previous run of the game ended.
+	sshd "$host" "touch $HELPERS/started; rm -f /tmp/netplay-host-*.state"
 	sshd "$guest" "touch $HELPERS/started"
 
 	echo "== $name"

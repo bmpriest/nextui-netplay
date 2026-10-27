@@ -14,14 +14,20 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <zlib.h>
+
+#include "sha256.h"
 
 #define NETLINK_MAGIC    0x4E504C4BU /* 'NPLK' */
 /* 10: CMD_STATE carries a transfer kind and completed transfers are queued
  *     rather than overwritten; CMD_SESSION_IDENTITY carries rom_size;
  *     CMD_LINK_VERDICT added.
  * 11: CMD_RTT_PROBE/CMD_RTT_ECHO added; input delay is negotiated from the
- *     measured round trip above the session's transport-specific floor. */
-#define NETLINK_PROTOCOL 13
+ *     measured round trip above the session's transport-specific floor.
+ * 14: large CMD_STATE transfers may be deflated (STATE_DEFLATED in the kind).
+ * 15: an authoritative state may cross as a delta against block hashes of the
+ *     receiver's own state (STATE_KIND_BASIS, STATE_DELTA, CMD_STATE_NACK). */
+#define NETLINK_PROTOCOL 15
 
 #define QUEUE_SIZE    512
 /* Inputs are indexed by frame; the ring only has to outlast the input delay
@@ -31,6 +37,27 @@
 #define STATE_CHUNK   1024
 /* {total, offset, kind} ahead of every chunk's bytes. */
 #define STATE_HEADER    12
+/* A deflated transfer: the kind carries this bit and the payload is the
+ * inflated length (network order) followed by the zlib stream. A PlayStation
+ * state is 4.4MB, mostly empty RAM and VRAM, and took ~9s to cross WiFi raw;
+ * small states are sent as they are. */
+#define STATE_DEFLATED  0x80000000u
+#define STATE_DEFLATE_MIN (64u * 1024u)
+/* A delta transfer: the receiver first sends a 64-bit hash of each
+ * DELTA_BLOCK-byte block of its own current state (a STATE_KIND_BASIS
+ * transfer); the sender then ships only the blocks that differ, with a SHA-256
+ * of the whole result. The receiver rebuilds the sender's exact bytes from its
+ * own copy and checks them; any doubt costs a CMD_STATE_NACK and a full resend,
+ * never a wrong state. Two devices that booted the same game with the same
+ * saves send almost nothing; differing saves cost about the save. */
+#define STATE_DELTA     0x40000000u
+#define STATE_FLAGS     (STATE_DEFLATED | STATE_DELTA)
+#define STATE_KIND_BASIS 0x7FFFu   /* internal kind; never queued for the caller */
+#define DELTA_BLOCK     4096u
+/* {basis id, total, block size, count} ahead of the hashes, and
+ * {basis id, total, block size, sha256[32], count} ahead of the blocks. */
+#define BASIS_HEADER    16
+#define DELTA_HEADER    (16 + 32)
 /* Completed state transfers waiting for the emulator thread. One transfer is
  * reassembled at a time, but a finished one is queued rather than overwritten:
  * the instanced-link bootstrap sends two payloads back to back (peer save
@@ -70,6 +97,7 @@ enum {
 	CMD_LINK_VERDICT   = 0x0E, /* {can_pair, reason} - instanced-link agreement */
 	CMD_RTT_PROBE      = 0x0F, /* {token} - echoed straight back as CMD_RTT_ECHO */
 	CMD_RTT_ECHO       = 0x10, /* {token} */
+	CMD_STATE_NACK     = 0x11, /* {kind} - a delta did not rebuild; send it whole */
 };
 
 /* Round-trip probes, for sizing input delay from what the link actually does
@@ -184,6 +212,22 @@ static struct {
 	uint32_t link_verdict_reason;
 	bool link_verdict_can_pair;
 	bool link_verdict_ready;
+	/* Delta transfers. Ours: the state our hashes described, kept until a
+	 * delta against it arrives. The peer's: its block hashes, used once by
+	 * the next authoritative send. A full copy of the last delta-sent state
+	 * waits for a NACK. All three live until the connection drops, not a
+	 * resetSync: the peers notice a new connection at different moments. */
+	uint8_t*  basis_buf;
+	size_t    basis_len;
+	uint32_t  basis_id, basis_seq;
+	uint8_t*  peer_basis;      /* the BASIS payload as received */
+	size_t    peer_basis_len;
+	uint8_t*  basis_rx;        /* its own reassembly, safe from resetSync */
+	size_t    basis_rx_len, basis_rx_have;
+	uint8_t*  resend_buf;
+	size_t    resend_len;
+	uint32_t  resend_kind;
+	bool      resend_requested;
 	uint32_t checkpoint_ack_frame;
 	uint32_t checkpoint_ack_hash;
 	bool checkpoint_ack_matched;
@@ -510,6 +554,32 @@ static void clear_states_locked(void) {
 	nl.state_kind = 0;
 }
 
+static void clear_delta_locked(void) {
+	free(nl.basis_buf);   nl.basis_buf = NULL;   nl.basis_len = 0; nl.basis_id = 0;
+	free(nl.peer_basis);  nl.peer_basis = NULL;  nl.peer_basis_len = 0;
+	free(nl.basis_rx);    nl.basis_rx = NULL;    nl.basis_rx_len = nl.basis_rx_have = 0;
+	free(nl.resend_buf);  nl.resend_buf = NULL;  nl.resend_len = 0;
+	nl.resend_requested = false;
+}
+
+/* 64 bits per block: a collision is not a wrong state, only a NACK, because
+ * the whole rebuilt state is checked with SHA-256 before anyone loads it. */
+static uint64_t block_hash(const uint8_t* p, size_t n) {
+	uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)n;
+	size_t i = 0;
+	for (; i + 8 <= n; i += 8) {
+		uint64_t w;
+		memcpy(&w, p + i, 8);
+		h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+		h ^= h >> 32;
+	}
+	for (; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
+	h ^= h >> 29;
+	h *= 0xC4CEB9FE1A85EC53ull;
+	h ^= h >> 32;
+	return h;
+}
+
 // Always say why. "peer lost" alone is not diagnosable after the fact, and the
 // interesting failures here are all distinguishable at the point of detection.
 static void drop_connection(const char* reason) {
@@ -529,6 +599,7 @@ static void drop_connection(const char* reason) {
 		 * handshake. This runs on the worker thread, ahead of any byte of the
 		 * next connection. */
 		clear_states_locked();
+		clear_delta_locked();
 		nl.peer_session_identity_ready = false;
 		nl.link_verdict_ready = false;
 		nl.resync_request_ready = nl.resync_begin_ready = false;
@@ -714,7 +785,41 @@ static void* worker(void* arg) {
 			pthread_mutex_unlock(&nl.lock);
 		}
 
-		if (hdr.cmd == CMD_STATE && size > STATE_HEADER) {
+		if (hdr.cmd == CMD_STATE_NACK && size == 4) {
+			pthread_mutex_lock(&nl.lock);
+			nl.resend_requested = true;
+			pthread_mutex_unlock(&nl.lock);
+			nl_log("peer could not rebuild a delta state - will resend it whole\n");
+		}
+
+		if (hdr.cmd == CMD_STATE && size > STATE_HEADER &&
+		    ntohl(*(uint32_t*)(buf + 8)) == STATE_KIND_BASIS) {
+			uint32_t total = ntohl(*(uint32_t*)buf);
+			uint32_t off   = ntohl(*(uint32_t*)(buf + 4));
+			size_t   n     = size - STATE_HEADER;
+			pthread_mutex_lock(&nl.lock);
+			if (total >= BASIS_HEADER && total <= NETLINK_MAX_STATE / 64 && off <= total &&
+			    n <= total - off) {
+				if (off == 0) {
+					free(nl.basis_rx);
+					nl.basis_rx = malloc(total);
+					nl.basis_rx_len = nl.basis_rx ? total : 0;
+					nl.basis_rx_have = 0;
+				}
+				if (nl.basis_rx && nl.basis_rx_len == total && off == nl.basis_rx_have) {
+					memcpy(nl.basis_rx + off, buf + STATE_HEADER, n);
+					nl.basis_rx_have += n;
+					if (nl.basis_rx_have >= total) {
+						free(nl.peer_basis);
+						nl.peer_basis = nl.basis_rx;
+						nl.peer_basis_len = total;
+						nl.basis_rx = NULL;
+						nl.basis_rx_len = nl.basis_rx_have = 0;
+					}
+				}
+			}
+			pthread_mutex_unlock(&nl.lock);
+		} else if (hdr.cmd == CMD_STATE && size > STATE_HEADER) {
 			uint32_t total = ntohl(*(uint32_t*)buf);
 			uint32_t off   = ntohl(*(uint32_t*)(buf + 4));
 			uint32_t kind  = ntohl(*(uint32_t*)(buf + 8));
@@ -1045,15 +1150,233 @@ bool NetLink_getRemoteInput(uint32_t frame, uint32_t* buttons) {
 	return ok;
 }
 
+static bool send_state_chunks(uint32_t kind, const void* data, size_t len);
+
+/* Send a payload whole, deflated when that is worth it. `kind` may carry
+ * STATE_DELTA; the deflate flag is ours to add. */
+static bool send_payload(uint32_t kind, const void* data, size_t len) {
+	if (len >= STATE_DEFLATE_MIN) {
+		uLongf packed = compressBound(len);
+		uint8_t* out = malloc(4 + packed);
+		if (out && compress2(out + 4, &packed, data, len, 1) == Z_OK && packed + 4 < len) {
+			uint32_t raw = htonl((uint32_t)len);
+			memcpy(out, &raw, 4);
+			nl_log("state kind=%u deflated %zu -> %lu bytes\n", (unsigned)(kind & ~STATE_FLAGS),
+			       len, (unsigned long)packed + 4);
+			bool ok = send_state_chunks(kind | STATE_DEFLATED, out, packed + 4);
+			free(out);
+			return ok;
+		}
+		free(out);
+	}
+	return send_state_chunks(kind, data, len);
+}
+
+/* The delta of `data` against the peer's hashed basis, or NULL when there is
+ * no usable basis or the delta would not be much smaller than the whole. */
+static uint8_t* build_delta(const uint8_t* data, size_t len, const uint8_t* basis,
+                            size_t basis_payload, size_t* out_len,
+                            uint32_t* out_blocks, uint32_t* out_total_blocks) {
+	if (basis_payload < BASIS_HEADER) return NULL;
+	uint32_t id    = ntohl(*(const uint32_t*)basis);
+	uint32_t total = ntohl(*(const uint32_t*)(basis + 4));
+	uint32_t block = ntohl(*(const uint32_t*)(basis + 8));
+	uint32_t count = ntohl(*(const uint32_t*)(basis + 12));
+	if (total != len || block != DELTA_BLOCK || !count ||
+	    count != (len + DELTA_BLOCK - 1) / DELTA_BLOCK ||
+	    basis_payload != BASIS_HEADER + (size_t)count * 8) return NULL;
+
+	uint32_t differ = 0;
+	size_t bytes = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		size_t at = (size_t)i * DELTA_BLOCK, n = len - at < DELTA_BLOCK ? len - at : DELTA_BLOCK;
+		uint64_t theirs;
+		memcpy(&theirs, basis + BASIS_HEADER + (size_t)i * 8, 8);
+		if (block_hash(data + at, n) != theirs) { differ++; bytes += 4 + n; }
+	}
+	*out_blocks = differ;
+	*out_total_blocks = count;
+	if (DELTA_HEADER + 4 + bytes >= len / 2) return NULL;   /* mostly changed: send it whole */
+
+	uint8_t* out = malloc(DELTA_HEADER + 4 + bytes);
+	if (!out) return NULL;
+	uint32_t hdr[3] = { htonl(id), htonl((uint32_t)len), htonl(DELTA_BLOCK) };
+	memcpy(out, hdr, 12);
+	memset(out + 12, 0, 4);
+	Sha256 sha;
+	sha256_init(&sha);
+	sha256_update(&sha, data, len);
+	sha256_final(&sha, out + 16);
+	uint32_t wire = htonl(differ);
+	memcpy(out + DELTA_HEADER, &wire, 4);
+	uint8_t* w = out + DELTA_HEADER + 4;
+	for (uint32_t i = 0; i < count; i++) {
+		size_t at = (size_t)i * DELTA_BLOCK, n = len - at < DELTA_BLOCK ? len - at : DELTA_BLOCK;
+		uint64_t theirs;
+		memcpy(&theirs, basis + BASIS_HEADER + (size_t)i * 8, 8);
+		if (block_hash(data + at, n) == theirs) continue;
+		uint32_t index = htonl(i);
+		memcpy(w, &index, 4);
+		memcpy(w + 4, data + at, n);
+		w += 4 + n;
+	}
+	*out_len = (size_t)(w - out);
+	return out;
+}
+
 bool NetLink_sendState(NetLinkStateKind kind, const void* data, size_t len) {
 	if (!len || len > NETLINK_MAX_STATE) return false;
+	if (kind == NETLINK_STATE_AUTHORITATIVE) {
+		/* The peer's basis describes the state it held when it asked; it is
+		 * good for this one transfer only. */
+		pthread_mutex_lock(&nl.lock);
+		uint8_t* basis = nl.peer_basis;
+		size_t basis_len = nl.peer_basis_len;
+		nl.peer_basis = NULL;
+		nl.peer_basis_len = 0;
+		pthread_mutex_unlock(&nl.lock);
+		if (basis) {
+			size_t delta_len = 0;
+			uint32_t differ = 0, blocks = 0;
+			uint8_t* delta = build_delta(data, len, basis, basis_len, &delta_len, &differ, &blocks);
+			free(basis);
+			uint8_t* copy = delta ? malloc(len) : NULL;
+			if (delta && copy) {
+				memcpy(copy, data, len);
+				pthread_mutex_lock(&nl.lock);
+				free(nl.resend_buf);
+				nl.resend_buf = copy;
+				nl.resend_len = len;
+				nl.resend_kind = (uint32_t)kind;
+				nl.resend_requested = false;
+				pthread_mutex_unlock(&nl.lock);
+				nl_log("state kind=%u as a delta: %u of %u blocks differ, %zu of %zu bytes\n",
+				       (unsigned)kind, differ, blocks, delta_len, len);
+				bool ok = send_payload((uint32_t)kind | STATE_DELTA, delta, delta_len);
+				free(delta);
+				return ok;
+			}
+			free(copy);
+			if (blocks)
+				nl_log("state kind=%u: %u of %u blocks differ from the peer's - sending it whole\n",
+				       (unsigned)kind, differ, blocks);
+			free(delta);
+		}
+	}
+	return send_payload((uint32_t)kind, data, len);
+}
+
+bool NetLink_setStateBasis(NetLinkStateKind kind, const void* data, size_t len) {
+	if (kind != NETLINK_STATE_AUTHORITATIVE || !len || len > NETLINK_MAX_STATE) return false;
+	if (getenv("NETLINK_TEST_NO_DELTA")) return false;   /* test hook: the whole-state path */
+	uint32_t count = (uint32_t)((len + DELTA_BLOCK - 1) / DELTA_BLOCK);
+	size_t msg_len = BASIS_HEADER + (size_t)count * 8;
+	uint8_t* msg = malloc(msg_len);
+	uint8_t* copy = malloc(len);
+	if (!msg || !copy) { free(msg); free(copy); return false; }
+	memcpy(copy, data, len);
+	for (uint32_t i = 0; i < count; i++) {
+		size_t at = (size_t)i * DELTA_BLOCK, n = len - at < DELTA_BLOCK ? len - at : DELTA_BLOCK;
+		uint64_t h = block_hash((const uint8_t*)data + at, n);
+		memcpy(msg + BASIS_HEADER + (size_t)i * 8, &h, 8);
+	}
+	/* Test hook: keep bytes the hashes do not describe, so the rebuilt state
+	 * fails its check and the full-resend path runs. */
+	if (getenv("NETLINK_TEST_STALE_BASIS")) copy[len / 2] ^= 0xFF;
+
+	pthread_mutex_lock(&nl.lock);
+	uint32_t id = ++nl.basis_seq;
+	if (!id) id = ++nl.basis_seq;
+	free(nl.basis_buf);
+	nl.basis_buf = copy;
+	nl.basis_len = len;
+	nl.basis_id = id;
+	pthread_mutex_unlock(&nl.lock);
+
+	uint32_t hdr[4] = { htonl(id), htonl((uint32_t)len), htonl(DELTA_BLOCK), htonl(count) };
+	memcpy(msg, hdr, BASIS_HEADER);
+	bool ok = send_state_chunks(STATE_KIND_BASIS, msg, msg_len);
+	free(msg);
+	if (ok) nl_log("sent block hashes of our state (%u blocks) for a delta transfer\n", count);
+	return ok;
+}
+
+void NetLink_serviceStateResend(void) {
+	pthread_mutex_lock(&nl.lock);
+	bool want = nl.resend_requested && nl.resend_buf;
+	uint8_t* buf = want ? nl.resend_buf : NULL;
+	size_t len = nl.resend_len;
+	uint32_t kind = nl.resend_kind;
+	if (want) {
+		nl.resend_buf = NULL;
+		nl.resend_len = 0;
+		nl.resend_requested = false;
+	}
+	pthread_mutex_unlock(&nl.lock);
+	if (!buf) return;
+	nl_log("resending state kind=%u whole after a failed delta\n", (unsigned)kind);
+	send_payload(kind, buf, len);
+	free(buf);
+}
+
+/* Rebuild the sender's state from our basis and a delta. NULL on any
+ * mismatch; the caller asks for the whole state. */
+static uint8_t* apply_delta(const uint8_t* d, size_t dlen, size_t* out_len) {
+	if (dlen < DELTA_HEADER + 4) return NULL;
+	uint32_t id    = ntohl(*(const uint32_t*)d);
+	uint32_t total = ntohl(*(const uint32_t*)(d + 4));
+	uint32_t block = ntohl(*(const uint32_t*)(d + 8));
+	uint32_t count = ntohl(*(const uint32_t*)(d + DELTA_HEADER));
+
+	pthread_mutex_lock(&nl.lock);
+	uint8_t* out = NULL;
+	if (nl.basis_buf && nl.basis_id == id && nl.basis_len == total && block == DELTA_BLOCK) {
+		out = nl.basis_buf;           /* rebuilt in place: the basis is spent */
+		nl.basis_buf = NULL;
+		nl.basis_len = 0;
+		nl.basis_id = 0;
+	}
+	pthread_mutex_unlock(&nl.lock);
+	if (!out) {
+		nl_log("delta state is against a basis we no longer hold\n");
+		return NULL;
+	}
+
+	const uint8_t* p = d + DELTA_HEADER + 4;
+	const uint8_t* end = d + dlen;
+	uint32_t blocks = (total + DELTA_BLOCK - 1) / DELTA_BLOCK;
+	for (uint32_t k = 0; k < count; k++) {
+		if (end - p < 4) { free(out); return NULL; }
+		uint32_t i = ntohl(*(const uint32_t*)p);
+		if (i >= blocks) { free(out); return NULL; }
+		size_t at = (size_t)i * DELTA_BLOCK, n = total - at < DELTA_BLOCK ? total - at : DELTA_BLOCK;
+		if ((size_t)(end - p) < 4 + n) { free(out); return NULL; }
+		memcpy(out + at, p + 4, n);
+		p += 4 + n;
+	}
+	uint8_t got[32];
+	Sha256 sha;
+	sha256_init(&sha);
+	sha256_update(&sha, out, total);
+	sha256_final(&sha, got);
+	if (p != end || memcmp(got, d + 16, 32)) {
+		nl_log("delta state did not rebuild exactly (%u blocks applied)\n", count);
+		free(out);
+		return NULL;
+	}
+	nl_log("rebuilt state from our basis and %u changed blocks\n", count);
+	*out_len = total;
+	return out;
+}
+
+static bool send_state_chunks(uint32_t kind, const void* data, size_t len) {
 	const uint8_t* p = data;
 	for (size_t off = 0; off < len; off += STATE_CHUNK) {
 		size_t n = len - off;
 		if (n > STATE_CHUNK) n = STATE_CHUNK;
 
 		uint8_t pkt[STATE_HEADER + STATE_CHUNK];
-		uint32_t hdr[3] = { htonl((uint32_t)len), htonl((uint32_t)off), htonl((uint32_t)kind) };
+		uint32_t hdr[3] = { htonl((uint32_t)len), htonl((uint32_t)off), htonl(kind) };
 		memcpy(pkt, hdr, STATE_HEADER);
 		memcpy(pkt + STATE_HEADER, p + off, n);
 
@@ -1109,9 +1432,12 @@ bool NetLink_takeLinkVerdict(bool* can_pair, uint32_t* reason) {
  * back: a payload of the wrong kind stays queued rather than being handed to a
  * caller that would reject it and fail the session. */
 bool NetLink_takeState(NetLinkStateKind kind, void** data, size_t* len) {
+	uint32_t stored = 0;
 	pthread_mutex_lock(&nl.lock);
-	bool ok = nl.state_done_count && nl.state_done[nl.state_done_head].kind == (uint32_t)kind;
+	bool ok = nl.state_done_count &&
+	          (nl.state_done[nl.state_done_head].kind & ~STATE_FLAGS) == (uint32_t)kind;
 	if (ok) {
+		stored = nl.state_done[nl.state_done_head].kind;
 		*data = nl.state_done[nl.state_done_head].buf;
 		*len  = nl.state_done[nl.state_done_head].len;
 		nl.state_done[nl.state_done_head].buf = NULL;
@@ -1119,7 +1445,51 @@ bool NetLink_takeState(NetLinkStateKind kind, void** data, size_t* len) {
 		nl.state_done_count--;
 	}
 	pthread_mutex_unlock(&nl.lock);
-	return ok;
+	if (!ok) return false;
+
+	if (stored & STATE_DEFLATED) {
+		/* Inflated here, on the emulator thread, so the receive thread never
+		 * holds the lock through it. A stream that does not inflate to exactly
+		 * the size it announced is dropped like any other bad transfer. */
+		uint8_t* packed = *data;
+		uint32_t raw = 0;
+		uint8_t* out = NULL;
+		if (*len > 4) {
+			memcpy(&raw, packed, 4);
+			raw = ntohl(raw);
+		}
+		uLongf got = raw;
+		if (raw && raw <= NETLINK_MAX_STATE && (out = malloc(raw)) &&
+		    uncompress(out, &got, packed + 4, *len - 4) == Z_OK && got == raw) {
+			free(packed);
+			*data = out;
+			*len = raw;
+		} else {
+			nl_log("deflated state kind=%u did not inflate - dropping\n", (unsigned)kind);
+			free(out);
+			free(packed);
+			*data = NULL;
+			*len = 0;
+			if (stored & STATE_DELTA) goto ask_whole;
+			return false;
+		}
+	}
+	if (!(stored & STATE_DELTA)) return true;
+
+	size_t whole = 0;
+	uint8_t* rebuilt = apply_delta(*data, *len, &whole);
+	free(*data);
+	*data = NULL;
+	*len = 0;
+	if (rebuilt) {
+		*data = rebuilt;
+		*len = whole;
+		return true;
+	}
+ask_whole:;
+	uint32_t wire = htonl((uint32_t)kind);
+	send_command(CMD_STATE_NACK, &wire, sizeof(wire));
+	return false;
 }
 
 bool NetLink_sendHash(uint32_t frame, uint32_t hash) {

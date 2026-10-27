@@ -125,6 +125,29 @@ all four. my282 is the only platform with its own core set.
 | snes9x2005 | floats | - | - | - | - |
 | mednafen_supafaust | - | floats | floats | floats | floats |
 
+### What NextUI 6.15.0 ships
+
+Read from the cores in the 6.15.0 release (2026-10-13) with
+`retro_get_system_info`, not from the makefiles - most of these float, so the
+release is the only record. tg5040, tg5050 and h700 ship identical revisions
+(6.15.0 builds h700 itself; my282 and my355 come from other trees).
+
+| core | 6.15.0 ships | Netplay builds |
+|---|---|---|
+| mgba | `0.11-1-7a12d6d` | same revision + lockstep drivers (MGBA.pak) and the paired frontend |
+| gambatte | `d9d6cd0` | the bmpriest fork `b3803b3`; upstream since its base is two translation commits |
+| gpsp | `5819380` | same revision + the RFU patches (`v1.1.0-netplay-5819380`) |
+| fceumm | `ac0d00a` | compatibility core `afe65ef` |
+| snes9x | `fae2fea` | compatibility fallback is Supafaust `d6187e5` |
+| mednafen_supafaust | `642d1d1` | compatibility core `d6187e5` |
+| pcsx_rearmed | `c881679` | compatibility core `050981b6` |
+| picodrive | `b0be121` | `b0be121` |
+| fbneo | `6a5cc25` | - |
+
+The compatibility cores stay on their own pins: they are the common build both
+devices fall back to, on ARMv7 and AArch64 alike, and need not match anyone's
+installed core.
+
 ### What "floats" means, and why it matters here
 
 From `workspace/all/cores/makefile`:
@@ -197,7 +220,8 @@ transport works. This is the main argument for the mGBA row below.
 
 **mGBA emulates GBA link properly, but not over libretro's netpacket
 interface.** Checked against the source rather than assumed: `libretro.c` at
-revision `925f0f0` contains no reference to `SET_NETPACKET_INTERFACE`. An
+revision `925f0f0` (and `7a12d6d4b`, which NextUI 6.15.0 ships) contains no
+reference to `SET_NETPACKET_INTERFACE`. An
 earlier draft of this file claimed it did; that was wrong.
 
 What it has instead is better suited to the instanced route. mGBA ships a

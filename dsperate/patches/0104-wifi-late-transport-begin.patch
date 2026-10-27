@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bmpriest <benjamin.m.priest@gmail.com>
 Date: Fri, 23 Oct 2026 04:04:25 -0600
-Subject: [PATCH] wifi: a transport attached while the radio is on says begin()
+Subject: [PATCH 104/106] wifi: a transport attached while the radio is on says
+ begin()
 
 MpTransport::begin() -- which tells the other consoles this one's radio is
 on, and which the host needs before it will wait for that console's MP
@@ -46,10 +47,10 @@ index 7ddcdc2..6b5abac 100644
    // Frames actually put on the air, not just radio power-on. Diagnostic
    // only; not in save state.
 diff --git a/src/frontend/sdl/main.cpp b/src/frontend/sdl/main.cpp
-index 64c40b0..a41621b 100644
+index 7f0fae5..e021f2b 100644
 --- a/src/frontend/sdl/main.cpp
 +++ b/src/frontend/sdl/main.cpp
-@@ -3721,12 +3721,18 @@ sdl_ready:
+@@ -3987,12 +3987,18 @@ sdl_ready:
      const Uint64 t0 = SDL_GetPerformanceCounter();
  #if DSPERATE_NET
      if (lan) lan->process();   // ENet and discovery, once per frame, on this thread
@@ -135,3 +136,6 @@ index de8c934..e48c439 100644
  
    // MpTransport
    void begin() override;
+-- 
+2.55.0
+

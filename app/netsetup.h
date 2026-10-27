@@ -40,6 +40,7 @@ typedef struct {
 void NS_init(void);                  /* resolve pak path, platform, sd root */
 const char* NS_platform(void);
 const char* NS_pakPath(void);
+const char* NS_sdPath(void);
 const char* NS_statePath(void); /* durable state in .userdata/shared/Netplay */
 bool NS_localIP(char* out, int len);
 
@@ -84,10 +85,13 @@ void NS_wifiPowerSaveDisable(void);   /* no-op when the setting is off */
 /* H700: the radio's power save only changes when its driver is reloaded. True
  * when turning it off would need that reload (platform and current state). */
 bool NS_wifiPowerSaveNeedsReload(void);
-/* Reload the driver with power save off - several seconds without WiFi. Lasts
- * until the device reboots. */
-bool NS_wifiPowerSaveReload(char* err, int errlen);
+/* Reload the driver with power save off (or back on) - several seconds
+ * without WiFi. Off lasts until the device reboots. */
+bool NS_wifiPowerSaveReload(bool off, char* err, int errlen);
 void NS_wifiPowerSaveRestore(void);
+/* Switch the radio's power save directly where that works at runtime (not an
+ * H700: see NS_wifiPowerSaveReload). For tests that need a known state. */
+bool NS_wifiPowerSaveRadio(bool on);
 
 /* Put the platform's own WiFi back. Safe to call at any time. The stranded
  * check runs at startup, NS_wifiRestore is the manual escape hatch for when it
@@ -140,6 +144,11 @@ bool NS_cleanupStaleSession(void);
 /* Host-only detached owner of discovery and compatibility negotiation. */
 bool NS_brokerStart(char* err, int errlen);
 void NS_brokerStop(void);
+/* A guest's session agent (netplay-broker.elf --guest): ends the guest's
+ * session, and restores its WiFi after an ad hoc one, when the host ends the
+ * session. Started once a guest is armed; exits on its own with the session. */
+bool NS_guestAgentStart(void);
+int  NS_guestAgentRun(void);
 
 /* --- settings -----------------------------------------------------------
  *
@@ -178,10 +187,15 @@ typedef struct {
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */
 	bool        add_gameswitcher; /* expose the Netplay quick app in NextUI recents/switcher */
 	bool        disable_powersave; /* radio power save off while a session is armed */
+	bool        adhoc_switch;  /* host: leave the station network for a quieter AP channel */
 	bool        dsperate;      /* DSP.pak installed by this pak for DS local wireless */
 	bool        drastic;       /* local wireless added to the user's NDS.pak (DraStic) */
 	NS_IconMode status_icon;    /* Varnish.pak overlay icon: dim, half lit hosting, lit connected */
 	bool        quick_menu;     /* START in NextUI's menus opens a Varnish-drawn menu */
+	/* The quick menu's button combination as evdev key codes ("314,315"), and
+	 * how the app names it ("SELECT+START"). Empty means START. */
+	char        quick_keys[32];
+	char        quick_label[32];
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
 } NS_Settings;
@@ -228,6 +242,9 @@ typedef struct {
 	 * build the radio does not support. */
 	bool base_installed;
 	bool unsupported;
+	bool base_bundled;     /* NS_PAK_NDS: Netplay can install NDS.pak itself */
+	bool present;          /* a <pak>.pak is on the card, whoever put it there */
+	bool has_backup;       /* restoring would put a pre-Netplay copy back */
 	char backup_date[32];
 } NS_PakStatus;
 
@@ -237,6 +254,20 @@ bool NS_pakStatus(NS_ManagedPak pak, NS_PakStatus* out);
 bool NS_pakInstall(NS_ManagedPak pak, char* err, int errlen);
 bool NS_pakIgnoreMismatch(NS_ManagedPak pak, char* err, int errlen);
 bool NS_pakRestore(NS_ManagedPak pak, bool restore_pak, bool saves, bool states, char* err, int errlen);
+/* Deletes the pak from the card without putting a backup back. */
+bool NS_pakRemove(NS_ManagedPak pak, char* err, int errlen);
+
+/* Whether a system's pak is here and would play over Netplay: its launch.sh
+ * picks a core the shim drives. core gets the core it picks ("snes9x2005"),
+ * or "" when the pak is absent. */
+typedef enum {
+	NS_SYS_ABSENT = 0,
+	NS_SYS_PRESENT,      /* the pak is here, but not with a core Netplay drives */
+	NS_SYS_READY,
+} NS_SystemState;
+NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len);
+/* The paired Gambatte core that dual-instance link play needs is staged. */
+bool NS_gambatteDualAvailable(void);
 
 /* --- core manifest ------------------------------------------------------
  *

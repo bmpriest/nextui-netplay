@@ -56,8 +56,10 @@
 #define AUDIO_DEFAULT_RATE 65536u
 #define RUN_GUARD 65536u
 
-const char* const projectName = "mGBA Dual";
-const char* const projectVersion = "0.11-dev-netdual1";
+/* Not projectName/projectVersion: the CMake build links mGBA's generated
+ * version.c, which defines those for the stock core. */
+static const char* const dualName = "mGBA Dual";
+static const char* const dualVersion = "0.11-1-netdual2";
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
@@ -495,8 +497,8 @@ void retro_deinit(void) {
 
 void retro_get_system_info(struct retro_system_info* info) {
 	memset(info, 0, sizeof(*info));
-	info->library_name = projectName;
-	info->library_version = projectVersion;
+	info->library_name = dualName;
+	info->library_version = dualVersion;
 	info->valid_extensions = "gba";
 	info->need_fullpath = false;
 	info->block_extract = false;

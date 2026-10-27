@@ -1,0 +1,36 @@
+# Contra III - shared-screen lockstep (Snes9x), two players.
+#
+# Title -> 2 PLAYERS (each device drives its own player) -> 90 seconds of
+# random running and gunning from both -> both logs must show agreement.
+#
+# Presses are held 0.3 s: one that begins and ends inside a link stall is never
+# sampled by the game. Run with run.sh.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME SFC "Super Nintendo Entertainment System (SFC)/Contra III - The Alien Wars (USA).zip"
+WAIT 3000
+guest:OPEN_GAME SFC "Super Nintendo Entertainment System (SFC)/Contra III - The Alien Wars (USA).zip"
+all:WAIT_FOR game 30000
+WAIT 16000
+all:SCREEN contra3-title
+
+# Title -> mode list; Player 1 picks 2 PLAYERS.
+host:TRM sh {helpers}/keys.sh start:0.3:2.5
+all:SCREEN contra3-modes
+host:TRM sh {helpers}/keys.sh down:0.3:1 start:0.3:4
+all:SCREEN contra3-start
+host:TRM sh {helpers}/keys.sh start:0.3:3
+all:SCREEN contra3-play
+
+host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+y right+b left+y y y b up+y down+y up+right+y x x
+guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+y right+b left+y y y b up+y down+y up+right+y x x
+WAIT 93000
+all:SCREEN contra3-after-play
+
+host:TRM sh {helpers}/check.sh shared Contra_III 50
+guest:TRM sh {helpers}/check.sh shared Contra_III 50
+
+# quit.sh: MinArch's own menu, then SIGTERM, then SIGKILL (QUIT_GAME's remote
+# presses stretched through a tunnel and left a Brick in the game).
+all:TRM sh {helpers}/quit.sh minarch
+all:WAIT_FOR devbridge 30000

@@ -191,6 +191,10 @@ int main(int argc, char** argv) {
 			fclose(rf);
 		}
 	}
+	// HARNESS_LOAD_DELAY_MS is a device that takes its time with the content:
+	// a disc image hashes in seconds on one handheld and well over ten on
+	// another, while the session is already connected.
+	if (getenv("HARNESS_LOAD_DELAY_MS")) usleep(atoi(getenv("HARNESS_LOAD_DELAY_MS")) * 1000);
 	CHECK(load_game(&game) == true, "load_game did not forward its return value");
 
 	struct retro_system_av_info av;

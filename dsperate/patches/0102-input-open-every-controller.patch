@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bmpriest <benjamin.m.priest@gmail.com>
 Date: Fri, 23 Oct 2026 03:19:30 -0600
-Subject: [PATCH] input: open every game controller, not just the first
+Subject: [PATCH 102/106] input: open every game controller, not just the first
 
 Only the first controller SDL could map was opened, so a second pad was
 ignored entirely. On NextUI that includes the launcher's own virtual pads
@@ -20,7 +20,7 @@ buttons of a second pad whose mapping was already positional.
  2 files changed, 55 insertions(+), 16 deletions(-)
 
 diff --git a/src/frontend/sdl/input.cpp b/src/frontend/sdl/input.cpp
-index 36e188e..c48e23d 100644
+index 8d1453c..48065f8 100644
 --- a/src/frontend/sdl/input.cpp
 +++ b/src/frontend/sdl/input.cpp
 @@ -335,26 +335,49 @@ void Input::warn_collisions() const {
@@ -123,10 +123,10 @@ index 36e188e..c48e23d 100644
    // Mouse copies of touches (SDL_TOUCH_MOUSEID) are skipped: the finger
    // events carry the touch, and the copy goes to whichever window has focus.
 diff --git a/src/frontend/sdl/input.h b/src/frontend/sdl/input.h
-index 8fa01e5..95ee6b3 100644
+index 3e862e3..9408e7b 100644
 --- a/src/frontend/sdl/input.h
 +++ b/src/frontend/sdl/input.h
-@@ -203,6 +203,9 @@ private:
+@@ -206,6 +206,9 @@ private:
    bool lid_ = false, mic_key_ = false, mic_pad_ = false, ff_key_ = false, ff_pad_ = false;
    u32  noise_ = 0x2545F491;
    SDL_GameController* pad_ = nullptr;
@@ -136,7 +136,7 @@ index 8fa01e5..95ee6b3 100644
  
    Bind key_map_[io::Io::BTN_COUNT];
    Bind pad_map_[io::Io::BTN_COUNT];
-@@ -242,7 +245,10 @@ private:
+@@ -245,7 +248,10 @@ private:
    // pad.face_fix: SDL face button -> the positional one the kernel says it is
    // (identity unless the mapping has a/b or x/y swapped); see pad_faces.h.
    bool face_fix_ = true;
@@ -148,3 +148,6 @@ index 8fa01e5..95ee6b3 100644
    void detect_faces();
    std::vector<TouchRoute> touch_routes_;
    std::vector<std::pair<SDL_TouchID, Panel>> touch_cache_;
+-- 
+2.55.0
+

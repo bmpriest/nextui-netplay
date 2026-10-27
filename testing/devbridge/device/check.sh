@@ -28,7 +28,7 @@ bad=$(grep -iE 'disagree|diverg|desync|synchronization timed out|could not adopt
 case $MODE in
 shared)
 	grep -q 'ROM and core identity match peer' "$log" || fail "peers never agreed on ROM and core"
-	echo "checkpoints agreed: $(grep -c 'consoles agree\|checkpoint promoted' "$log")"
+	echo "checkpoints agreed: $(grep -c 'consoles agree\|checkpoint promoted\|in sync at frame' "$log")"
 	pat='netplay-shim\] pacing:' ;;
 instanced)
 	grep -q 'instanced link agreed by both devices' "$log" || fail "instanced link never agreed"
@@ -65,4 +65,15 @@ grep "$pat" "$log" | sed -n 's/.* \([0-9]*\) \(paired \)\{0,1\}frames in \([0-9]
 			printf "pacing: %d windows, %.1f fps average\n", n, fps
 			if (fps < min) { printf "FAIL: below %s fps\n", min; exit 1 }
 		}' || exit 1
+
+# Lockstep never drops input: a late packet holds the game instead, so the
+# network shows up as stalled frames. "stalled 13 frames (2%), longest 6" or
+# "input stalls 12 (1%), longest 4" per window; the slowest window shows how
+# bad the worst stretch felt.
+grep "$pat" "$log" | sed -n 's/.* \([0-9]*\) \(paired \)\{0,1\}frames in \([0-9]*\)ms.*\(stalled\|input stalls\) \([0-9]*\).*longest \([0-9]*\).*/\1 \3 \5 \6/p' |
+	awk '
+		{ f += $1; s += $3; if ($4 > l) l = $4; w = $1 * 1000 / $2; if (!n++ || w < low) low = w }
+		END { if (n) printf "stalls: %d of %d frames (%.1f%%), longest %d frames, slowest window %.1f fps\n", s, f, s * 100 / f, l, low }'
+hiccups=$(grep -c 'frontend stalled - told peer' "$log")
+[ "$hiccups" -gt 0 ] && echo "frontend stalls reported to peer: $hiccups"
 echo "PASS"

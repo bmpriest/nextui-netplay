@@ -424,12 +424,19 @@ nds_netplay_env() {
         return 0
         ;;
     esac
-    # One MP exchange may hold a frame this long: 25 ms (melonDS's) holds on
-    # Netplay's ad hoc network; through an access point it takes 100 ms (as
-    # DSP.pak measured). The session may carry its own value.
+    # One MP exchange may hold a frame this long, as DSP.pak's launcher sets
+    # it: 100 ms through an access point, 50 ms on Netplay's ad hoc network.
+    # DraStic kept melonDS's 25 ms after DSP.pak moved to 50, and two Bricks
+    # on DraStic then raced at 44-47 fps with ~750 timeouts each against
+    # 51-52 fps and ~230 on DSperate (matrix, 2026-10-26). The session may
+    # carry its own value.
     _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$NDS_NET_SESSION" | head -n 1)"
-    if [ -z "$_timeout" ] && ! grep -q '^adhoc_ssid=' "$NDS_NET_SESSION"; then
-        _timeout=100
+    if [ -z "$_timeout" ]; then
+        if grep -q '^adhoc_ssid=' "$NDS_NET_SESSION"; then
+            _timeout=50
+        else
+            _timeout=100
+        fi
     fi
     case "$_timeout" in
     "" | *[!0-9]*) ;;
@@ -534,6 +541,10 @@ main() {
     # Trigger custom minui-power-control and launch the emulator, make sure to be in the current directory
     cd "$EMU_DIR"
     nds_start_power_control
+    # A pan past the end of the buffer DraStic's Mali driver sets up crashes it
+    # (H700, after an app that triple-buffered fb0 - see DSP.pak's launch.sh).
+    # The top of the buffer is valid at any size.
+    [ -w /sys/class/graphics/fb0/pan ] && echo 0,0 >/sys/class/graphics/fb0/pan 2>/dev/null
     if [ -n "$NDS_NET_LAN" ] && [ -f "$EMU_DIR/libs/libdrastic_wifi.so" ]; then
         # The auto state is where this console last quit, not where the other
         # one is: a session boots the game fresh (slots 1+ are kept).

@@ -12,10 +12,12 @@ host:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zi
 WAIT 3000
 guest:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip"
 all:WAIT_FOR game 30000
-WAIT 12000
+WAIT 8000
 
-host:VERIFY_WAIT {host_refs}/mk-title.png 6000
-guest:VERIFY_WAIT {guest_refs}/mk-title.png 6000
+# Polled (DevBridge ee0079b): over WiFi the lockstep stalls slow the intro
+# and the title settled after the 18 s a fixed check allowed.
+host:VERIFY_WAIT {host_refs}/mk-title.png 25000
+guest:VERIFY_WAIT {guest_refs}/mk-title.png 20000
 
 # MULTI-PLAYER, on both.
 host:TRM sh {helpers}/keys.sh --bg down:0.25:0.8 a:0.25:0
@@ -29,14 +31,19 @@ WAIT 4000
 host:TRM sh {helpers}/keys.sh --bg a:0.25:0
 guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
 WAIT 6000
-host:VERIFY_WAIT {host_refs}/mk-link-host.png 6000 threshold=15
-guest:VERIFY_WAIT {guest_refs}/mk-link-guest.png 6000 threshold=15
+host:VERIFY_WAIT {host_refs}/mk-link-host.png 20000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/mk-link-guest.png 20000 threshold=15
 
+# The link screen shows before the partner is found (P1 alone; within the
+# threshold of the P1+P2 reference) and ignores OK until it is. Checks poll
+# since DevBridge ee0079b and pass as soon as the screen shows, so give the
+# link time to come up before pressing.
+WAIT 4000
 host:TRM sh {helpers}/keys.sh --bg a:0.25:0
 guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
 WAIT 4000
-host:VERIFY_WAIT {host_refs}/mk-choose-host.png 6000
-guest:VERIFY_WAIT {guest_refs}/mk-choose-guest.png 6000
+host:VERIFY_WAIT {host_refs}/mk-choose-host.png 20000
+guest:VERIFY_WAIT {guest_refs}/mk-choose-guest.png 20000
 
 # Thresholds: these menus scroll an animated background, so a matching screen
 # scores up to ~9. CHOOSE A GAME and the cc screen sit only 11-14 apart and
@@ -44,11 +51,11 @@ guest:VERIFY_WAIT {guest_refs}/mk-choose-guest.png 6000
 # anything else and get 15.
 # Player 1 picks VS, then 100cc; the guest's console follows over the link.
 host:TRM sh {helpers}/keys.sh down:0.25:1 a:0.25:4
-host:VERIFY_WAIT {host_refs}/mk-cc-host.png 6000
-guest:VERIFY_WAIT {guest_refs}/mk-cc-guest.png 6000
+host:VERIFY_WAIT {host_refs}/mk-cc-host.png 20000
+guest:VERIFY_WAIT {guest_refs}/mk-cc-guest.png 20000
 host:TRM sh {helpers}/keys.sh down:0.25:0.8 a:0.25:4
-host:VERIFY_WAIT {host_refs}/mk-character-host.png 6000 threshold=15
-guest:VERIFY_WAIT {guest_refs}/mk-character-guest.png 6000 threshold=15
+host:VERIFY_WAIT {host_refs}/mk-character-host.png 20000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/mk-character-guest.png 20000 threshold=15
 
 # Host Mario (up-left of the start square), guest Yoshi (right of it).
 host:TRM sh {helpers}/keys.sh --bg up:0.25:0.6 left:0.25:0.6 a:0.25:0
@@ -57,8 +64,8 @@ WAIT 3000
 host:TRM sh {helpers}/keys.sh --bg a:0.25:0
 guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
 WAIT 4000
-host:VERIFY_WAIT {host_refs}/mk-track-host.png 6000 threshold=15
-guest:VERIFY_WAIT {guest_refs}/mk-track-guest.png 6000 threshold=15
+host:VERIFY_WAIT {host_refs}/mk-track-host.png 20000 threshold=15
+guest:VERIFY_WAIT {guest_refs}/mk-track-guest.png 20000 threshold=15
 
 # Mushroom Cup -> Peach Circuit -> confirm. Never B here: it backs out.
 host:TRM sh {helpers}/keys.sh a:0.25:2 a:0.25:3 a:0.25:8
@@ -71,5 +78,7 @@ all:SCREEN mk-after-race
 host:TRM sh {helpers}/check.sh instanced Mario_Kart 50
 guest:TRM sh {helpers}/check.sh instanced Mario_Kart 50
 
-all:QUIT_GAME
+# quit.sh: MinArch's own menu, then SIGTERM, then SIGKILL (QUIT_GAME's remote
+# presses stretched through a tunnel and left a Brick in the game).
+all:TRM sh {helpers}/quit.sh minarch
 all:WAIT_FOR devbridge 30000

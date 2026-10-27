@@ -16,20 +16,6 @@ pak_platforms() {
     jq -r '.platforms | join(" ")' "$REPO_ROOT/pak.json"
 }
 
-# Replace the current platform's dsp-pad-guid with one reporting <guid> <name>.
-# dsp-pad-guid prints one "GUID<TAB>name" line per joystick. Arguments come
-# in pairs: guid name [guid name ...].
-stub_pad_guid() {
-    {
-        printf '#!/bin/sh\n'
-        while [ $# -ge 2 ]; do
-            printf "printf '%%s\\t%%s\\n' '%s' '%s'\n" "$1" "$2"
-            shift 2
-        done
-    } >"$PAK/$PLATFORM/dsp-pad-guid"
-    chmod +x "$PAK/$PLATFORM/dsp-pad-guid"
-}
-
 # Build a fake pak tree and source launch.sh with main() suppressed.
 setup_launch() {
     SDCARD_PATH="$BATS_TEST_TMPDIR/SDCARD"
@@ -58,9 +44,6 @@ setup_launch() {
     chmod +x "$STUB_BIN"/*
     PATH="$STUB_BIN:$PATH"
     export PATH STUB_BIN
-
-    # A pad-guid that reports a known GUID, so the mapping assembly is testable.
-    stub_pad_guid "030000004c050000c405000011010000" "Fake Pad"
 
     PAK_DIR="$PAK"
     export PAK_DIR

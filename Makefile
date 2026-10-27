@@ -1,4 +1,4 @@
-.PHONY: cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
+.PHONY: udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -69,7 +69,7 @@ GPSP_SRC     := $(CORE_SRC_ROOT)/gpsp
 GAMBATTE_REPO := https://github.com/bmpriest/gambatte-libretro.git
 GAMBATTE_REV  := b3803b3dd27a2a7f28ce39a426e1453eee7376c9
 GPSP_REPO     := https://github.com/libretro/gpsp.git
-GPSP_REV      := 69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4
+GPSP_REV      := 5819380c2ffb0900219d700a382ee68c464ebb99
 GPSP_PATCHES := cores/patches/gpsp-platforms.patch cores/patches/gpsp-001-rfu-disconnect.patch cores/patches/gpsp-002-rfu-queue-size.patch cores/patches/gpsp-003-netplay-version.patch
 GAMBATTE_STAMP := $(GAMBATTE_SRC)/.netplay-fork-$(GAMBATTE_REV)
 GAMBATTE_DUAL_STAMP := $(GAMBATTE_DUAL_SRC)/.netplay-fork-$(GAMBATTE_REV)
@@ -77,15 +77,14 @@ GPSP_STAMP := $(GPSP_SRC)/.netplay-patched-$(GPSP_REV)
 
 #  mgba - carries a working lockstep cable in core code, but the libretro build
 #         does not compile the two SIO drivers that use it. We add them; that is
-#         the whole of this change so far. Pinned to the same revision NextUI
-#         builds (925f0f0b) so our core and the shipped one are the same mGBA:
-#         later revisions moved the libretro build out of the repo root and the
-#         platform patch no longer applies.
+#         the whole of this change for the single core. Pinned to the revision
+#         NextUI 6.15.0 ships (0.11-1-7a12d6d, read from its cores) and built the
+#         way it builds it: CMake, with its per-CPU flags (cores/build-mgba.sh).
 MGBA_SRC  := $(CORE_SRC_ROOT)/mgba
 MGBA_REPO := https://github.com/libretro/mgba
-MGBA_REV  := 925f0f0bc1f51c79ca5446d7427512c653e615b3
+MGBA_REV  := 7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6
 MGBA_DUAL_FRONTEND := cores/mgba/libretro_dual.c
-MGBA_PATCHES := cores/patches/mgba-platforms.patch cores/patches/mgba-001-build-lockstep-drivers.patch cores/patches/mgba-002-dual-frontend.patch
+MGBA_PATCHES := cores/patches/mgba-001-build-lockstep-drivers.patch cores/patches/mgba-002-dual-frontend.patch
 MGBA_STAMP := $(MGBA_SRC)/.netplay-patched-$(MGBA_REV)
 
 FCEUMM_SRC := $(CORE_SRC_ROOT)/fceumm
@@ -164,7 +163,6 @@ $(MGBA_STAMP): $(MGBA_PATCHES) $(MGBA_DUAL_FRONTEND) shim/include/gambatte_dual.
 	@mkdir -p "$(CORE_SRC_ROOT)"
 	@git clone -q "$(MGBA_REPO)" "$(MGBA_SRC)"
 	@git -C "$(MGBA_SRC)" checkout -q "$(MGBA_REV)"
-	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-platforms.patch
 	@patch -d "$(MGBA_SRC)" -p1 < cores/patches/mgba-001-build-lockstep-drivers.patch
 	@cp "$(MGBA_DUAL_FRONTEND)" "$(MGBA_SRC)/src/platform/libretro/libretro_dual.c"
 	@cp "shim/include/gambatte_dual.h" "$(MGBA_SRC)/src/platform/libretro/gambatte_dual.h"
@@ -222,19 +220,9 @@ cores-gambatte-dual: $(GAMBATTE_DUAL_STAMP)
 			"$$(strings -n 6 dist/cores-experimental/$$p/gambatte_dual_libretro.so | grep -m1 '^v0\.5\.0-netdual')"; \
 	done
 
-# Only tg5040 (and h700, which core_build maps onto it) has an mGBA platform
-# branch - ours is NextUI's, and NextUI only ever added that one. Building the
-# others would hit the `else` at the bottom of mGBA's Makefile.libretro and
-# silently produce a Windows target, exactly the failure the comment above
-# core_build warns about. Restrict the loop rather than trust the caller.
-# mGBA's `platform=` strings are its own, and do not line up with ours or with
-# core_build's mapping. tg5040 gets a branch from the platform patch; my282 has
-# none and uses the generic unix branch with CC from the toolchain, which is
-# exactly what NextUI does for it. Anything else selects no branch and the build
-# dies with "no makefile found" - or worse, falls through to Windows.
+# The platforms Netplay ships MGBA.pak for. cores/build-mgba.sh also knows
+# tg5050 and my355 (NextUI 6.15.0's flags), so adding them here is all it takes.
 MGBA_PLATFORMS := tg5040 h700 my282
-
-mgba_platform = $(if $(filter tg5040 h700,$(1)),tg5040,$(if $(filter my282,$(1)),unix,))
 
 cores-mgba: $(MGBA_STAMP)
 	@bad=""; for p in $(PLATFORMS); do \
@@ -246,13 +234,9 @@ cores-mgba: $(MGBA_STAMP)
 		exit 1; \
 	fi
 	@for p in $(PLATFORMS); do \
-		mp=$$(case $$p in tg5040|h700) echo tg5040 ;; my282) echo unix ;; esac); \
-		echo "== mgba $$p (mgba platform=$$mp)"; \
-		mkdir -p dist/cores/$$p; \
+		echo "== mgba $$p"; \
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
-			CMD="make -C $(MGBA_SRC) -f Makefile.libretro platform=$$mp clean >/dev/null 2>&1 && \
-			make -C $(MGBA_SRC) -f Makefile.libretro platform=$$mp -j4 && \
-			cp $(MGBA_SRC)/mgba_libretro.so dist/cores/$$p/" || exit 1; \
+			CMD="sh cores/build-mgba.sh $$p $(MGBA_SRC) dist/cores/$$p/mgba_libretro.so" || exit 1; \
 	done
 
 cores-mgba-dual: $(MGBA_STAMP)
@@ -265,18 +249,14 @@ cores-mgba-dual: $(MGBA_STAMP)
 		exit 1; \
 	fi
 	@for p in $(PLATFORMS); do \
-		mp=$$(case $$p in tg5040|h700) echo tg5040 ;; my282) echo unix ;; esac); \
-		echo "== mgba-dual $$p (mgba platform=$$mp)"; \
-		mkdir -p dist/cores-experimental/$$p; \
+		echo "== mgba-dual $$p"; \
 		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
-			CMD="make -C $(MGBA_SRC) -f Makefile.libretro NETPLAY_DUAL_INSTANCE=1 platform=$$mp clean >/dev/null 2>&1 && \
-			make -C $(MGBA_SRC) -f Makefile.libretro NETPLAY_DUAL_INSTANCE=1 platform=$$mp -j4 && \
-			cp $(MGBA_SRC)/mgba_libretro.so dist/cores-experimental/$$p/mgba_dual_libretro.so" || exit 1; \
+			CMD="sh cores/build-mgba.sh $$p $(MGBA_SRC) dist/cores-experimental/$$p/mgba_dual_libretro.so dual" || exit 1; \
 	done
 	@for p in $(PLATFORMS); do \
 		printf "   %-7s abi=%s scheduler=%s\n" "$$p" \
 			"$$(nm -D --defined-only dist/cores-experimental/$$p/mgba_dual_libretro.so 2>/dev/null | grep -c retro_dual_get_abi_version)" \
-			"$$(strings dist/cores-experimental/$$p/mgba_dual_libretro.so | grep -c 0.11-dev-netdual1)"; \
+			"$$(strings dist/cores-experimental/$$p/mgba_dual_libretro.so | grep -c 0.11-1-netdual2)"; \
 	done
 	@for p in $(PLATFORMS); do \
 		printf "   %-7s lockstep symbols: gb=%s gba=%s\n" "$$p" \
@@ -394,6 +374,38 @@ nds-wifi-a30-pak: nds-pak nds-wifi-hooks
 
 nds-wifi-paks: nds-wifi-a30-pak
 
+# BusyBox udhcpd for the platforms whose firmware has no DHCP server but can
+# serve an ad hoc network (the H700 runs its AP through wpa_supplicant). One
+# applet, built in the pinned toolchain image (the H700 shares tg5040's
+# compiler and sysroot); the tarball is checked against its published SHA-256.
+BUSYBOX_VERSION  := 1.36.1
+BUSYBOX_SHA256   := b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
+BUSYBOX_TARBALL  := $(CORE_SRC_ROOT)/busybox-$(BUSYBOX_VERSION).tar.bz2
+UDHCPD_PLATFORMS := h700
+
+$(BUSYBOX_TARBALL):
+	@mkdir -p "$(CORE_SRC_ROOT)"
+	curl -fsSL -o "$@.part" "https://busybox.net/downloads/busybox-$(BUSYBOX_VERSION).tar.bz2"
+	echo "$(BUSYBOX_SHA256)  $@.part" | sha256sum -c - >/dev/null
+	mv "$@.part" "$@"
+
+# The toolchain image has no bzip2, so the container gets a plain tar.
+$(BUSYBOX_TARBALL:.bz2=): $(BUSYBOX_TARBALL)
+	bzip2 -dkc "$<" > "$@"
+
+udhcpd: $(BUSYBOX_TARBALL:.bz2=)
+	@for p in $(UDHCPD_PLATFORMS); do \
+		mkdir -p bin/$$p; \
+		docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src \
+			$(TG5040_TOOLCHAIN) sh cores/build-udhcpd.sh "$(BUSYBOX_TARBALL:.bz2=)" bin/$$p/udhcpd || exit 1; \
+		printf "   %-7s %s\n" "$$p" "$$(du -h bin/$$p/udhcpd | cut -f1)"; \
+	done
+
+check-udhcpd:
+	@for p in $(UDHCPD_PLATFORMS); do \
+		test -x "bin/$$p/udhcpd" || { echo "missing bin/$$p/udhcpd - run 'make udhcpd' first"; exit 1; }; \
+	done
+
 # Stage and package the measurement pak for one platform, laid out as it sits on
 # the card so the zip is self-describing: unpack it at the SD root and the pak
 # and its ROM folder land where they belong. Same shape as gblc-pak.
@@ -483,8 +495,25 @@ check-dsp:
 NDS_PLATFORMS  := tg5040 tg5050 h700
 NDS_OVERLAY    := dist/nds
 DRASTIC_SHA256 := 6e11511907f2188863f68434484d8e1fb70c6c4b597512bed02d38f60370ac11
+# For a card with no NDS.pak, Netplay installs minui-nintendo-ds-pak's own
+# release, unmodified, then adds the overlay. Its DraStic is DRASTIC_SHA256.
+NDS_BASE_URL    := https://github.com/josegonzalez/minui-nintendo-ds-pak/releases/download/0.14.1/NDS.pak.zip
+NDS_BASE_ZIP    := .cache/nds/NDS-0.14.1.pak.zip
+NDS_BASE_SHA256 := ac4c957592e0856cb4c559cb8a9c29795baec961a789d2e4edcf26cbf06a9a65
 
-cores-nds: drastic-radio
+$(NDS_BASE_ZIP):
+	@mkdir -p $(dir $@)
+	@curl -fL "$(NDS_BASE_URL)" -o "$@.tmp"
+	@printf '%s  %s\n' "$(NDS_BASE_SHA256)" "$@.tmp" | sha256sum -c -
+	@mv "$@.tmp" "$@"
+
+cores-nds: drastic-radio $(NDS_BASE_ZIP)
+	@printf '%s  %s\n' "$(NDS_BASE_SHA256)" "$(NDS_BASE_ZIP)" | sha256sum -c - >/dev/null
+	@rm -rf "$(NDS_OVERLAY)/base" && mkdir -p "$(NDS_OVERLAY)/base/NDS.pak"
+	@unzip -q "$(NDS_BASE_ZIP)" -d "$(NDS_OVERLAY)/base/NDS.pak"
+	@test "$$(sha256sum $(NDS_OVERLAY)/base/NDS.pak/drastic/drastic | cut -d' ' -f1)" = "$(DRASTIC_SHA256)" || { \
+		echo "NDS.pak release carries a different DraStic" >&2; exit 1; }
+	@printf "   %-7s %s\n" base "$$(du -sh $(NDS_OVERLAY)/base | cut -f1)"
 	@for p in $(NDS_PLATFORMS); do \
 		rm -rf "$(NDS_OVERLAY)/$$p"; \
 		mkdir -p "$(NDS_OVERLAY)/$$p/NDS.pak/drastic/libs"; \
@@ -499,6 +528,7 @@ check-nds:
 	@for p in $(NDS_PLATFORMS); do \
 		test -f "$(NDS_OVERLAY)/$$p/NDS.pak/drastic/libs/libdrastic_wifi.so" || { echo "missing NDS overlay $$p - run 'make cores-nds' first"; exit 1; }; \
 	done
+	@test -f "$(NDS_OVERLAY)/base/NDS.pak/drastic/drastic" || { echo "missing bundled NDS.pak - run 'make cores-nds' first"; exit 1; }
 
 app:
 	@for p in $(PLATFORMS); do \
@@ -520,6 +550,7 @@ test:
 	@./testing/test-mgba-manage.sh
 	@./testing/test-dsp-manage.sh
 	@./testing/test-nds-manage.sh
+	@./testing/test-hints.sh
 	@./testing/test-instanced-ui.sh
 	@./testing/test-wifi-platform.sh
 	@./testing/test-log-rotation.sh
@@ -549,7 +580,7 @@ test:
 # shipped and is the pak's whole UI.)
 ###########################################################
 
-BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-dsp check-nds check-varnish
+BASE_DIST_CHECKS := $(foreach p,$(PLATFORMS),check-shim-$(p) check-app-$(p)) check-netplay-cores check-dsp check-nds check-varnish check-udhcpd
 
 dist: dist-base dist-compatibility dist-full
 	@echo
@@ -559,7 +590,7 @@ dist-base: $(BASE_DIST_CHECKS)
 	@rm -rf "$(BASE_STAGE)" "$(BASE_ARCHIVE)"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" dist
 
-	@cp pak.json "$(BASE_STAGE)/$(PAK)/"
+	@cp pak.json pak_hints.json "$(BASE_STAGE)/$(PAK)/"
 	@cp launcher/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
 	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
 	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
@@ -602,6 +633,7 @@ dist-base: $(BASE_DIST_CHECKS)
 		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/nds"; \
 		cp -R "$(NDS_OVERLAY)/$$p" "$(BASE_STAGE)/$(PAK)/cores/nds/"; \
 	done
+	@cp -R "$(NDS_OVERLAY)/base" "$(BASE_STAGE)/$(PAK)/cores/nds/"
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/bin/$$p"; \
 		cp bin/$$p/netplay_shim.so "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
@@ -610,6 +642,9 @@ dist-base: $(BASE_DIST_CHECKS)
 		cp bin/$$p/netplay-wifips.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		cp bin/$$p/netplay-quickmenu.elf "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
 		done
+	@for p in $(UDHCPD_PLATFORMS); do \
+		cp bin/$$p/udhcpd "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
+	done
 	@chmod 755 "$(BASE_STAGE)/$(PAK)/launch.sh" "$(BASE_STAGE)/$(PAK)/launcher"/*
 	@find "$(BASE_STAGE)" -name '.DS_Store' -delete
 	@cd "$(BASE_STAGE)" && zip -q -r "../Netplay.pak.zip" "$(PAK)" -x '*/.*'

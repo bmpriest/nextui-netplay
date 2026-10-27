@@ -96,12 +96,14 @@ np_platform_profile() {
 		NP_CTRL=/var/run/wpa_supplicant
 		;;
 	h700)
-		# Ubuntu rootfs: no udhcpc, no iw. DHCP is driven entirely by a
-		# `wpa_cli -a` action script, so restoring the supplicant without also
-		# restoring that hook leaves an associated interface that will never
-		# get an address again.
+		# No iw. DHCP is driven entirely by a `wpa_cli -a` action script, so
+		# restoring the supplicant without also restoring that hook leaves an
+		# associated interface that will never get an address again. The
+		# client differs by firmware - dhclient on the Ubuntu rootfs, udhcpc
+		# on base OS 1.4.0, as the action script itself probes - so take
+		# whichever is installed.
 		NP_ASSOC=wpa_cli
-		NP_DHCP=dhclient
+		NP_DHCP=auto
 		NP_INIT="$SYSTEM_PATH/etc/wifi/wifi_init.sh"
 		NP_HOOK=1
 		NP_PS=rtw-reload
@@ -223,6 +225,18 @@ np_assoc_ssid_wpa() {
 	case "$_st" in
 	*wpa_state=COMPLETED*) printf '%s\n' "$_st" | sed -n 's/^ssid=//p' | head -1 ;;
 	esac
+}
+
+# Make the running supplicant read its config again, which also clears a
+# network's TEMP-DISABLED back-off. A host whose AP held the radio's one channel
+# while the house network moved to another (2026-10-26: the router went from
+# channel 10 to 7 overnight) failed every rejoin, and after the AP was gone the
+# supplicant stayed backed off: enable_network and reassociate did not lift it,
+# reconfigure did. Nothing to do without wpa_cli.
+np_supplicant_reconfigure() {
+	np_have wpa_cli || return 1
+	np_platform_profile
+	wpa_cli -p "$(np_ctrl_dir)" -i "$NP_WIFI_IF" reconfigure >/dev/null 2>&1
 }
 
 # Which association probe this device will actually use: iw, wpa_cli, or none.
@@ -560,6 +574,7 @@ wifi-platform.sh)
 	has-ip)         np_has_ip ;;
 	ip)             np_ip ;;
 	ctrl-dir)       np_ctrl_dir ;;
+	supplicant-reconfigure) np_supplicant_reconfigure ;;
 	dhcp-kind)      np_dhcp_kind ;;
 	dhcp-start)     np_dhcp_start "${2:-oneshot}" ;;
 	dhcp-stop)      np_dhcp_stop ;;
