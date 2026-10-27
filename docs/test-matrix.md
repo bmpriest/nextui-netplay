@@ -32,9 +32,9 @@ the other tests' own floors.
 
 | | Ad hoc | House WiFi |
 | --- | --- | --- |
-| Other systems (14) | 7/7, 59-60 fps | 7/7, 58-60 fps |
-| DS, power save off (16+16) | 15/16, 54-58 fps | 14/16, 31-44 fps |
-| DS, power save on (16) | 15/16, 51-58 fps | 9/16 (incl. above), 28-51 fps |
+| Other systems (7 + 7) | 7/7, 59-60 fps | 7/7, 58-60 fps |
+| DS, power save off (12 + 12) | 11/12, 54-58 fps | 10/12, 26-44 fps |
+| DS, power save on (12 + 12) | 11/12, 51-58 fps | 8/12, 28-51 fps |
 
 Every failure, by cause:
 
