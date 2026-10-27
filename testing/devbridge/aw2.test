@@ -83,7 +83,10 @@ host:TRM sh {helpers}/keys.sh a:0.12:2 up:0.12:0.8 a:0.12:4
 host:VERIFY_WAIT {host_refs}/aw2-guest-turn-host.png 20000
 guest:VERIFY_WAIT {guest_refs}/aw2-guest-turn-guest.png 20000
 
-# Guest: step onto the base left of the HQ, build a Tank, then End.
+# Guest: step onto the base left of the HQ, build a Tank, then End. The check
+# above passes as the turn banner appears (checks poll); presses during the
+# banner are lost, and the turn then never ended (two runs, 2026-10-27).
+WAIT 3000
 guest:TRM sh {helpers}/keys.sh a:0.15:2 b:0.15:1.2 left:0.15:1.2 a:0.15:1.5 down:0.15:0.8 down:0.15:0.8 down:0.15:0.8 a:0.15:2
 guest:TRM sh {helpers}/keys.sh right:0.15:1 a:0.15:1.2 up:0.15:0.8 a:0.15:4
 # Day 2 looks like day 1 everywhere except the host's funds (11000 -> 22000)
