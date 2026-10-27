@@ -397,6 +397,10 @@ bool NS_wifiPowerSaveReload(bool off, char* err, int errlen) {
 	return reloaded && NS_wifiPowerSaveNeedsReload() != off;
 }
 
+bool NS_wifiPowerSaveRadio(bool on) {
+	return wifi_plat(on ? "powersave on" : "powersave off") == 0;
+}
+
 void NS_wifiPowerSaveRestore(void) {
 	char path[512];
 	ps_state_path(path, sizeof(path));

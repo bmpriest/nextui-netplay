@@ -1813,6 +1813,10 @@ static int ctl_main(int argc, char* argv[]) {
 		} else {
 			c->disable_powersave = false;
 			NS_wifiPowerSaveRestore();
+			/* Restore puts back what was recorded before a session, which on
+			 * a device someone had switched off by hand is off: a test asking
+			 * for power save on has to get it. */
+			if (strcmp(PLATFORM, "h700")) NS_wifiPowerSaveRadio(true);
 			/* The app leaves an H700 at power save off until the next boot;
 			 * a test run cannot wait for one. */
 			if (!strcmp(PLATFORM, "h700") && !NS_wifiPowerSaveNeedsReload() &&

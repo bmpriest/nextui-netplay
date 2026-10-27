@@ -700,6 +700,11 @@ class Runner:
             res["arm_s"] = round(time.time() - t_arm, 1)
             hs, gs = host.ctl("status"), guest.ctl("status")
             res["radio_powersave"] = {"host": hs.get("radio_powersave"), "guest": gs.get("radio_powersave")}
+            off_wanted = cell.powersave == "off"
+            wrong = [k for k, v in res["radio_powersave"].items() if v and (v == "off") != off_wanted]
+            if wrong:
+                self.arm_notes.append(f"radio power save not {cell.powersave} on {'/'.join(wrong)}")
+                res["notes"] = list(self.arm_notes)
             if gs.get("armed") != "1" or gs.get("role") != "client":
                 raise Fail(f"{guest}: not joined: {gs}")
             # check.sh trusts only logs newer than this; a host's confirmed

@@ -89,6 +89,9 @@ bool NS_wifiPowerSaveNeedsReload(void);
  * without WiFi. Off lasts until the device reboots. */
 bool NS_wifiPowerSaveReload(bool off, char* err, int errlen);
 void NS_wifiPowerSaveRestore(void);
+/* Switch the radio's power save directly where that works at runtime (not an
+ * H700: see NS_wifiPowerSaveReload). For tests that need a known state. */
+bool NS_wifiPowerSaveRadio(bool on);
 
 /* Put the platform's own WiFi back. Safe to call at any time. The stranded
  * check runs at startup, NS_wifiRestore is the manual escape hatch for when it
