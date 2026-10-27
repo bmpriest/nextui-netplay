@@ -92,5 +92,7 @@ guest:VERIFY_WAIT {guest_refs}/aw2-day2-guest.png 8000 region=0.8,0.7,0.1,0.1
 host:TRM sh {helpers}/check.sh link Advance_Wars_2 55
 guest:TRM sh {helpers}/check.sh link Advance_Wars_2 55
 
-all:QUIT_GAME
+# quit.sh: MinArch's own menu, then SIGTERM, then SIGKILL (QUIT_GAME's remote
+# presses stretched through a tunnel and left a Brick in the game).
+all:TRM sh {helpers}/quit.sh minarch
 all:WAIT_FOR devbridge 30000

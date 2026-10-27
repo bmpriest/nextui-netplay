@@ -32,5 +32,7 @@ all:SCREEN rcr-after-play
 host:TRM sh {helpers}/check.sh shared River_City_Ransom 50
 guest:TRM sh {helpers}/check.sh shared River_City_Ransom 50
 
-all:QUIT_GAME
+# quit.sh: MinArch's own menu, then SIGTERM, then SIGKILL (QUIT_GAME's remote
+# presses stretched through a tunnel and left a Brick in the game).
+all:TRM sh {helpers}/quit.sh minarch
 all:WAIT_FOR devbridge 30000

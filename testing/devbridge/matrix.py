@@ -669,6 +669,9 @@ class Runner:
             log(f"=== {cell.id} (attempt {attempt})")
             for d in (host, guest):
                 self.idle(d, cdir / "runner.log")
+                # Per cell, so an edit to a helper reaches a run in progress.
+                for f in sorted((HERE / "device").glob("*.sh")):
+                    d.push(f, f"{HELPERS}/{f.name}")
             for d in (host, guest):
                 self.set_powersave(d, cell.powersave)
                 if cell.ds:
