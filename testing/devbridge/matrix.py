@@ -2,7 +2,7 @@
 """Run the two-device gameplay tests as an unattended matrix.
 
     matrix.py [--rig FILE] [--plan NAME ...] [--only REGEX] [--list]
-              [--retries N] [--out DIR] [--resume DIR]
+              [--retries N] [--out DIR] [--resume DIR [--rerun REGEX]]
 
 Every cell sets the case up from nothing and puts it back afterwards, with
 no one at the devices:
@@ -799,8 +799,9 @@ class Runner:
         used = {n for c in cells for n in (c.host, c.guest)}
         self.prepare([self.rig.devices[n] for n in sorted(used)])
         stranded = 0
+        rerun = re.compile(self.args.rerun) if self.args.rerun else None
         for i, cell in enumerate(cells, 1):
-            if cell.id in done:
+            if cell.id in done and not (rerun and rerun.search(cell.id)):
                 continue
             log(f"--- cell {i}/{len(cells)}")
             for attempt in range(1, self.args.retries + 2):
@@ -883,6 +884,7 @@ def main():
     p.add_argument("--retries", type=int, default=1)
     p.add_argument("--out")
     p.add_argument("--resume")
+    p.add_argument("--rerun", help="with --resume, run cells matching this regex again even if they passed")
     args = p.parse_args()
 
     spec_rig = json.loads(Path(args.rig).read_text())
