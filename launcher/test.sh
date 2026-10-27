@@ -421,6 +421,24 @@ grep -q "Installed by Netplay.pak" "$NP/wrapped/FBN.pak/launch.sh" && ok "staged
 [ -f "$NP/wrapped/FBN.pak/fbneo_libretro.so" ] && ok "bundled core copied into staging" || bad "bundled core missing from staging"
 
 echo
+echo "== wrap-pak: up restages a pak that changed on disk"
+# A core update made the staged copy stale; up used to skip it, report no
+# mounts, and send the whole session to launch stubs.
+mkdir -p "$ROOT/fake-mount-bin"
+printf '#!/bin/sh\necho "$@" >> "%s/mount.log"\n' "$ROOT" > "$ROOT/fake-mount-bin/mount"
+chmod 755 "$ROOT/fake-mount-bin/mount"
+: > "$ROOT/mountinfo.empty"
+echo "updated fbneo core" > "$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so"
+rc=0
+PATH="$ROOT/fake-mount-bin:$PATH" NETPLAY_MOUNTINFO_FILE="$ROOT/mountinfo.empty" \
+	"$NP/launcher/wrap-pak.sh" up > "$ROOT/wrapup.log" 2>&1 || rc=$?
+check "up succeeds" "$rc" "0"
+check "staged copy carries the update" "$(cat "$NP/wrapped/FBN.pak/fbneo_libretro.so")" "updated fbneo core"
+check "the restaged copy is mounted" "$(cat "$ROOT/mount.log")" \
+	"--bind $NP/wrapped/FBN.pak $ROOT/Emus/$PLATFORM/FBN.pak"
+echo "fake fbneo core" > "$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so"
+
+echo
 echo "== wrap-pak: what the bind mount would present"
 # cp -a of the staged dir over the original path presents exactly the contents
 # the bind mount does, so $0-derived EMU_TAG and CORES_PATH resolve identically.

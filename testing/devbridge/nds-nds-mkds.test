@@ -40,10 +40,11 @@ host:BTN A
 host:VERIFY_WAIT {host_refs}/nds-mk-seeking-host.png 10000
 
 # The guest's browser lists the group once a beacon arrives; then it joins.
-# Mario Kart ignores A for a moment after the row appears: press too soon and
-# the guest stays in the browser.
+# Mario Kart ignores A for a moment after the row appears, and the H700's
+# DraStic drops a 0.15 s press here: press too soon or too briefly and the
+# guest stays in the browser.
 guest:VERIFY_WAIT {guest_refs}/nds-mk-rooms-guest.png 20000
-guest:TRM sh {helpers}/keys.sh sleep:1.5 a:0.15:0
+guest:TRM sh {helpers}/keys.sh sleep:1.5 a:0.3:0
 WAIT 6000
 host:VERIFY_WAIT {host_refs}/nds-mk-lobby-host.png 10000
 guest:VERIFY_WAIT {guest_refs}/nds-mk-lobby-guest.png 10000
@@ -108,6 +109,6 @@ all:SCREEN nds-nds-mk-race-30s
 WAIT 32000
 all:SCREEN nds-nds-mk-race-60s
 WAIT 5000
-all:TRM sh {helpers}/keys.sh menu:0.2:2 up:0.15:0.7 up:0.15:0.7 a:0.15:0
+all:TRM sh {helpers}/keys.sh menu:0.3:2 up:0.3:0.7 up:0.3:0.7 a:0.3:0
 all:WAIT_FOR devbridge 45000
 all:TRM sh {helpers}/check.sh dsp mariokart 45

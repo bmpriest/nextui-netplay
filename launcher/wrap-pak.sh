@@ -99,13 +99,17 @@ do_up() {
 			continue
 		fi
 
-		if [ ! -d "$_dst" ]; then
-			log "$_tag not staged - run 'sync' first"
-			continue
-		fi
-		if mount_needs_resync "$_pak"; then
-			log "$_tag changed on disk - run 'down' then 'sync'"
-			continue
+		# Not mounted, so the original is what we read: restage it here. A pak
+		# that changed on disk (a core update) used to be skipped, and with no
+		# pak mounted the whole session fell back to launch stubs.
+		if [ ! -d "$_dst" ] || mount_needs_resync "$_pak"; then
+			if mount_stage_pak "$_pak"; then
+				log "staged $_tag"
+			else
+				log "copy failed for $_tag"
+				_fail=$((_fail + 1))
+				continue
+			fi
 		fi
 
 		if mount --bind "$_dst" "$_pak"; then
@@ -113,10 +117,12 @@ do_up() {
 			log "up $_tag"
 		else
 			log "could not mount $_tag (needs root?)"
+			_fail=$((_fail + 1))
 		fi
 	done
 	[ "$_fail" -gt 0 ] && log "$_n pak(s) mounted, $_fail not covered" || log "$_n pak(s) mounted"
-	[ $((_n + _owned)) -gt 0 ]
+	# No extra paks is not a failure; bind-mount.sh judges its own set.
+	[ "$_fail" -eq 0 ]
 }
 
 do_down() {

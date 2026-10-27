@@ -49,7 +49,14 @@ dsp)
 	# game exits, so this runs after QUIT_GAME.
 	grep -q 'radios 0003' "$log" || fail "the two consoles' radios were never on together"
 	grep -q '^lan: .* not answering yet' "$log" && echo "guest waited for its host"
-	echo "MP timeouts: $(grep 'lan pacing:' "$log" | sed -n 's/.*, \([0-9]*\) timeouts.*/\1/p' | awk '{s+=$1} END {print s+0}')"
+	_timeouts=$(grep 'lan pacing:' "$log" | sed -n 's/.*, \([0-9]*\) timeouts.*/\1/p')
+	echo "MP timeouts: $(echo "$_timeouts" | awk '{s+=$1} END {print s+0}'), worst window $(echo "$_timeouts" | sort -n | tail -n 1)"
+	# A healthy race peaks near 40 timeouts in a 10 s window. An outage of a
+	# few seconds shows as hundreds in one window, and Mario Kart answers it
+	# with "Communication error": both consoles then race alone, at full
+	# speed, and every other check here still passes.
+	[ "$(echo "$_timeouts" | sort -n | tail -n 1)" -le "${DSP_MAX_WINDOW_TIMEOUTS:-100}" ] 2>/dev/null ||
+		fail "a 10 s window had more than ${DSP_MAX_WINDOW_TIMEOUTS:-100} MP timeouts (the link went dead)"
 	pat='lan pacing:' ;;
 *)
 	fail "unknown mode $MODE" ;;
