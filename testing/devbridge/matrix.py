@@ -644,7 +644,16 @@ class Runner:
         for d in (host, guest):
             self.restore_aside(d)
         back = time.time() - t0
-        st = guest.ctl("status", check=False)
+        # Over WiFi the guest never leaves the LAN, so it is "home" at once;
+        # give its agent (or, failing that, its watchdog) a minute to hear
+        # that the session is over before calling it stuck.
+        deadline = time.time() + 60
+        while True:
+            st = guest.ctl("status", check=False)
+            if st.get("armed") != "1" or time.time() >= deadline:
+                break
+            time.sleep(5)
+        back = time.time() - t0
         if st.get("armed") == "1":
             log(f"{guest}: still armed after the host ended; ending it")
             guest.ctl("end", check=False)
