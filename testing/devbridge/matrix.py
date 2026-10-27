@@ -563,7 +563,19 @@ class Runner:
 
     def arm(self, cell, host, guest):
         host.ctl("host", cell.net, timeout=180)
-        if cell.net == "wifi" or guest.via_adb:
+        if cell.net == "wifi":
+            # Discovery is measured, not required: over a lossy house AP the
+            # host's broadcasts have not arrived for 30 s while the network
+            # itself was usable. Then join the host's address, as a player
+            # would type it.
+            r = guest.ctl("join", "discover", "30", timeout=240, check=False)
+            if r.get("result", "").startswith("ok"):
+                return None
+            self.arm_notes.append(f"discovery failed ({r.get('result', '?')})")
+            addr = host.lan_ip() if host.via_adb else host.address
+            guest.ctl("join", addr, timeout=240)
+            return None
+        if guest.via_adb:
             guest.ctl("join", "discover", "30", timeout=240)
             return None
         # SSH guest onto the host's ad hoc network: the join takes the
@@ -681,7 +693,10 @@ class Runner:
                 if cell.ds:
                     self.set_aside(d)
             t_arm = time.time()
+            self.arm_notes = []
             self.arm(cell, host, guest)
+            if self.arm_notes:
+                res["notes"] = list(self.arm_notes)
             res["arm_s"] = round(time.time() - t_arm, 1)
             hs, gs = host.ctl("status"), guest.ctl("status")
             res["radio_powersave"] = {"host": hs.get("radio_powersave"), "guest": gs.get("radio_powersave")}
@@ -837,6 +852,8 @@ def write_report(rows, path):
             to = f"{h.get('timeouts', '-')}/{g.get('timeouts', '-')}" if "timeouts" in h or "timeouts" in g else "-"
             st = f"{h.get('stall_pct', '-')}/{g.get('stall_pct', '-')}%" if "stall_pct" in h or "stall_pct" in g else "-"
             note = r.get("error") or r.get("devbridge_error") or ""
+            if r.get("notes"):
+                note = (note + " " if note else "") + "; ".join(r["notes"])
             forced = [q for q in r.get("quit", []) if q != "menu"]
             if forced:
                 note = (note + " " if note else "") + f"quit by {'/'.join(r['quit'])} (guest/host)"
