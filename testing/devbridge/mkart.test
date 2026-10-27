@@ -32,6 +32,11 @@ WAIT 6000
 host:VERIFY_WAIT {host_refs}/mk-link-host.png 6000 threshold=15
 guest:VERIFY_WAIT {guest_refs}/mk-link-guest.png 6000 threshold=15
 
+# The link screen shows before the partner is found (P1 alone; within the
+# threshold of the P1+P2 reference) and ignores OK until it is. Checks poll
+# since DevBridge ee0079b and pass as soon as the screen shows, so give the
+# link time to come up before pressing.
+WAIT 4000
 host:TRM sh {helpers}/keys.sh --bg a:0.25:0
 guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
 WAIT 4000
