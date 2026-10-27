@@ -233,6 +233,33 @@ Identical offsets across every build and both architectures. These are
 properties of picodrive's state format, not of any build configuration. No
 compiler setting avoids them; the shim has to accommodate them.
 
+## When a state crosses, and how little of it does
+
+Shared-screen sessions send an authoritative state in three cases: every new
+connection (session start, a guest relaunching - the live host sends its
+current state - or a host relaunching, which sends its last confirmed
+checkpoint), a detected desync (the guest asks after a hash mismatch, a few
+times a minute at most), and the host's Reset (the guest adopts the post-reset
+state instead of resetting itself).
+
+Since protocol 15 the first two cross as a **delta**. Before its identity (or
+its resync request), on the same stream, the guest sends a 64-bit hash of each
+4KB block of its own current state; the host then sends only the blocks whose
+hash differs, plus a SHA-256 of its whole state. The guest rebuilds the host's
+exact bytes from its own copy and checks the SHA-256, so both sides still load
+the same buffer - the invariant above is untouched. A rebuild that does not
+check out sends `CMD_STATE_NACK`, and the host, which kept a copy, sends the
+state whole. Capturing the guest's own state is safe despite serialize's side
+effects: the guest is paused until the host's state replaces whatever it holds.
+
+Measured, Crash Team Racing at the initial sync, Brick and RG35XXH or two
+Bricks: 4 of 1121 blocks differ, 16,452 bytes against 330KB deflated (4.4MB
+raw). On a Brick with 1 s round trips the transfer that took 10 s and timed out
+the old 10 s window commits 0.3 s after sending. NES (River City Ransom) states
+were identical: 52 bytes. A Reset still sends the whole state: the guest has
+offered no basis then. Tests: `shim/test/link.sh` ("cross as a delta", "a delta
+that does not rebuild", "a desync with a large state").
+
 ## Transport: why it is TCP, and when UDP would be worth it
 
 Recorded because "wouldn't UDP be faster" is a reasonable question with a
