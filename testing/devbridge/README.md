@@ -71,8 +71,9 @@ Plans:
 
 - `ds`: Mario Kart DS (`mkds.test`, one template for every emulator pairing)
   for Brick to Brick and Brick to RG35XXH with either hosting, DSP/DSP,
-  DraStic/DraStic and both mixed pairings, over WiFi and ad hoc, power save
-  off and on.
+  DraStic/DraStic and both mixed pairings, over WiFi and ad hoc, with WiFi
+  power save off (with it on, a Brick's MP replies came too late: the cells
+  measured the setting, not Netplay).
 - `systems`: NES, SNES, GB, GBA (gpSP and mGBA) and PlayStation with a Brick
   hosting the RG35XXH, and PlayStation Brick to Brick, over WiFi and ad hoc.
 

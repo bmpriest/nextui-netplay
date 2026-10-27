@@ -325,8 +325,11 @@ def build_one(rig, name):
     cells = []
     bb, bh = rig.pairs.get("BB"), rig.pairs.get("BH")
     if name == "ds":
-        # Power save outermost: on an H700 each change is a driver reload.
-        for ps in ("off", "on"):
+        # WiFi power save off only: it is what makes these links usable (a
+        # Brick in power save went from 12-24 ms to 131 ms round trips over
+        # ad hoc, and missed MP commands in Mario Kart's lobby), so cells with
+        # it on measured the setting rather than Netplay (decided 2026-10-27).
+        for ps in ("off",):
             orients = []
             if bb: orients.append(tuple(bb))
             if bh: orients += [tuple(bh), tuple(reversed(bh))]
