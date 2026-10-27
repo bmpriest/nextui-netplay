@@ -2202,8 +2202,13 @@ int NS_scanAdhoc(NS_Peer* out, int max) {
 	struct scan_ctx c = { out, max, 0 };
 
 	if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
-		/* Ask for a refresh but do not wait on it - this returns at once. */
-		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 scan >/dev/null 2>&1", ctrl);
+		/* Ask for a refresh but do not wait on it - this returns at once.
+		 * Drop entries not seen for 20 s first: a host's previous network
+		 * lingers in the cache after it stops, and with nothing else listed
+		 * a lone stale SSID was taken for the host and joined in vain. */
+		snprintf(cmd, sizeof(cmd),
+		         "wpa_cli -p %s -i wlan0 bss_flush 20 >/dev/null 2>&1;"
+		         " wpa_cli -p %s -i wlan0 scan >/dev/null 2>&1", ctrl, ctrl);
 		system(cmd);
 		snprintf(cmd, sizeof(cmd),
 		         "wpa_cli -p %s -i wlan0 scan_results 2>/dev/null "
@@ -2509,6 +2514,8 @@ static int quiet_channel(void) {
 /* Both interfaces share one radio and the driver permits a single channel, so
  * the AP has to sit on whatever channel the station is already using. A
  * hardcoded channel is rejected outright whenever it disagrees. */
+#define STATION_CHANNEL_FILE "/tmp/netplay_station_channel"
+
 static int station_channel(void) {
 	FILE* p = popen("iw dev wlan0 link 2>/dev/null | sed -n 's/.*freq: *//p' | head -1", "r");
 	if (!p) return 0;
@@ -2530,7 +2537,11 @@ static int station_channel(void) {
 		}
 	}
 	if (freq < 2412 || freq > 2484) return 0;
-	return freq == 2484 ? 14 : (freq - 2407) / 5;
+	int ch = freq == 2484 ? 14 : (freq - 2407) / 5;
+	/* Remembered for station_home_channel, for when it is between networks. */
+	FILE* f = fopen(STATION_CHANNEL_FILE, "w");
+	if (f) { fprintf(f, "%d\n", ch); fclose(f); }
+	return ch;
 }
 
 /* Where the station's supplicant last saw one of its networks (enabled, or
@@ -2564,17 +2575,37 @@ static int station_scan_channel(void) {
  * an AP surveyed onto another channel then pinned the one-channel radio there
  * and the station could not get back to its network for the whole session
  * (a Brick, 2026-10-26). Wait a little for it, then use where the supplicant
- * last saw its network; 0 only when there is no station network at all. */
+ * last saw its network, then the channel it was last on (a supplicant just
+ * reconfigured has no scan results); 0 only with no station network at all. */
+static bool station_configured(void) {
+	char ctrl[256], cmd[512];
+	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return false;
+	snprintf(cmd, sizeof(cmd),
+	         "wpa_cli -p %s -i wlan0 list_networks 2>/dev/null |"
+	         " awk -F'\t' 'NR>1 && !index($4, \"[DISABLED]\") {n++} END {exit !n}'", ctrl);
+	return system(cmd) == 0;
+}
+
+static int remembered_station_channel(void) {
+	struct stat st;
+	if (stat(STATION_CHANNEL_FILE, &st) != 0 || time(NULL) - st.st_mtime > 6 * 3600) return 0;
+	FILE* f = fopen(STATION_CHANNEL_FILE, "r");
+	int ch = 0;
+	if (f) { if (fscanf(f, "%d", &ch) != 1) ch = 0; fclose(f); }
+	return ch >= 1 && ch <= 14 ? ch : 0;
+}
+
 static int station_home_channel(void) {
 	int ch = station_channel();
-	for (int i = 0; !ch && i < 12 && station_scan_channel(); i++) {
+	if (ch || !station_configured()) return ch;
+	for (int i = 0; !ch && i < 12; i++) {
 		sleep(1);
 		ch = station_channel();
 	}
-	if (!ch) {
-		ch = station_scan_channel();
-		if (ch) ns_log("station not associated; following its network's last channel %d\n", ch);
-	}
+	if (!ch && (ch = station_scan_channel()))
+		ns_log("station not associated; following its network's last scanned channel %d\n", ch);
+	if (!ch && (ch = remembered_station_channel()))
+		ns_log("station not associated; following its last channel %d\n", ch);
 	return ch;
 }
 

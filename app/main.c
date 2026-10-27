@@ -1752,13 +1752,15 @@ static int ctl_main(int argc, char* argv[]) {
 				}
 				NS_discoverStop();
 			}
-			for (int tries = 0; n == 0 && tries < 3; tries++) {
+			/* A scan asked for now lands in the supplicant's results a few
+			 * seconds later, so keep asking, 3 s apart, for the time left. */
+			for (int tries = 0; n == 0 && tries < (discover ? secs / 2 : secs) / 3 + 1; tries++) {
 				n = NS_scanAdhoc(found, NS_MAX_PEERS);
 				if (n > 1) {
 					snprintf(status, sizeof(status), "%d ad hoc networks; join one by IP", n);
 					return ctl_result(false);
 				}
-				if (!n) sleep(2);
+				if (!n) sleep(3);
 			}
 			if (!n) {
 				snprintf(status, sizeof(status), "no host found in %ds", secs);
