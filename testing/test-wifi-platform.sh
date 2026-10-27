@@ -254,14 +254,22 @@ check "no wifi_init claimed" "$(run wifi-init-path)" ""
 
 echo
 echo "== missing expected client is reported, not silently skipped"
-newenv h700
-mkstub udhcpc 'exit 0'     # dhclient absent; only udhcpc present
+newenv tg5040
+mkstub dhclient 'exit 0'   # udhcpc absent; only dhclient present
 err=$(run dhcp-kind 2>&1 >/dev/null)
 case "$err" in
-*"expects dhclient"*) ok "missing dhclient is reported" ;;
-*) bad "missing dhclient was silent (got '$err')" ;;
+*"expects udhcpc"*) ok "missing udhcpc is reported" ;;
+*) bad "missing udhcpc was silent (got '$err')" ;;
 esac
-check "still falls back to something usable" "$(run dhcp-kind 2>/dev/null)" "udhcpc"
+check "still falls back to something usable" "$(run dhcp-kind 2>/dev/null)" "dhclient"
+
+echo
+echo "== h700 base OS 1.4.0: udhcpc, no dhclient"
+newenv h700
+mkstub udhcpc 'exit 0'
+err=$(run dhcp-kind 2>&1 >/dev/null)
+[ -z "$err" ] && ok "no complaint about dhclient" || bad "complained: $err"
+check "takes udhcpc" "$(run dhcp-kind 2>/dev/null)" "udhcpc"
 
 echo
 echo "== assoc-kind reports what the device can actually do"

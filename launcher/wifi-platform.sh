@@ -96,12 +96,14 @@ np_platform_profile() {
 		NP_CTRL=/var/run/wpa_supplicant
 		;;
 	h700)
-		# Ubuntu rootfs: no udhcpc, no iw. DHCP is driven entirely by a
-		# `wpa_cli -a` action script, so restoring the supplicant without also
-		# restoring that hook leaves an associated interface that will never
-		# get an address again.
+		# No iw. DHCP is driven entirely by a `wpa_cli -a` action script, so
+		# restoring the supplicant without also restoring that hook leaves an
+		# associated interface that will never get an address again. The
+		# client differs by firmware - dhclient on the Ubuntu rootfs, udhcpc
+		# on base OS 1.4.0, as the action script itself probes - so take
+		# whichever is installed.
 		NP_ASSOC=wpa_cli
-		NP_DHCP=dhclient
+		NP_DHCP=auto
 		NP_INIT="$SYSTEM_PATH/etc/wifi/wifi_init.sh"
 		NP_HOOK=1
 		NP_PS=rtw-reload
