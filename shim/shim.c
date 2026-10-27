@@ -82,8 +82,11 @@
 
 /* Recovery is a bounded transaction. The frame counter jumps beyond every
  * input that could have been queued before the barrier, so a delayed pre-reset
- * packet cannot be mistaken for input on the recovered timeline. */
-#define RECOVERY_TIMEOUT_MS 10000
+ * packet cannot be mistaken for input on the recovered timeline. The bound
+ * covers sending the state: PlayStation's is 330KB deflated, and over a
+ * poor house AP link (a Brick, 1 s round trips) that took 10 s, so a 10 s
+ * window counted from the guest's start expired mid-transfer. */
+#define RECOVERY_TIMEOUT_MS 30000
 #define RECOVERY_FRAME_JUMP 512
 #define PEER_WAIT_TIMEOUT_MS 30000
 /* How long one call into a link core may take before the session identifies it
