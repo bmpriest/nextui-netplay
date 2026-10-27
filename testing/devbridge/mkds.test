@@ -61,11 +61,11 @@ guest:WAIT_FOR game 30000
 # before the room arrives would create a rival group; DraStic's Mario Kart
 # also ignores A for a moment after the row appears.
 guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-rooms-guest.png 20000
-[guest:dsp] guest:TRM sh {helpers}/keys.sh a:0.2:0
-[guest:nds] guest:TRM sh {helpers}/keys.sh sleep:1.5 a:0.3:0
-WAIT 6000
+# Press A until the lobby shows (an A in the lobby does nothing for a guest):
+# an H700's DraStic, power save on, let the first A go even after the wait.
+[guest:dsp] guest:VERIFY_UNTIL {guest_refs}/dsp-mk-lobby-guest.png 40000 every=6000 :: sh {helpers}/keys.sh a:0.2:0
+[guest:nds] guest:VERIFY_UNTIL {guest_refs}/nds-mk-lobby-guest.png 40000 every=6000 :: sh {helpers}/keys.sh sleep:1.5 a:0.3:0
 host:VERIFY_WAIT {host_refs}/{host_ds}-mk-lobby-host.png 10000
-guest:VERIFY_WAIT {guest_refs}/{guest_ds}-mk-lobby-guest.png 10000
 
 # The lobby has to hold: a dropped guest falls back to 1/8.
 WAIT 15000
