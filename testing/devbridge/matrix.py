@@ -193,18 +193,22 @@ class Device:
         return ["--connect", f"{self.address}:{alias}:22"]
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class Tunnel:
     """Local port -> target:22 through `via`, which keeps its LAN address
     while it serves the ad hoc network. A tunnel that drops (a missed
     keepalive on a busy link ended one mid-test) is reopened on the same
     port by a watcher thread, so DevBridge's next command finds it again."""
 
-    def __init__(self, via, via_address, target_ip):
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            self.port = s.getsockname()[1]
+    def __init__(self, via, via_address, target_ip, via_port=22):
+        self.port = free_port()
         self.argv = ["ssh", *via.ssh_base(), "-N", "-o", "ExitOnForwardFailure=yes",
-                     "-o", "ServerAliveCountMax=12",
+                     "-o", "ServerAliveCountMax=12", "-p", str(via_port),
                      "-L", f"127.0.0.1:{self.port}:{target_ip}:22", "root@" + via_address]
         self.env = via.ssh_env()
         self.name = f"tunnel via {via} to {target_ip}"
@@ -408,6 +412,7 @@ class Runner:
         self.out.mkdir(parents=True, exist_ok=True)
         self.rig = Rig(args.rig, self.out)
         self.tunnels = []
+        self.forwards = []
 
     # devices
 
@@ -567,8 +572,19 @@ class Runner:
             lease = next((v for k, v in st.items() if re.fullmatch(r"guest\d+", k) and v), None)
         if not lease:
             raise Fail(f"{guest}: never showed up on {host}'s network")
-        via_address = host.lan_ip() if host.via_adb else host.address
-        tunnel = Tunnel(host, via_address, lease)
+        if host.via_adb:
+            # Into the host over USB, not its house WiFi: a Brick serving an
+            # AP drops off the house network (and the house AP has ignored a
+            # Brick for minutes), while the guest needs only the AP.
+            fport = free_port()
+            r = subprocess.run(["adb", "-s", host.serial, "forward", f"tcp:{fport}", "tcp:22"],
+                               capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+            if r.returncode:
+                raise Infra(f"{host}: adb forward: {r.stderr.strip()}")
+            self.forwards.append((host.serial, fport))
+            tunnel = Tunnel(host, "127.0.0.1", lease, via_port=fport)
+        else:
+            tunnel = Tunnel(host, host.address, lease)
         self.tunnels.append(tunnel)
         guest.tunnel_port = tunnel.port
         deadline = time.time() + 120
@@ -597,6 +613,10 @@ class Runner:
             t.close()
         self.tunnels = []
         self.last_tunnel_restarts = restarts
+        for serial, port in self.forwards:
+            subprocess.run(["adb", "-s", serial, "forward", "--remove", f"tcp:{port}"],
+                           capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+        self.forwards = []
         guest.tunnel_port = None
         # The host's session-end message, or the guest's watchdog once the
         # AP is gone, has to bring it home by itself.

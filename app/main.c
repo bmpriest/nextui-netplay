@@ -1735,20 +1735,31 @@ static int ctl_main(int argc, char* argv[]) {
 		}
 		NS_Peer peer;
 		memset(&peer, 0, sizeof(peer));
-		if (!strcmp(arg, "adhoc")) {
-			peer.hotspot = true;
-		} else if (!strcmp(arg, "discover")) {
-			/* The first host heard, as the Join list's auto-join takes a
-			 * lone host. Tests run one host at a time. */
+		bool discover = !strcmp(arg, "discover");
+		if (discover || !strcmp(arg, "adhoc")) {
+			/* As the Join list finds hosts: by their LAN announcement, and
+			 * by scanning for Netplay ad hoc networks - the only way to find
+			 * a host whose own house WiFi has dropped. Tests run one host at
+			 * a time, so the first announcement, or a lone network, is it. */
 			int secs = argc > 2 ? atoi(argv[2]) : 20;
 			NS_Peer found[NS_MAX_PEERS];
 			int n = 0;
-			NS_discoverStart();
-			for (int t = 0; t < secs * 10 && n == 0; t++) {
-				n = NS_discoverTick(found, NS_MAX_PEERS);
-				if (!n) usleep(100000);
+			if (discover) {
+				NS_discoverStart();
+				for (int t = 0; t < secs * 5 && n == 0; t++) {
+					n = NS_discoverTick(found, NS_MAX_PEERS);
+					if (!n) usleep(100000);
+				}
+				NS_discoverStop();
 			}
-			NS_discoverStop();
+			for (int tries = 0; n == 0 && tries < 3; tries++) {
+				n = NS_scanAdhoc(found, NS_MAX_PEERS);
+				if (n > 1) {
+					snprintf(status, sizeof(status), "%d ad hoc networks; join one by IP", n);
+					return ctl_result(false);
+				}
+				if (!n) sleep(2);
+			}
 			if (!n) {
 				snprintf(status, sizeof(status), "no host found in %ds", secs);
 				return ctl_result(false);
