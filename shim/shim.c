@@ -1932,6 +1932,16 @@ static void recovery_fail(const char* message) {
 	shim_log("%s\n", message);
 }
 
+/* Our current state as the basis for a delta transfer of the host's: see
+ * NetLink_setStateBasis. Best effort - without it the state crosses whole. */
+static void offer_state_basis(void) {
+	void* buf = NULL;
+	size_t sz = 0;
+	if (!capture_authoritative_state(&buf, &sz, NULL)) return;
+	NetLink_setStateBasis(NETLINK_STATE_AUTHORITATIVE, buf, sz);
+	free(buf);
+}
+
 /* Every TCP generation is a new synchronization barrier. This covers both a
  * guest relaunch (the live host donates its current state) and a host relaunch
  * (the new host first loads its last peer-confirmed checkpoint). */
@@ -1977,6 +1987,11 @@ static void netplay_handshake(void) {
 			recovery_fail("Could not inspect local save memory. Exit the game.");
 			return;
 		}
+		/* The guest is paused until the host's state arrives, which replaces
+		 * whatever it is running, so capturing its own state here cannot leak a
+		 * serialize side effect into play. Sent before the identity, on the same
+		 * stream, so the host already holds our hashes when it decides to send. */
+		if (NetLink_getRole() == NETLINK_ROLE_CLIENT) offer_state_basis();
 		connection_identity_sent = NetLink_sendSessionIdentity(&mine);
 	}
 
@@ -2359,6 +2374,7 @@ static bool netplay_recovery_tick(void) {
 		}
 
 		if (recovery_phase == RECOVERY_HOST_WAIT_ACK) {
+			NetLink_serviceStateResend();
 			uint32_t epoch;
 			bool loaded;
 			if (NetLink_takeResyncAck(&epoch, &loaded) && epoch == recovery_epoch) {
@@ -2618,6 +2634,7 @@ static bool netplay_checkDivergence(void) {
 					recovery_fail("Repeated desyncs. Press A to continue solo.");
 					return true;
 				}
+				offer_state_basis();   /* replaced by the host's state anyway */
 				if (!NetLink_requestResync(f)) return true;
 				recovery_phase = RECOVERY_CLIENT_WAIT_BEGIN;
 				recovery_clock_start();

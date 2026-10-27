@@ -445,7 +445,7 @@ FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.
 	NETPLAY_SESSION="$OUT/h21.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/h21.log" 2>&1 &
 H21=$!
 sleep 0.3
-FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+NETLINK_TEST_NO_DELTA=1 FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
 	NETPLAY_SESSION="$OUT/c21.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/c21.log" 2>&1 &
 C21=$!
 wait $H21 2>/dev/null || true
@@ -455,6 +455,86 @@ expect "$OUT/h21.log" "deflated [0-9]* -> [0-9]* bytes" "host deflated the state
 expect "$OUT/c21.log" "authoritative resync .* committed" "guest loaded the inflated state"
 expect "$OUT/c21.log" "core:ports p0=17 p1=34" "guest plays shared inputs"
 if grep -q "state_pad_corrupt\|did not inflate" "$OUT/c21.log"; then
+	echo "  MISS the state arrived damaged"; fail=1
+else
+	echo "  ok   every byte arrived"
+fi
+
+echo
+echo "== matching large states cross as a delta of the few blocks that differ"
+PORT41=$((PORT + 40))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT41" > "$OUT/h31.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT41" > "$OUT/c31.session"
+FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h31.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/h31.log" 2>&1 &
+H31=$!
+sleep 0.3
+FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c31.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/c31.log" 2>&1 &
+C31=$!
+wait $H31 2>/dev/null || true
+wait $C31 2>/dev/null || true
+expect "$OUT/c31.log" "sent block hashes of our state" "guest offered its own state's hashes"
+expect "$OUT/h31.log" "as a delta: [0-2] of 257 blocks differ" "host sent only the differing blocks"
+expect "$OUT/c31.log" "rebuilt state from our basis" "guest rebuilt the host's state"
+expect "$OUT/c31.log" "authoritative resync .* committed" "guest loaded it"
+expect "$OUT/c31.log" "core:ports p0=17 p1=34" "guest plays shared inputs"
+if grep -q "state_pad_corrupt\|did not rebuild\|did not inflate" "$OUT/c31.log"; then
+	echo "  MISS the state arrived damaged"; fail=1
+else
+	echo "  ok   every byte arrived"
+fi
+
+echo
+echo "== a delta that does not rebuild costs a whole resend, not a wrong state"
+PORT42=$((PORT + 41))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT42" > "$OUT/h32.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT42" > "$OUT/c32.session"
+FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h32.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/h32.log" 2>&1 &
+H32=$!
+sleep 0.3
+NETLINK_TEST_STALE_BASIS=1 FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c32.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/c32.log" 2>&1 &
+C32=$!
+wait $H32 2>/dev/null || true
+wait $C32 2>/dev/null || true
+expect "$OUT/c32.log" "delta state did not rebuild exactly" "guest caught the bad rebuild"
+expect "$OUT/h32.log" "resending state kind=0 whole after a failed delta" "host resent the whole state"
+expect "$OUT/c32.log" "authoritative resync .* committed" "guest loaded the whole state"
+expect "$OUT/c32.log" "core:ports p0=17 p1=34" "guest plays shared inputs"
+if grep -q "state_pad_corrupt" "$OUT/c32.log"; then
+	echo "  MISS a damaged state was loaded"; fail=1
+else
+	echo "  ok   no damaged state was loaded"
+fi
+
+echo
+echo "== a desync with a large state resyncs as a delta"
+PORT43=$((PORT + 42))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT43" > "$OUT/h33.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT43" > "$OUT/c33.session"
+FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h33.session" "$OUT/harness" "$SHIM" 1000 5 > "$OUT/h33.log" 2>&1 &
+H33=$!
+sleep 0.5
+FAKE_CORE_CORRUPT_AT=80 FAKE_STATE_PAD=1048576 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c33.session" "$OUT/harness" "$SHIM" 1000 5 > "$OUT/c33.log" 2>&1 &
+C33=$!
+wait $H33 2>/dev/null || true
+wait $C33 2>/dev/null || true
+expect "$OUT/c33.log" "DESYNC at frame" "client detected the divergence"
+expect "$OUT/h33.log" "authoritative resync .* sent after mismatch" "host resent after the mismatch"
+deltas=$(grep -c "as a delta: [0-2] of 257 blocks differ" "$OUT/h33.log" || true)
+if [ "$deltas" -ge 2 ]; then
+	echo "  ok   both the first sync and the resync crossed as deltas ($deltas)"
+else
+	echo "  MISS expected two delta transfers, saw $deltas"
+	grep -E "delta|deflated|whole" "$OUT/h33.log" | sed 's/^/       /'
+	fail=1
+fi
+expect "$OUT/c33.log" "authoritative resync .* committed" "client resumed after the resync"
+if grep -q "state_pad_corrupt\|did not rebuild" "$OUT/c33.log"; then
 	echo "  MISS the state arrived damaged"; fail=1
 else
 	echo "  ok   every byte arrived"

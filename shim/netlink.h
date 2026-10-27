@@ -136,6 +136,15 @@ typedef enum {
 
 bool NetLink_sendState(NetLinkStateKind kind, const void* data, size_t len);
 bool NetLink_takeState(NetLinkStateKind kind, void** data, size_t* len); /* caller frees */
+/* Offer our own current state as the basis for the next authoritative state
+ * the peer sends: its block hashes go over now, and the peer then sends only
+ * the blocks that differ. Takes a copy. Call before whatever makes the peer
+ * send (the identity, a resync request): same stream, so the hashes arrive
+ * first. NetLink_takeState returns the peer's exact bytes either way. */
+bool NetLink_setStateBasis(NetLinkStateKind kind, const void* data, size_t len);
+/* The sender's side of a failed delta: resend the last delta-sent state whole
+ * if the peer asked. Call every frame while waiting for the peer's ACK. */
+void NetLink_serviceStateResend(void);
 
 /* Instanced-link agreement. Each side reports whether it can host both logical
  * consoles locally; pairing proceeds only when both say yes. Reason codes are
