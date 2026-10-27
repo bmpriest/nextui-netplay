@@ -13,7 +13,9 @@ house network on its own. See `testing/devbridge/README.md` for running it.
 
 ## The plan (62 cells)
 
-- **Nintendo DS** (`mkds.test`, Mario Kart DS to a finished race): Brick to
+- **Nintendo DS** (`mkds.test`, Mario Kart DS: group, lobby, VS setup, then
+  about a minute of random driving on Figure-8 Circuit - it starts a race but
+  does not finish one; the random input cannot complete three laps): Brick to
   Brick and Brick to RG35XXH with either device hosting; DSperate (DSP.pak) or
   DraStic (NDS.pak) on each side, all four pairings; over the house WiFi and
   over Netplay's ad hoc network; WiFi power save off and on. 48 cells.
@@ -60,9 +62,12 @@ Netplay:
 - An H700 hosting ad hoc from a dual-band house network put its AP on 5 GHz
   with its station, invisible to Bricks; it now holds the station to 2.4 GHz
   for the session.
-- An AP started while the station was between associations was surveyed onto
-  another channel and pinned the one-channel radio there; it now follows the
-  house network's channel (waited for, scanned, or remembered).
+- With Ad Hoc Network Switch off - the host keeps its house WiFi, so its
+  single radio has to share that channel - an AP started while the station was
+  between associations was surveyed onto another channel and pinned the radio
+  there; it now follows the house network's channel (waited for, scanned, or
+  remembered). With the switch on the host still surveys and takes the
+  quietest channel; the matrix runs with it off and does not cover that mode.
 - Session end: a guest agent race on its port; notices lost on the way to a
   guest in power save. The host now repeats until acknowledged and answers
   guests' polls.
