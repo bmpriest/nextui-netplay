@@ -1827,12 +1827,16 @@ static void notify_guests_session_end(void) {
 	if (fd < 0) return;
 	int on = 1;
 	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
-	for (int round = 0; round < 3; round++) {
+	/* Spread over 1.5 s, not sent in one burst: a guest in power save wakes
+	 * every few hundred ms, and what an AP is still holding for it is lost
+	 * when the AP stops right after. A Brick guest of an H700 missed three
+	 * rounds 60 ms apart and came home by its watchdog a minute later. */
+	for (int round = 0; round < 6; round++) {
 		for (int i = 0; i < s.guest_count; i++) send_session_end(fd, s.guest[i].ip);
 		for (int i = 0; i < stations; i++) send_session_end(fd, clients[i].ip);
 		if (hotspot_processes_alive()) send_session_end(fd, "10.0.0.255");
 		send_session_end(fd, "255.255.255.255");
-		usleep(60 * 1000);
+		usleep(250 * 1000);
 	}
 	close(fd);
 	ns_log("told the guests the session is over (%d known, %d on the AP)\n", s.guest_count, stations);
