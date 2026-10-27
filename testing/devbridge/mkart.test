@@ -12,10 +12,12 @@ host:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zi
 WAIT 3000
 guest:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip"
 all:WAIT_FOR game 30000
-WAIT 12000
+WAIT 8000
 
-host:VERIFY_WAIT {host_refs}/mk-title.png 6000
-guest:VERIFY_WAIT {guest_refs}/mk-title.png 6000
+# Polled (DevBridge ee0079b): over WiFi the lockstep stalls slow the intro
+# and the title settled after the 18 s a fixed check allowed.
+host:VERIFY_WAIT {host_refs}/mk-title.png 25000
+guest:VERIFY_WAIT {guest_refs}/mk-title.png 10000
 
 # MULTI-PLAYER, on both.
 host:TRM sh {helpers}/keys.sh --bg down:0.25:0.8 a:0.25:0
