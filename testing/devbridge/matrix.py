@@ -858,11 +858,13 @@ def write_report(rows, path):
             to = f"{h.get('timeouts', '-')}/{g.get('timeouts', '-')}" if "timeouts" in h or "timeouts" in g else "-"
             st = f"{h.get('stall_pct', '-')}/{g.get('stall_pct', '-')}%" if "stall_pct" in h or "stall_pct" in g else "-"
             note = r.get("error") or r.get("devbridge_error") or ""
+            # "/long/tmpXXXX.test:107: guest: ..." -> "line 107: guest: ..."
+            note = re.sub(r"^\S*?\.test:(\d+): ", r"line \1: ", note)
             if r.get("notes"):
                 note = (note + " " if note else "") + "; ".join(r["notes"])
             forced = [q for q in r.get("quit", []) if q != "menu"]
             if forced:
-                note = (note + " " if note else "") + f"quit by {'/'.join(r['quit'])} (guest/host)"
+                note = (note + " " if note else "") + f"an emulator needed {', '.join(sorted(set(forced)))} to quit"
             if r.get("new_refs"):
                 note = (note + " " if note else "") + f"new refs: {', '.join(r['new_refs'])}"
             rp = r.get("radio_powersave") or {}
@@ -885,7 +887,13 @@ def main():
     p.add_argument("--out")
     p.add_argument("--resume")
     p.add_argument("--rerun", help="with --resume, run cells matching this regex again even if they passed")
+    p.add_argument("--report", metavar="DIR", help="rewrite DIR/report.md from DIR/results.jsonl and exit")
     args = p.parse_args()
+    if args.report:
+        d = Path(args.report)
+        write_report([json.loads(l) for l in (d / "results.jsonl").read_text().splitlines()], d / "report.md")
+        print(d / "report.md")
+        return 0
 
     spec_rig = json.loads(Path(args.rig).read_text())
     pairs = spec_rig.get("pairs", {})
