@@ -424,12 +424,19 @@ nds_netplay_env() {
         return 0
         ;;
     esac
-    # One MP exchange may hold a frame this long: 25 ms (melonDS's) holds on
-    # Netplay's ad hoc network; through an access point it takes 100 ms (as
-    # DSP.pak measured). The session may carry its own value.
+    # One MP exchange may hold a frame this long, as DSP.pak's launcher sets
+    # it: 100 ms through an access point, 50 ms on Netplay's ad hoc network.
+    # DraStic kept melonDS's 25 ms after DSP.pak moved to 50, and two Bricks
+    # on DraStic then raced at 44-47 fps with ~750 timeouts each against
+    # 51-52 fps and ~230 on DSperate (matrix, 2026-10-26). The session may
+    # carry its own value.
     _timeout="$(sed -n 's/^dsp_lan_timeout_ms=//p' "$NDS_NET_SESSION" | head -n 1)"
-    if [ -z "$_timeout" ] && ! grep -q '^adhoc_ssid=' "$NDS_NET_SESSION"; then
-        _timeout=100
+    if [ -z "$_timeout" ]; then
+        if grep -q '^adhoc_ssid=' "$NDS_NET_SESSION"; then
+            _timeout=50
+        else
+            _timeout=100
+        fi
     fi
     case "$_timeout" in
     "" | *[!0-9]*) ;;
