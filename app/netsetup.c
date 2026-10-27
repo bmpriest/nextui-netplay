@@ -1807,6 +1807,7 @@ void NS_brokerStop(void) {
 #define SESSION_END_PORT 55440
 static const char session_end_magic[] = "NETPLAY-END 1";
 static const char session_end_ack[] = "NETPLAY-END-ACK 1";
+static const char session_end_poll[] = "NETPLAY-POLL 1";
 
 static void send_session_end(int fd, const char* ip) {
 	struct sockaddr_in to;
@@ -1828,6 +1829,17 @@ static void notify_guests_session_end(void) {
 	if (fd < 0) return;
 	int on = 1;
 	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+	/* On the agents' port, so their polls reach us while we end: a guest in
+	 * power save is awake just after it sends, and our answer to its poll
+	 * gets through where a notice pushed at it while it dozed did not. */
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+	struct sockaddr_in me;
+	memset(&me, 0, sizeof(me));
+	me.sin_family = AF_INET;
+	me.sin_port = htons(SESSION_END_PORT);
+	me.sin_addr.s_addr = htonl(INADDR_ANY);
+	if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0)
+		ns_log("session end: cannot listen for guests' polls (%s)\n", strerror(errno));
 	/* Repeated until every known guest acknowledges, 250 ms apart, for up
 	 * to 4 s. A guest in power save behind an H700's AP missed bursts - one
 	 * of 180 ms, then one of 1.5 s - and came home by its watchdog a minute
@@ -1837,7 +1849,7 @@ static void notify_guests_session_end(void) {
 	int got = 0;
 	struct timeval tv = { .tv_sec = 0, .tv_usec = 250 * 1000 };
 	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-	int round = 0;
+	int round = 0, polled = 0;
 	for (; round < 16 && (got < want || round < 2); round++) {
 		for (int i = 0; i < s.guest_count; i++) if (i >= 4 || !acked[i]) send_session_end(fd, s.guest[i].ip);
 		for (int i = 0; i < stations; i++) send_session_end(fd, clients[i].ip);
@@ -1851,6 +1863,11 @@ static void notify_guests_session_end(void) {
 			struct sockaddr_in from;
 			socklen_t fromlen = sizeof(from);
 			ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+			if (n == (ssize_t)(sizeof(session_end_poll) - 1) && !memcmp(buf, session_end_poll, (size_t)n)) {
+				sendto(fd, session_end_magic, sizeof(session_end_magic) - 1, 0,
+				       (struct sockaddr*)&from, fromlen);
+				polled++;
+			}
 			if (n == (ssize_t)(sizeof(session_end_ack) - 1) && !memcmp(buf, session_end_ack, (size_t)n)) {
 				char ip[NS_IP_LEN];
 				inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
@@ -1863,8 +1880,8 @@ static void notify_guests_session_end(void) {
 		}
 	}
 	close(fd);
-	ns_log("told the guests the session is over (%d known, %d on the AP; %d of %d acknowledged after %d round(s))\n",
-	       s.guest_count, stations, got, want, round);
+	ns_log("told the guests the session is over (%d known, %d on the AP; %d of %d acknowledged after %d round(s), %d poll(s) answered)\n",
+	       s.guest_count, stations, got, want, round, polled);
 }
 
 bool NS_guestAgentStart(void) {
@@ -1904,7 +1921,18 @@ int NS_guestAgentRun(void) {
 	}
 	ns_log("guest agent: watching for the end of the session with %s\n", s.host);
 
+	struct sockaddr_in host_addr;
+	memset(&host_addr, 0, sizeof(host_addr));
+	host_addr.sin_family = AF_INET;
+	host_addr.sin_port = htons(SESSION_END_PORT);
+	host_addr.sin_addr = host;
 	for (;;) {
+		/* Ask as well as listen: in power save we are awake just after we
+		 * send, so the host's answer arrives where its pushed notice, sent
+		 * while we dozed, was lost behind an H700's AP. Nobody answers until
+		 * the host is ending the session. */
+		sendto(fd, session_end_poll, sizeof(session_end_poll) - 1, 0,
+		       (struct sockaddr*)&host_addr, sizeof(host_addr));
 		struct pollfd p = { .fd = fd, .events = POLLIN };
 		int ready = poll(&p, 1, 1000);
 		if (!NS_isArmed()) { ns_log("guest agent: session ended here - exiting\n"); break; }
