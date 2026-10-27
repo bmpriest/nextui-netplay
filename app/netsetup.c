@@ -1395,25 +1395,33 @@ int NS_compatSync(const char* host_ip, char* err, int errlen) {
 	int n = NS_coreManifest(mine, NS_MAX_MANIFEST);
 	if (n <= 0) { snprintf(err, errlen, "no cores found locally"); return -1; }
 
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) { snprintf(err, errlen, "no socket"); return -1; }
-
 	struct sockaddr_in a;
 	memset(&a, 0, sizeof(a));
 	a.sin_family = AF_INET;
 	a.sin_port = htons(NS_CORE_PORT);
 	if (inet_pton(AF_INET, host_ip, &a.sin_addr) != 1) {
-		close(fd);
 		snprintf(err, errlen, "bad host address");
 		return -1;
 	}
 
-	core_socket_deadline(fd, CORE_IO_MS);
-
-	if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
+	/* The first packet to a host is the one most likely lost: a Brick in
+	 * power save over a busy house AP missed ARP and the join failed in 4 s
+	 * with "no route to host", while the host was serving all along. Try
+	 * for about 20 s before calling the host absent. */
+	int fd = -1;
+	for (int attempt = 1; ; attempt++) {
+		fd = socket(AF_INET, SOCK_STREAM, 0);
+		if (fd < 0) { snprintf(err, errlen, "no socket"); return -1; }
+		core_socket_deadline(fd, CORE_IO_MS);
+		if (connect(fd, (struct sockaddr*)&a, sizeof(a)) == 0) break;
+		int e = errno;
 		close(fd);
-		snprintf(err, errlen, "host is not serving cores");
-		return -1;
+		ns_log("core check: connect to %s failed (%s), attempt %d\n", host_ip, strerror(e), attempt);
+		if (attempt >= 5) {
+			snprintf(err, errlen, "host is not serving cores");
+			return -1;
+		}
+		sleep(2);
 	}
 
 	NS_CoreInfo theirs[NS_MAX_MANIFEST];
