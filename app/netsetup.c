@@ -2532,7 +2532,8 @@ static int quiet_channel(void) {
  * hardcoded channel is rejected outright whenever it disagrees. */
 #define STATION_CHANNEL_FILE "/tmp/netplay_station_channel"
 
-static int station_channel(void) {
+/* The station's frequency in MHz, any band; 0 when not associated. */
+static int station_freq(void) {
 	FILE* p = popen("iw dev wlan0 link 2>/dev/null | sed -n 's/.*freq: *//p' | head -1", "r");
 	if (!p) return 0;
 	char line[32] = "";
@@ -2552,6 +2553,11 @@ static int station_channel(void) {
 			}
 		}
 	}
+	return freq;
+}
+
+static int station_channel(void) {
+	int freq = station_freq();
 	if (freq < 2412 || freq > 2484) return 0;
 	int ch = freq == 2484 ? 14 : (freq - 2407) / 5;
 	/* Remembered for station_home_channel, for when it is between networks. */
@@ -2593,6 +2599,54 @@ static int station_scan_channel(void) {
  * (a Brick, 2026-10-26). Wait a little for it, then use where the supplicant
  * last saw its network, then the channel it was last on (a supplicant just
  * reconfigured has no scan results); 0 only with no station network at all. */
+#define STATION_STEERED_FILE "/tmp/netplay_station_steered"
+
+/* An H700 on a dual-band house network roams to 5 GHz, and its driver puts a
+ * concurrent AP on the station's channel: an ad hoc network there was
+ * invisible to Bricks, whose radios are 2.4 GHz only (2026-10-26). For the
+ * session, hold the station to the same network's 2.4 GHz band - a runtime
+ * freq_list, never saved - so it keeps its LAN and the AP lands where guests
+ * can see it. station_unsteer reloads the supplicant's own configuration. */
+static bool station_steer_24(void) {
+	int freq = station_freq();
+	if (freq < 4900) return true;          /* not associated, or already 2.4 */
+	char ctrl[256], cmd[768];
+	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return false;
+	snprintf(cmd, sizeof(cmd),
+	         "id=$(wpa_cli -p %s -i wlan0 status 2>/dev/null | sed -n 's/^id=//p') && [ -n \"$id\" ] &&"
+	         " wpa_cli -p %s -i wlan0 set_network $id freq_list"
+	         " '2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472' | grep -q OK &&"
+	         " wpa_cli -p %s -i wlan0 reassociate | grep -q OK", ctrl, ctrl, ctrl);
+	ns_log("station on %d MHz; holding it to 2.4 GHz for the ad hoc session\n", freq);
+	if (system(cmd) != 0) { ns_log("could not steer the station to 2.4 GHz\n"); return false; }
+	FILE* f = fopen(STATION_STEERED_FILE, "w");
+	if (f) fclose(f);
+	for (int i = 0; i < 20; i++) {
+		sleep(1);
+		freq = station_freq();
+		if (freq >= 2412 && freq <= 2484) {
+			ns_log("station moved to %d MHz after %ds\n", freq, i + 1);
+			return true;
+		}
+	}
+	ns_log("station found no 2.4 GHz network in 20s; putting it back\n");
+	snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 reconfigure >/dev/null 2>&1", ctrl);
+	system(cmd);
+	remove(STATION_STEERED_FILE);
+	return false;
+}
+
+static void station_unsteer(void) {
+	if (!file_exists(STATION_STEERED_FILE)) return;
+	char ctrl[256], cmd[512];
+	if (platform_ctrl_dir(ctrl, sizeof(ctrl))) {
+		snprintf(cmd, sizeof(cmd), "wpa_cli -p %s -i wlan0 reconfigure >/dev/null 2>&1", ctrl);
+		system(cmd);
+		ns_log("station free to use any band again\n");
+	}
+	remove(STATION_STEERED_FILE);
+}
+
 static bool station_configured(void) {
 	char ctrl[256], cmd[512];
 	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return false;
@@ -3108,6 +3162,7 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
+	if (!ns_set.adhoc_switch) station_steer_24();
 	int ch = station_home_channel();
 	/* Ad Hoc Network Switch: leave the station network so the AP can take the
 	 * quietest channel instead of whatever the router is on. Surveyed now,
@@ -3418,6 +3473,7 @@ void NS_hotspotStop(void) {
 			snprintf(cmd, sizeof(cmd), "iw dev %s set type managed 2>/dev/null", ns_ap_if); system(cmd);
 		}
 		ns_log("AP stopped\n");
+		station_unsteer();
 		hotspot_running = false;
 		ns_ap_if[0] = '\0';
 		/* The host never took the client stack down, but it can still have
