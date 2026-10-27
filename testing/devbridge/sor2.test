@@ -6,6 +6,10 @@
 #
 # Both devices show the same game, so the references differ only by platform.
 # Run with run.sh, which fills in {host_refs}, {guest_refs} and {helpers}.
+#
+# Check windows are 20 s or more: checks poll (DevBridge ee0079b) and return
+# at the first match, and over WiFi a lockstep stall ("Waiting for other
+# player") held screens past the short windows written for three-look checks.
 
 all:WAIT_FOR devbridge 30000
 host:OPEN_GAME MD "Sega Genesis (MD)/Streets of Rage 2 (USA).zip"
@@ -22,10 +26,10 @@ WAIT 12000
 # held 0.3 s: one that begins and ends inside a stall (several frames over
 # WiFi) is never sampled by the game.
 host:TRM sh {helpers}/keys.sh start:0.3:2.5 start:0.3:0
-host:VERIFY_WAIT {host_refs}/sor2-menu.png 10000
+host:VERIFY_WAIT {host_refs}/sor2-menu.png 20000
 host:TRM sh {helpers}/keys.sh down:0.3:0.8 start:0.3:3
-host:VERIFY_WAIT {host_refs}/sor2-select.png 6000
-guest:VERIFY_WAIT {guest_refs}/sor2-select.png 6000
+host:VERIFY_WAIT {host_refs}/sor2-select.png 20000
+guest:VERIFY_WAIT {guest_refs}/sor2-select.png 20000
 
 # Host moves to Max, guest to Skate. The portraits flash, so a match scores up
 # to ~8 while the unmoved screen is only 12.5 away on the Brick: keep the
@@ -33,8 +37,8 @@ guest:VERIFY_WAIT {guest_refs}/sor2-select.png 6000
 host:TRM sh {helpers}/keys.sh --bg left:0.3:0
 guest:TRM sh {helpers}/keys.sh --bg right:0.3:0
 WAIT 1500
-host:VERIFY_WAIT {host_refs}/sor2-max-skate.png 6000
-guest:VERIFY_WAIT {guest_refs}/sor2-max-skate.png 6000
+host:VERIFY_WAIT {host_refs}/sor2-max-skate.png 20000
+guest:VERIFY_WAIT {guest_refs}/sor2-max-skate.png 20000
 
 # Both confirm, then fight.
 host:TRM sh {helpers}/keys.sh --bg start:0.3:0

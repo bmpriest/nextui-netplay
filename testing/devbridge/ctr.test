@@ -7,6 +7,10 @@
 # The state is 4.4MB, so this is also the test of a large authoritative sync:
 # it crosses deflated (~330KB) and the guest, slower to hash the disc image,
 # must still be waited for. Menus confirm with Cross (B). Run with run.sh.
+#
+# Check windows are 20 s or more: checks poll (DevBridge ee0079b) and return
+# at the first match, and over WiFi a lockstep stall ("Waiting for other
+# player") held screens past the short windows written for three-look checks.
 
 all:WAIT_FOR devbridge 30000
 host:OPEN_GAME PS "Sony PlayStation (PS)/CTR - Crash Team Racing (USA).chd"
@@ -24,18 +28,18 @@ all:SCREEN ctr-intro
 # behind it waves through the box: the right screen scored up to 20, the title
 # without the list ~59.
 host:TRM sh {helpers}/keys.sh start:0.3:3 start:0.3:0
-host:VERIFY_WAIT {host_refs}/ctr-modes.png 15000 region=0.58,0.22,0.4,0.55 threshold=30
+host:VERIFY_WAIT {host_refs}/ctr-modes.png 20000 region=0.58,0.22,0.4,0.55 threshold=30
 # The check passes as soon as the box shows (DevBridge polls since ee0079b)
 # and a DOWN sent while it settles is lost: a Brick landed on ARCADE. Wait,
 # then make sure VS. is the highlighted row (ARCADE scores 47 there).
 host:TRM sh {helpers}/keys.sh sleep:2.5 down:0.3:0.6 down:0.3:0.6 down:0.3:0.8
-host:VERIFY_WAIT {host_refs}/ctr-modes-vs.png 3000 region=0.58,0.40,0.35,0.22 threshold=20
+host:VERIFY_WAIT {host_refs}/ctr-modes-vs.png 20000 region=0.58,0.40,0.35,0.22 threshold=20
 all:SCREEN ctr-modes
 # VS. -> Single -> 2P.
 host:TRM sh {helpers}/keys.sh b:0.3:3 b:0.3:3 b:0.3:3
 # Only the portrait grid: the karts above it turn (8 apart on the right
 # screen, the mode list 59).
-host:VERIFY_WAIT {host_refs}/ctr-characters.png 10000 region=0.24,0.57,0.5,0.4 threshold=20
+host:VERIFY_WAIT {host_refs}/ctr-characters.png 20000 region=0.24,0.57,0.5,0.4 threshold=20
 all:SCREEN ctr-characters
 
 # Each player confirms their own racer: a racer the guest picks can only have
