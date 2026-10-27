@@ -27,8 +27,11 @@ all:SCREEN ctr-intro
 # game then starts Adventure. Only the list box is compared, since the flag
 # behind it waves through the box: the right screen scored up to 20, the title
 # without the list ~59.
-host:TRM sh {helpers}/keys.sh start:0.3:3 start:0.3:0
-host:VERIFY_WAIT {host_refs}/ctr-modes.png 20000 region=0.58,0.22,0.4,0.55 threshold=30
+# One START skips the intro to the title, the next opens the list; a START
+# that lands on the open list starts Adventure. Over WiFi the input delay and
+# stalls moved where fixed-timed presses landed, so press only while the list
+# is not showing, checking 6 s after each (DevBridge VERIFY_UNTIL).
+host:VERIFY_UNTIL {host_refs}/ctr-modes.png 60000 every=6000 region=0.58,0.22,0.4,0.55 threshold=30 :: sh {helpers}/keys.sh start:0.3:0
 # The check passes as soon as the box shows (DevBridge polls since ee0079b)
 # and a DOWN sent while it settles is lost: a Brick landed on ARCADE. Wait,
 # then make sure VS. is the highlighted row (ARCADE scores 47 there).
