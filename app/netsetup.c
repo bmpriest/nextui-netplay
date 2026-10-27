@@ -2673,16 +2673,23 @@ static int station_scan_channel(void) {
  * session, hold the station to the same network's 2.4 GHz band - a runtime
  * freq_list, never saved - so it keeps its LAN and the AP lands where guests
  * can see it. station_unsteer reloads the supplicant's own configuration. */
+static bool station_configured(void);
+
 static bool station_steer_24(void) {
 	int freq = station_freq();
-	if (freq < 4900) return true;          /* not associated, or already 2.4 */
+	if (freq >= 2412 && freq <= 2484) return true;   /* already on 2.4 */
+	/* Between networks counts too: a station reassociating as hosting begins
+	 * (the previous session's end had just reloaded the supplicant) came up
+	 * on 5 GHz mid-start and took the AP there. So every configured network
+	 * is pinned, not only the current one. */
+	if (!station_configured()) return true;
 	char ctrl[256], cmd[768];
 	if (!platform_ctrl_dir(ctrl, sizeof(ctrl))) return false;
 	snprintf(cmd, sizeof(cmd),
-	         "id=$(wpa_cli -p %s -i wlan0 status 2>/dev/null | sed -n 's/^id=//p') && [ -n \"$id\" ] &&"
+	         "ok=0; for id in $(wpa_cli -p %s -i wlan0 list_networks 2>/dev/null | awk 'NR>1 {print $1}'); do"
 	         " wpa_cli -p %s -i wlan0 set_network $id freq_list"
-	         " '2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472' | grep -q OK &&"
-	         " wpa_cli -p %s -i wlan0 reassociate | grep -q OK", ctrl, ctrl, ctrl);
+	         " '2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472' | grep -q OK && ok=1; done;"
+	         " [ $ok = 1 ] && wpa_cli -p %s -i wlan0 reassociate | grep -q OK", ctrl, ctrl, ctrl);
 	ns_log("station on %d MHz; holding it to 2.4 GHz for the ad hoc session\n", freq);
 	if (system(cmd) != 0) { ns_log("could not steer the station to 2.4 GHz\n"); return false; }
 	FILE* f = fopen(STATION_STEERED_FILE, "w");
@@ -3228,7 +3235,8 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
-	if (!ns_set.adhoc_switch) station_steer_24();
+	/* Only an H700's dual-band radio can be on 5 GHz; a Brick's is 2.4 only. */
+	if (!ns_set.adhoc_switch && supplicant_ap) station_steer_24();
 	int ch = station_home_channel();
 	/* Ad Hoc Network Switch: leave the station network so the AP can take the
 	 * quietest channel instead of whatever the router is on. Surveyed now,
