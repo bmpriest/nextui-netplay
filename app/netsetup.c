@@ -1806,6 +1806,7 @@ void NS_brokerStop(void) {
  * A guest only acts on it from its own session's host address. */
 #define SESSION_END_PORT 55440
 static const char session_end_magic[] = "NETPLAY-END 1";
+static const char session_end_ack[] = "NETPLAY-END-ACK 1";
 
 static void send_session_end(int fd, const char* ip) {
 	struct sockaddr_in to;
@@ -1827,19 +1828,43 @@ static void notify_guests_session_end(void) {
 	if (fd < 0) return;
 	int on = 1;
 	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
-	/* Spread over 1.5 s, not sent in one burst: a guest in power save wakes
-	 * every few hundred ms, and what an AP is still holding for it is lost
-	 * when the AP stops right after. A Brick guest of an H700 missed three
-	 * rounds 60 ms apart and came home by its watchdog a minute later. */
-	for (int round = 0; round < 6; round++) {
-		for (int i = 0; i < s.guest_count; i++) send_session_end(fd, s.guest[i].ip);
+	/* Repeated until every known guest acknowledges, 250 ms apart, for up
+	 * to 4 s. A guest in power save behind an H700's AP missed bursts - one
+	 * of 180 ms, then one of 1.5 s - and came home by its watchdog a minute
+	 * later. The agent's ACK is how we know it was heard. */
+	bool acked[4] = { false, false, false, false };
+	int want = s.guest_count < 4 ? s.guest_count : 4;
+	int got = 0;
+	struct timeval tv = { .tv_sec = 0, .tv_usec = 250 * 1000 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	int round = 0;
+	for (; round < 16 && (got < want || round < 2); round++) {
+		for (int i = 0; i < s.guest_count; i++) if (i >= 4 || !acked[i]) send_session_end(fd, s.guest[i].ip);
 		for (int i = 0; i < stations; i++) send_session_end(fd, clients[i].ip);
 		if (hotspot_processes_alive()) send_session_end(fd, "10.0.0.255");
 		send_session_end(fd, "255.255.255.255");
-		usleep(250 * 1000);
+		/* Collect ACKs until this round's 250 ms are up. */
+		struct timeval start, now;
+		gettimeofday(&start, NULL);
+		for (;;) {
+			char buf[64];
+			struct sockaddr_in from;
+			socklen_t fromlen = sizeof(from);
+			ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr*)&from, &fromlen);
+			if (n == (ssize_t)(sizeof(session_end_ack) - 1) && !memcmp(buf, session_end_ack, (size_t)n)) {
+				char ip[NS_IP_LEN];
+				inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+				for (int i = 0; i < want; i++)
+					if (!acked[i] && !strcmp(ip, s.guest[i].ip)) { acked[i] = true; got++; }
+			}
+			gettimeofday(&now, NULL);
+			if ((now.tv_sec - start.tv_sec) * 1000 + (now.tv_usec - start.tv_usec) / 1000 >= 250) break;
+			if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break;
+		}
 	}
 	close(fd);
-	ns_log("told the guests the session is over (%d known, %d on the AP)\n", s.guest_count, stations);
+	ns_log("told the guests the session is over (%d known, %d on the AP; %d of %d acknowledged after %d round(s))\n",
+	       s.guest_count, stations, got, want, round);
 }
 
 bool NS_guestAgentStart(void) {
@@ -1893,6 +1918,11 @@ int NS_guestAgentRun(void) {
 		if (from.sin_addr.s_addr != host.s_addr) continue;
 
 		ns_log("guest agent: the host ended the session\n");
+		/* Tell the host it was heard, so it can stop repeating. Twice: the
+		 * ACK can be lost the same way the notice was. */
+		for (int i = 0; i < 2; i++)
+			sendto(fd, session_end_ack, sizeof(session_end_ack) - 1, 0,
+			       (struct sockaddr*)&from, fromlen);
 		/* Free the port before the slow part, for the next session's agent. */
 		close(fd);
 		fd = -1;
