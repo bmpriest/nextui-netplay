@@ -1851,10 +1851,15 @@ int NS_guestAgentRun(void) {
 	me.sin_family = AF_INET;
 	me.sin_port = htons(SESSION_END_PORT);
 	me.sin_addr.s_addr = htonl(INADDR_ANY);
-	if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
-		ns_log("guest agent: port %d taken - another agent is watching\n", SESSION_END_PORT);
-		close(fd);
-		return 0;
+	/* The previous session's agent can still hold the port for a moment
+	 * while it puts WiFi back (a minute on an H700). Wait for it rather than
+	 * leave this session with nobody listening for its end. */
+	bool waited = false;
+	while (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
+		if (!waited) ns_log("guest agent: port %d taken - waiting for it\n", SESSION_END_PORT);
+		waited = true;
+		if (!NS_isArmed()) { close(fd); return 0; }
+		sleep(1);
 	}
 	ns_log("guest agent: watching for the end of the session with %s\n", s.host);
 
@@ -1872,6 +1877,9 @@ int NS_guestAgentRun(void) {
 		if (from.sin_addr.s_addr != host.s_addr) continue;
 
 		ns_log("guest agent: the host ended the session\n");
+		/* Free the port before the slow part, for the next session's agent. */
+		close(fd);
+		fd = -1;
 		/* After an ad hoc session the host's network is going away with it:
 		 * put the station network back now rather than after the watchdog's
 		 * strikes, and before ending the session, whose own restore only runs
@@ -1882,7 +1890,7 @@ int NS_guestAgentRun(void) {
 		NS_endSession();
 		break;
 	}
-	close(fd);
+	if (fd >= 0) close(fd);
 	return 0;
 }
 
