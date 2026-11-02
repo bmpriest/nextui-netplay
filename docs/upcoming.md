@@ -62,7 +62,9 @@ never assumed from the platform. Branch `feat/onboarding`.
 
 ### RetroArch compatibility
 
-Playing against RetroArch on a PC or phone. Plan:
+Playing against handhelds on other firmwares (spruce, Onion, Allium, muOS,
+ROCKNIX, Knulli), which use RetroArch's netplay. spruce on an RG35XXH comes
+first; a PC is a bonus. Plan:
 [analysis/retroarch-plan.md](analysis/retroarch-plan.md). Branch
 `feat/retroarch`.
 
@@ -177,5 +179,5 @@ Each of these would shrink what Netplay has to ship:
 5. DSperate's emulator fixes (VCOUNT writes, late transport `begin()`, LAN join
    retry) to DSperate, and the launcher and pad changes to josegonzalez's pak.
    DSP.pak could then be an overlay like DraStic's instead of a full fork.
-6. Varnish's ICON and MENU commands, input grab and H700 port to Helaas's
-   repository ([analysis/varnish.md](analysis/varnish.md)).
+6. Varnish's ICON and MENU commands, input grab and H700 port, from the
+   bmpriest fork to Helaas's repository ([analysis/varnish.md](analysis/varnish.md)).

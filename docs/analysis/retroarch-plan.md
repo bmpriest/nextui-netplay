@@ -1,88 +1,126 @@
-# Plan: RetroArch compatibility
+# Plan: RetroArch netplay compatibility
 
-Let a Netplay.pak device play against RetroArch: a PC, a phone, or another
-handheld running RetroArch, on the same LAN. Work happens on branch
-`feat/retroarch` (worktree `.worktrees/netplay-retroarch`).
+Let a Netplay.pak device play against handhelds running the other common Linux
+firmwares: spruce, Onion, Allium, muOS, ROCKNIX, Knulli. Those use RetroArch for
+emulation, and their netplay is RetroArch's own protocol, with setup and
+teardown scripted around it by each firmware. A Windows PC running RetroArch
+would be a bonus, not a goal. Work happens on branch `feat/retroarch`
+(worktree `.worktrees/netplay-retroarch`).
 
-Written 2026-11-02 from RetroArch's netplay source at `master` (`54d27c5`,
-`network/netplay/`: `README`, `netplay_private.h`, `netplay_protocol.h`,
-`netplay_frontend.c`). Everything marked **verify** is read from source, not
-yet tested against a running RetroArch.
+Written 2026-11-02 from RetroArch's netplay source (tag `v1.22.2` and `master`
+at `54d27c5`) and the spruceOS tree at `0c410ba` (2026-10-25). Items marked
+**verify** are read from source and not yet tested against a running
+RetroArch.
+
+## First target: spruce on an RG35XXH
+
+spruce ships one RetroArch, **1.22.2**, for every device it supports (`ra64.h700`,
+`ra64.universal`, `ra32.a30`, `ra32.mini`), with its cores in
+`RetroArch/.retroarch/cores64/` and `cores/`. The local checkout has no netplay
+scripts of its own: a player uses RetroArch's netplay menu. Starting there makes
+the first test as easy as it can be:
+
+- **Same device, same architecture.** An RG35XXH on spruce against an RG35XXH
+  (or any AArch64 device) on NextUI removes the cross-architecture determinism
+  question entirely.
+- **One RetroArch version.** spruce pins 1.22.2 everywhere, so there is one
+  protocol to match.
+- **DevBridge on spruce** (in progress) makes the spruce side scriptable like
+  every other device in the rig.
+
+Other firmwares come after, one at a time, each by inventory first: which
+RetroArch version, which core revisions, and what its netplay setup script
+does around RetroArch (ad hoc network, discovery, config).
 
 ## What RetroArch netplay is
 
-| | RetroArch | Netplay.pak |
+| | RetroArch 1.22.2 | Netplay.pak |
 |---|---|---|
-| Model | Rollback: each frame it saves state, predicts the remote input, and on a wrong guess rewinds and replays | Lockstep with input delay: a frame waits for the peer's input; no prediction, no rewind |
+| Model | Rollback: each frame it saves state, predicts the remote input, and on a wrong guess rewinds and replays | Lockstep with input delay: a frame waits for the peer's input |
 | Authority | The server's clock arbitrates joins, parts and state loads | The host's state is authoritative |
 | Players | Up to 32 clients, plus spectators | Two |
-| Transport | TCP, port 55435; LAN discovery on UDP 55435; MITM relays for the internet | TCP 55437; announcements on UDP 55438 |
-| Identity | Content CRC32 (of the file, or of the file inside an archive), core name and core version strings, which must match | Content SHA-256, core identity, state and save geometry |
-| Desync | `CRC` of a frame; the receiver requests a savestate on mismatch | State hash every 300 frames; authoritative resync |
-| Versions | Protocols 5 to 8 accepted (`LOW_`/`HIGH_NETPLAY_PROTOCOL_VERSION`) | Protocol 15, its own |
-| Link cores | `NETPLAY_CMD_NETPACKET` carries netpacket traffic | `netlink.c` carries it |
+| Transport | TCP 55435; LAN discovery UDP 55435 (`RANQ` query, `RANS` reply); MITM relays for the internet | TCP 55437; announcements UDP 55438 |
+| Identity | Content CRC32, core name and core version strings, which must match | Content SHA-256, core identity, state and save geometry |
+| Desync | `CRC` of a frame; the receiver requests a savestate | State hash every 300 frames; authoritative resync |
+| Versions | Protocols **5 to 7** (1.22.2); `master` has moved on to 8 | Protocol 15, its own |
+| Link cores | `NETPLAY_CMD_NETPACKET` | `netlink.c` |
 
-The wire format is simple: every command is a 32-bit ID and a 32-bit payload
-length, network byte order, then the payload.
+Every command is a 32-bit ID and a 32-bit payload length in network byte order,
+then the payload.
 
-**Handshake** (both sides): a connection header (`RANP` magic, a platform magic,
-compression flags, a password salt or the highest supported protocol, and an
+**Handshake** (both sides): a connection header (`RANP` magic, a platform
+magic, compression flags, a password salt or the highest protocol, and an
 implementation magic hashed from RetroArch's version string), then `NICK`. The
-server then expects `PASSWORD` if set (SHA-256), sends `INFO` (content CRC,
-core name, core version), receives the client's `INFO`, and sends `SYNC` (frame
-number, client number, controller devices, share modes, controller mapping,
-nick, and the server's SRAM).
+server takes `PASSWORD` if set (SHA-256), sends `INFO` (content CRC, core name,
+core version), receives the client's `INFO`, and sends `SYNC` (frame, client
+number, controller devices, share modes, controller mapping, nick, SRAM).
 
 **Play**: `INPUT` (frame, client, input words) for every frame from every
 player; `NOINPUT` from a server with no controller; `CRC`,
-`REQUEST_SAVESTATE` and `LOAD_SAVESTATE` (zlib-compressed when both sides
-support it) for desyncs; `PAUSE`, `RESUME`, `STALL` and `RESET`;
-`SETTING_INPUT_LATENCY_FRAMES` and ping commands.
+`REQUEST_SAVESTATE` and `LOAD_SAVESTATE` (zlib when both support it); `PAUSE`,
+`RESUME`, `STALL`, `RESET`; input latency frames and ping.
 
-Protocol 8 is recent and relevant: its `LOAD_SAVESTATE` may target a frame the
-client already has input for, "as a lockstep host sends while it waits on that
-client", and its CRC can be taken over system RAM
-(`netplay_lockstep_take_crc`). RetroArch itself now has a lockstep host mode.
+`master` adds protocol 8 with a lockstep host mode and a CRC over system RAM.
+No firmware ships it yet; target 1.22.x's protocol 7 and treat 8 as later.
 
-## Why it can work
+## Why a lockstep peer can work
 
 RetroArch's rollback is local to each RetroArch. On the wire it only needs
-every player's input for every frame, in order. A peer that never runs ahead,
-and simply waits for input before advancing, sends exactly that stream; the
-RetroArch side predicts, rewinds and absorbs the difference. So Netplay does not
-have to adopt rollback to interoperate. Its input delay maps onto RetroArch's
-input latency frames, and its authoritative state transfer maps onto
-`SYNC` and `LOAD_SAVESTATE`. **Verify** that RetroArch tolerates a peer whose
-input lags by the full delay without stalling it into a crawl; protocol 8's
-lockstep host suggests it does.
+every player's input for every frame, in order. A peer that never runs ahead
+sends exactly that; the RetroArch side predicts, rewinds and absorbs the
+difference. So Netplay does not need rollback to interoperate: its input delay
+maps onto RetroArch's input latency frames, and its authoritative state maps
+onto `SYNC` and `LOAD_SAVESTATE`. **Verify** that RetroArch 1.22.2 tolerates a
+peer whose input always arrives at the full delay without stalling itself into
+a crawl, and what it does when its rollback window fills.
 
-## What makes it hard
+## The real obstacle: matching cores
 
-1. **Determinism across architectures.** A PC is x86-64; the handhelds are
-   AArch64 and ARMv7. Lockstep needs both to compute the same frames
-   ([determinism.md](determinism.md)). Encouraging: fceumm is pure C,
-   picodrive's portable path matched across ARM architectures, Supafaust's state
-   is explicitly encoded. Not expected to work: pcsx_rearmed. Each core has to be
-   proven with `statecheck` on an x86-64 build of the same revision.
-2. **Matching core versions.** `INFO` compares core name and version strings
-   exactly, and those carry git hashes. The player's RetroArch needs the same
-   revision Netplay runs: a compatibility core for which Netplay publishes
-   desktop builds, or which is pinned to a RetroArch buildbot revision.
-3. **Content identity.** RetroArch sends a CRC32 of the content (of the inner
-   file for archives). Netplay hashes with SHA-256; it needs a CRC32 computed
-   the same way, including RetroArch's archive handling.
-4. **The implementation magic** is a hash of RetroArch's version string.
-   **Verify** whether a mismatch refuses the connection or only warns, and so
-   which RetroArch versions Netplay must claim to be.
-5. **The CRC it checks.** Netplay must produce RetroArch's `CRC` values (over
-   serialized state, or over system RAM in protocol 8's lockstep path), or it
-   will request savestates constantly.
-6. **Platform magic.** An A30 is 32-bit (`sizeof(size_t)` 4), a PC 64-bit.
-   RetroArch's code only treats an endianness mismatch as fatal; **verify** that
-   nothing else keys on it.
-7. **Rollback cost is RetroArch's, not ours.** A RetroArch peer on a handheld
-   serializes every frame. Heavy cores may not keep up there; on a PC it is
-   free.
+`INFO` compares core name and version strings exactly, and both sides must run
+the same core revision for lockstep to hold. spruce's cores do not match
+Netplay's anywhere:
+
+| Core | spruce 1.22.2 (`cores64/`) | Netplay |
+|---|---|---|
+| fceumm | `(SVN) 3544ff5` | compatibility `afe65ef` |
+| picodrive | `2.04-7102a71` | `b0be121` |
+| snes9x | `1.63 49f48456` | NextUI's floats; fallback Supafaust |
+| mednafen_supafaust | `1.29.0 e25f667` | compatibility `d6187e5` |
+| gambatte | `v0.5.0 a85fe7c` | the bmpriest fork `b3803b3` |
+| gpsp | `v1.1.0-5819380` | `v1.1.0-netplay-5819380` (same base, RFU patches) |
+
+Each firmware will have its own set. The way through is the compatibility-core
+mechanism Netplay already has, keyed by peer: **peer-matched cores**, built at
+the revisions a firmware ships, reporting the same version strings, loaded for a
+session against that firmware. Netplay-Core downloads them like the other
+compatibility cores, per firmware and RetroArch version.
+
+The first experiment is cheaper still: on AArch64, spruce's own `cores64`
+binaries may run under NextUI's MinArch and the shim as they are (both are
+libretro cores; **verify** their library dependencies). That proves the protocol
+work before any core is rebuilt.
+
+## Other differences to handle
+
+1. **Content identity.** RetroArch's content CRC is the CRC32 of the whole
+   content file, or of the member inside an archive (taken from the archive's
+   header). For a disc that is the CRC of whatever file was opened (the `.cue`,
+   `.chd` or `.m3u`), not of the disc data. Netplay must compute the same thing,
+   from the same file, in addition to its own SHA-256 (see below).
+2. **The implementation magic** hashes RetroArch's version string. **Verify**
+   whether a mismatch refuses or only warns; it decides whether Netplay must
+   claim to be 1.22.2.
+3. **The `CRC` command.** Netplay must produce RetroArch's values for a frame
+   (1.22.2: over the serialized state; **verify**), or each check triggers a
+   savestate request.
+4. **Platform magic.** The A30 and Miyoo Mini are 32-bit; RetroArch's code only
+   treats an endianness mismatch as fatal. **Verify** nothing else keys on it.
+5. **Each firmware's setup.** Some firmwares put their own ad hoc network or
+   discovery around RetroArch. Interoperating may mean speaking that too, or at
+   least joining the network it makes. Inventory per firmware.
+6. **Rollback cost lands on the other device.** A RetroArch peer on a handheld
+   serializes every frame and replays on mispredictions. Light cores are fine
+   on A53s; heavy ones (PlayStation, Supafaust) may not keep up there.
 
 ## Approach
 
@@ -102,38 +140,53 @@ selected when the peer is RetroArch, translates:
 | host reset | `RESET` |
 | link packets | `NETPACKET` |
 
-Rejected alternatives: running RetroArch itself on the device (NextUI uses
-MinArch; Netplay would become a different product), and a PC-side gateway (a
-second program for the player to run).
-
-Out of scope at first: the internet lobby and MITM relays, spectators, more
-than two players, passwords beyond what `PASSWORD` needs to join a protected
-host.
+Out of scope at first: MITM relays and the internet lobby, spectators, more
+than two players.
 
 ## Phases
 
-1. **Pin and read.** Choose the RetroArch release to target (not `master`) and
-   record its protocol version and implementation magic. Capture a two-RetroArch
-   session on a PC with Wireshark as the reference.
-2. **Determinism on x86-64.** Build fceumm and picodrive at Netplay's pinned
-   revisions for x86-64 and run `statecheck` against the ARM builds. Stop here
-   for any core that diverges.
-3. **Desktop harness.** RetroArch on a PC against the shim built natively
-   (`make native`) with the same core build: handshake, `INFO`, `SYNC`.
-4. **Play.** `INPUT` lockstep with Netplay as client, then as host; measure
+1. **DevBridge on spruce** (in progress): the RG35XXH on spruce scriptable from
+   the rig.
+2. **Reference capture.** Two spruce devices (or spruce and a PC on 1.22.2)
+   playing fceumm; record the session with `tcpdump` as the byte-level
+   reference, including spruce's setup around it.
+3. **spruce's core under NextUI.** Run spruce's `fceumm_libretro.so` through
+   the shim on an AArch64 NextUI device; confirm it loads and that `statecheck`
+   matches the same core on spruce.
+4. **Handshake.** The shim, built natively first (`make native`), completes
+   header, `NICK`, `INFO` and `SYNC` against spruce's RetroArch.
+5. **Play.** `INPUT` lockstep with Netplay as client, then as host; measure
    whether RetroArch stalls or rewinds excessively.
-5. **Resync.** `CRC` and savestates in both directions; a forced desync recovers.
-6. **A handheld against a PC** over house WiFi, then over a Netplay ad hoc
-   network joined by a laptop.
-7. **Discovery.** Answer RetroArch's LAN query (`RANQ`/`RANS` on UDP 55435) so a
-   Netplay host appears in RetroArch's list, and list RetroArch hosts in Join.
+6. **Resync.** `CRC` and savestates both ways; a forced desync recovers.
+7. **Discovery and setup.** Answer `RANQ` so a Netplay host appears in
+   RetroArch's list; list RetroArch hosts in Join; follow spruce's network setup.
 8. **Link cores.** Gambatte and gpSP over `NETPACKET`.
-9. **The app.** Mark RetroArch peers in Join, explain a version or core
-   mismatch in words, and publish the desktop core builds a player needs.
+9. **Peer-matched cores** for spruce's set, then the next firmware.
+10. **The app.** Mark RetroArch peers in Join, name the firmware and core a
+    mismatch needs, and download the matching core.
 
-## Open questions
+## Questions this answers
 
-- Which RetroArch versions do players actually run, and how far back should
-  protocols 5-7 be supported?
-- Is a RetroArch peer on the *same* kind of handheld useful enough to test
-  first, since it removes the x86 determinism question?
+**Could Netplay do rollback itself?** Not needed for RetroArch compatibility
+(above), and not a MinArch rebuild either: the shim owns `retro_run`, input and
+the video and audio callbacks, so it can save state each frame, run ahead on
+predicted input, and on a wrong guess load an older state and replay several
+frames inside one frontend frame with video and audio suppressed. Two costs
+decide whether it is worth it. **CPU**: a serialize every frame plus replays, on
+A53 cores that already run PlayStation and the paired cores near their limit.
+**State round trips**: rollback needs `unserialize(serialize(x))` to be exactly
+`x`, and [state-sync.md](state-sync.md) found that is false for picodrive (649
+bytes of 678,519 differ) and that `serialize` itself mutates state. Lockstep
+survives that because both devices do the same thing in the same order;
+rollback would only replay on the device that guessed wrong, and the two would
+diverge. It could be offered per core, for cores whose round trip is exact
+(Supafaust's is), as a later feature.
+
+**CRC32 beside SHA-256, or CRC32 instead?** Beside. The shim already computes
+the CRC32 of the same bytes its SHA-256 covers (for finding the peer's
+cartridge, where a zip's header supplies it for free), and hashing a ROM once at
+launch costs milliseconds either way. SHA-256 stays Netplay's identity because
+it is also what pins downloads and the DraStic build, where a CRC32 can be
+forged. RetroArch's CRC32 is a different value anyway (whole file or archive
+member, and the `.cue` rather than the disc), so it is computed for RetroArch
+peers only, exactly as RetroArch computes it.

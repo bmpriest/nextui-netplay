@@ -22,7 +22,7 @@ NextUI, not Netplay, is in front.
 |---|---|---|
 | Netplay icon in NextUI | `ICON` from an asset sheet, recoloured with the theme | `launcher/status-icon.sh`, `res/status@<scale>x.png` |
 | Quick menu | `MENU` (title, up to six items, button hints), `HIDE` | `app/quickmenu.c` → `netplay-quickmenu.elf`, started by `launcher/quick-menu.sh` |
-| Quick menu input | the input grab in `varnish.h` | the quick menu reads evdev itself and holds the grab so NextUI does not act on the same presses |
+| Quick menu input | the input grab and release in `varnish.h` | the quick menu reads the buttons from evdev while holding the grab, so NextUI does not act on the same presses |
 | Notices | `PILL` | short results ("Session ended.") after a quick menu action |
 
 Both features are optional by design: every send fails quietly when the daemon
@@ -31,9 +31,9 @@ is not running, and Netplay behaves as before.
 ## The fork Netplay builds
 
 Upstream Varnish (v0.1.0, `861d1ab`) has `PILL`, `HIDE`, `CLEAR` and hotkeys for
-screenshots and video recording. Everything Netplay needs beyond that exists
-only as **uncommitted changes** in the local checkout at
-`community-paks/nextui-varnish-pak`, versioned v0.2.0:
+screenshots and video recording. Netplay builds a fork,
+[bmpriest/nextui-varnish-pak](https://github.com/bmpriest/nextui-varnish-pak)
+(checked out at `community-paks/nextui-varnish-pak`, v0.2.0), which adds:
 
 - the `ICON` and `MENU` commands, and their CLI and shell helpers;
 - the input grab and release (`varnish_grab_input()`, `varnish_release_input()`);
@@ -47,9 +47,10 @@ only as **uncommitted changes** in the local checkout at
 `make check-varnish` fails the build if `app/varnish.h` differs from the bundled
 header, because the quick menu would then speak a protocol the daemon does not.
 
-These changes are not in any repository. They should be committed to a fork
-and offered upstream ([../upcoming.md](../upcoming.md#upstreaming)); until
-then a lost checkout loses the icon and the quick menu.
+As of 2026-11-02 these changes are still uncommitted in that checkout (26
+files); until they are pushed to the fork, a lost checkout loses the icon and the
+quick menu. They are worth offering upstream
+([../upcoming.md](../upcoming.md#upstreaming)).
 
 ## Installing it
 
@@ -78,10 +79,11 @@ started after it, so **the first install needs a reboot**, and the app says so.
 
 ## What it cannot do
 
-- **Read input.** Varnish only draws. A pak that shows a menu reads the buttons
-  itself from `/dev/input` and must hold the grab, or NextUI scrolls and
-  launches underneath it. Releasing the grab waits until NextUI has drained what
-  was pressed during the menu.
+- **Deliver input to a client.** Varnish draws and arbitrates the input grab;
+  it does not pass button presses on. The quick menu reads them itself from
+  `/dev/input` while it holds the grab, so NextUI does not scroll or launch
+  underneath it, and releasing waits until NextUI has drained what was pressed
+  during the menu. Any other Varnish-drawn interaction has to do the same.
 - **Run on the A30.** There is no my282 build, so the icon, quick menu and
   Varnish-based notices are absent there.
 - **Reach programs that do not render through SDL in a hooked process.** Paks
