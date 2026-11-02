@@ -74,7 +74,7 @@ device can use either; a mixed pair runs at DSperate's pace. The DraStic overlay
 is built for tg5040, tg5050 and h700.
 
 Save states are off while the two consoles are talking. Details and
-measurements: [docs/dsperate.md](docs/dsperate.md) and [docs/drastic.md](docs/drastic.md).
+measurements: [docs/nintendo-ds/dsperate.md](docs/nintendo-ds/dsperate.md) and [docs/nintendo-ds/drastic.md](docs/nintendo-ds/drastic.md).
 
 ## Compatibility
 
@@ -104,7 +104,6 @@ I'm trying to make everything compatible, but I only have a Trimui Brick and Miy
 | Gambatte | Game Boy / Game Boy Color | Link cable, or instanced link (experimental) |
 | DSperate (DSP.pak) | Nintendo DS | Local wireless (experimental) |
 | DraStic (NDS.pak) | Nintendo DS | Local wireless (experimental) |
-| FBNeo | Arcade | Shared screen, untested |
 
 ## Installation
 

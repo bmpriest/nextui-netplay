@@ -48,8 +48,8 @@
 #define TRAMPOLINE_WORDS 8
 
 /* Offsets inside DraStic's ARM7 memory context and system structure, all
- * hardware-validated on this build (see adapter.c and
- * docs/drastic-brick-devbridge-progress.md). */
+ * hardware-validated on this build (see adapter.c and docs/nintendo-ds/drastic.md;
+ * the original log is docs/drastic-brick-devbridge-progress.md at 442efa2). */
 #define WIFI_RAM_OFFSET          UINT32_C(0x00017070)
 #define ARM7_IO_OFFSET           UINT32_C(0x00023070)
 #define SYSTEM_CPU_ARM7_OFFSET   UINT32_C(0x025cd340)

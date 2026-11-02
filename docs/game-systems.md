@@ -29,7 +29,9 @@ A handheld says "no" here because there is nothing on one console to share.
 - `-` - the shim does not drive this core, so launches are stock.
 
 The mode is chosen by the shim from the core it wraps, not from a menu:
-gambatte and gpSP get link, everything else gets shared screen.
+gambatte and gpSP get link, the paired cores (instanced link, turned on per core
+in Configuration > Cores) get instanced, everything else gets shared screen.
+The DS emulators are not libretro cores; see the last table.
 
 ## Base
 
@@ -37,13 +39,13 @@ Seven systems, installed by default.
 
 | System | Core | Multiplayer? | Link Cable? | Implementation |
 |---|---|---|---|---|
-| FC | fceumm | yes (2, or 4 via Four Score) | no | **netplay** - played cross-device without desync |
-| GB | gambatte | no | **yes** - Game Link emulated | **link** - proven (Tetris) |
-| GBC | gambatte | no | **yes** - Game Link emulated | **link** |
+| FC | fceumm | yes (2, or 4 via Four Score) | no | **netplay** - proven (River City Ransom in the test matrix) |
+| GB | gambatte | no | **yes** - Game Link emulated | **link** - proven (Tetris); **instanced** with the paired core |
+| GBC | gambatte | no | **yes** - Game Link emulated | **link**; **instanced** - a Silver/Crystal trade over 13,500 frames |
 | GBA | gpsp | rarely (single-cart multiboot) | **partial** - wireless adapter only, see below | **link** - proven for the supported titles, 213s unbroken (Advance Wars 2) |
 | MD | picodrive | yes (2, or 4 via multitap) | hardware only - EXT port not emulated | **netplay** - proven (Streets of Rage 2, Gunstar Heroes) |
-| PS | pcsx_rearmed | yes (multitap) | hardware only - SIO1 link not emulated | netplay in principle; **blocked by determinism** |
-| SFC | snes9x (tg5040, tg5050, h700, my355) | yes (multitap) | no | shared-screen; packaged Supafaust fallback pairs with my282 |
+| PS | pcsx_rearmed | yes (multitap) | hardware only - SIO1 link not emulated | **netplay**, experimental - Crash Team Racing at 59-60 fps between AArch64 devices; the A30 cannot pair |
+| SFC | snes9x (tg5040, tg5050, h700, my355) | yes (multitap) | no | **netplay** - proven (Contra III); packaged Supafaust fallback pairs with my282 |
 | SFC | snes9x2005 (my282) | yes (multitap) | no | shared-screen; packaged Supafaust fallback pairs with arm64 |
 
 The SFC split is not a build-flag difference. Four of the five platforms build
@@ -53,19 +55,23 @@ negotiation resolves the split by loading the same pinned Supafaust revision on
 both devices. Supafaust uses an explicitly encoded state stream: ARMv7 and
 AArch64 produced the same 277,033-byte state and hashes for Kirby Super Star.
 
-`PS` is the hardest determinism case in the set: pcsx_rearmed has two
+`PS` is the hardest determinism case in the set. pcsx_rearmed is
+nondeterministic by default (its recompiler thread races the emulation thread),
+so the shim forces `pcsx_rearmed_drc_thread=disabled`; with that, two AArch64
+devices stay in sync. Across architectures it is still out of reach: it has
 architecture-specific subsystems (`assem_arm.c` vs `assem_arm64.c`, and 33 NEON
-files in `gpu_neon`), so cross-device lockstep would need a portable CPU *and*
-GPU path on the weakest device for the heaviest system. Out of scope.
+files in `gpu_neon`), so pairing with the A30 would need a portable CPU *and*
+GPU path on the weakest device for the heaviest system. See
+[analysis/determinism.md](analysis/determinism.md).
 
 ## Extras
 
-Thirty paks. Eight use a core the shim drives; the rest launch stock.
+Thirty paks. Seven use a core the shim drives; the rest launch stock.
 
 | System | Core | Multiplayer? | Link Cable? | Implementation |
 |---|---|---|---|---|
 | 32X | picodrive | yes | no | **netplay** - untested |
-| FBN | fbneo | yes (arcade, 2+) | no | **netplay** - untested |
+| FBN | fbneo | yes (arcade, 2+) | no | Stock only; Netplay does not wrap it |
 | FDS | fceumm | yes | no | **netplay** - untested |
 | GG | picodrive | no | hardware only - Gear-to-Gear stubbed | **netplay** - poor fit, see below |
 | SEGACD | picodrive | yes | no | **netplay** - untested |
@@ -83,7 +89,7 @@ Thirty paks. Eight use a core the shim drives; the rest launch stock.
 | COLECO | gearcoleco | yes | no | - |
 | CPC | cap32 | yes | no | - |
 | LYNX | handy | no | hardware only - ComLynx not emulated | - |
-| MGBA | mgba | rarely | **yes** - full GBA SIO | **instanced link (experimental)** - paired core completed a Mario Kart race on two Bricks |
+| MGBA | mgba | rarely | **yes** - full GBA SIO | **instanced link (experimental)** - Mario Kart: Super Circuit races on two Bricks and on a Brick with an RG35XXH |
 | SGB | mgba | yes (via SNES multitap) | no | - |
 | MSX | bluemsx | yes | no | - |
 | NGP | race | no | hardware only - link not emulated | - |
@@ -115,7 +121,6 @@ all four. my282 is the only platform with its own core set.
 | core | my282 | tg5040 | tg5050 | h700 | my355 |
 |---|---|---|---|---|---|
 | picodrive | `b0be121b` | `b0be121b` | `b0be121b` | `b0be121b` | `b0be121b` |
-| fbneo | - | `6a5cc250` | `6a5cc250` | `6a5cc250` | `6a5cc250` |
 | pokemini | - | `78656d46` | `78656d46` | `78656d46` | `78656d46` |
 | fceumm | `afe65ef1` | floats | floats | floats | floats |
 | gpsp | `69e86ebe` | floats | floats | floats | floats |
@@ -142,7 +147,6 @@ release is the only record. tg5040, tg5050 and h700 ship identical revisions
 | mednafen_supafaust | `642d1d1` | compatibility core `d6187e5` |
 | pcsx_rearmed | `c881679` | compatibility core `050981b6` |
 | picodrive | `b0be121` | `b0be121` |
-| fbneo | `6a5cc25` | - |
 
 The compatibility cores stay on their own pins: they are the common build both
 devices fall back to, on ARMv7 and AArch64 alike, and need not match anyone's
@@ -172,7 +176,7 @@ not the norm.
 - **picodrive is the only core pinned identically across all five platforms**, so
   MD, SMS, SG1000, 32X, SEGACD and GG are the safest systems for cross-device
   shared screen. That is not luck - it is the one core someone pinned deliberately.
-- **fbneo and pokemini are pinned across the arm64 four** but absent on my282.
+- **pokemini is pinned across the arm64 four** but absent on my282.
 - **Everything else floats.** Two devices of the *same* platform, flashed from
   releases built weeks apart, can carry different fceumm or gambatte builds and
   desync with no way to tell from the version string. `CORE MISMATCH` folds
@@ -253,15 +257,15 @@ the current same-thread paired core.
 **Shared screen requires the same core build on both devices.** Every `netplay`
 row above assumes it. `NO_ARM_ASM=1` is necessary and sufficient for picodrive,
 established against every available build including Trimui's own. See
-[state-sync.md](state-sync.md).
+[analysis/determinism.md](analysis/determinism.md) and
+[analysis/state-sync.md](analysis/state-sync.md).
 
-**"Untested" means untested, not expected-to-fail.** The eight Extras rows with
-a supported core should work; none has been run. FBN is the most likely to
-surprise, because arcade cores vary in how much state they keep outside the
-serialised block.
+**"Untested" means untested, not expected-to-fail.** The seven Extras rows with
+a supported core should work; none has been run.
 
 ## Outside NextUI's bundles
 
 | System | Emulator | Multiplayer? | Link Cable? | Implementation |
 |---|---|---|---|---|
-| NDS | DSperate (DSP.pak, installed by Netplay) | no | **yes** - DS local wireless emulated, melonDS LAN protocol | **local wireless** - one DS per device; Mario Kart DS proven over ad hoc. See [dsperate.md](dsperate.md) |
+| NDS | DSperate (DSP.pak, installed by Netplay) | no | **yes** - DS local wireless emulated, melonDS LAN protocol | **local wireless** - one DS per device; Mario Kart DS and Asphalt: Urban GT 2 race. See [nintendo-ds/dsperate.md](nintendo-ds/dsperate.md) |
+| NDS | DraStic (the user's NDS.pak 0.14.1, plus Netplay's radio overlay) | no | **yes**, through Netplay's radio hook | **local wireless** - pairs with DSperate too. See [nintendo-ds/drastic.md](nintendo-ds/drastic.md) |

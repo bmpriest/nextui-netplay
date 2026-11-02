@@ -52,7 +52,7 @@ say "not on $SSID - rejoining"
 
 # Reuse the platform's control socket, so the frontend's wifi status keeps
 # working while we are on the ad hoc network. Without this the signal icon and
-# SSID go blank even though the radio is associated - see docs/adhoc.md.
+# SSID go blank even though the radio is associated - see docs/analysis/adhoc.md.
 # The per-platform default (and the -C spelling the H700 uses) live in
 # wifi-platform.sh; guessing /var/run/wpa_supplicant here was right on one of
 # the five platforms.

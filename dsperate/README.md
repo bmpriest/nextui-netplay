@@ -2,7 +2,7 @@
 
 A MinUI Emu Pak for Nintendo DS, wrapping the standalone [DSperate](https://github.com/beebono/DSperate) emulator (version 3.0.5).
 
-This is [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) 0.2.0 by josegonzalez, with the changes Netplay.pak needs for DS local wireless: a patch series for DSperate's LAN play, positional pad mappings, DevBridge's virtual pad, and a launcher that joins an armed Netplay session. Netplay.pak installs it from Configuration > Cores > Extras > DSP. See [../docs/dsperate.md](../docs/dsperate.md) for the Netplay side.
+This is [minui-nintendo-dsperate-pak](https://github.com/josegonzalez/minui-nintendo-dsperate-pak) 0.2.0 by josegonzalez, with the changes Netplay.pak needs for DS local wireless: a patch series for DSperate's LAN play, positional pad mappings, DevBridge's virtual pad, and a launcher that joins an armed Netplay session. Netplay.pak installs it from Configuration > Cores > Extras > DSP. See [../docs/nintendo-ds/dsperate.md](../docs/nintendo-ds/dsperate.md) for the Netplay side.
 
 DSperate reimplements DraStic's JIT and NEON rendering techniques with an ARM to AArch64 recompiler, a threaded software rasteriser, save states, Action Replay cheats and RetroAchievements. Unlike DraStic it needs no BIOS dump to play games.
 

@@ -40,7 +40,7 @@ it on the stack and only default-initialised it, and `sachenOuterMask` /
 cartridge serialized stack residue. Four bytes of a 119316-byte paired state,
 different per call and per device, which made `saveState()` not a function of
 emulator state and desynced instanced link at frame 0 on every session. See the
-correction note in `docs/multi-instance.md`: the first diagnosis of this blamed
+correction note in `docs/gbs/multi-instance.md`: the first diagnosis of this blamed
 a deliberate mutation in `CPU::saveState` and was wrong.
 
 Do not add to this directory. Gambatte changes belong in the fork.

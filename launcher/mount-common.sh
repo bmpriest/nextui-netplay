@@ -2,7 +2,7 @@
 # Shared bind-mount primitives for system and SD-card emulator paks.
 # Callers set MOUNT_STAGE before using ownership or staleness helpers.
 
-NETPLAY_CORES="fbneo fceumm snes9x snes9x2005 mednafen_supafaust picodrive pcsx_rearmed gpsp gambatte"
+NETPLAY_CORES="fceumm snes9x snes9x2005 mednafen_supafaust picodrive pcsx_rearmed gpsp gambatte"
 MOUNTS_FILE="${NETPLAY_MOUNTS_FILE:-/proc/mounts}"
 MOUNTINFO_FILE="${NETPLAY_MOUNTINFO_FILE:-/proc/self/mountinfo}"
 
@@ -90,7 +90,15 @@ mount_needs_resync() {
 	_staged="$MOUNT_STAGE/$(basename "$_source" .pak).pak"
 	[ -d "$_staged" ] || return 0
 	[ -f "$_staged/.source-fingerprint" ] || return 0
-	[ "$(mount_fingerprint "$_source")" != "$(cat "$_staged/.source-fingerprint")" ]
+	[ "$(mount_fingerprint "$_source")" != "$(cat "$_staged/.source-fingerprint")" ] && return 0
+	# EXTRAS paks can keep their core inside the pak. `ls -la` rounds mtime to
+	# the minute, so a same-size core replacement can keep the same listing.
+	# Compare the actual bytes before trusting the staged executable.
+	for _core in "$_source"/*_libretro.so; do
+		[ -f "$_core" ] || continue
+		cmp -s "$_core" "$_staged/$(basename "$_core")" || return 0
+	done
+	return 1
 }
 
 mount_staged_ok() {

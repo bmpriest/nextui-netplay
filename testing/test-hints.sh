@@ -30,7 +30,7 @@ gcc -std=gnu99 -Wall -Werror -Iapp "$TMP/dump.c" app/hints.c -o "$TMP/dump"
 	# Literal keys, straight from the source.
 	grep -o 'HINT_get("[^"]*")' app/main.c | sed 's/HINT_get("\(.*\)")/\1/'
 	# cores.<tag>.<state>, per kind (main.c's refresh_core).
-	for t in FC GBA MD PS SFC 32X FBN FDS GG SEGACD SG1000 SMS SUPA; do
+	for t in FC GBA MD PS SFC 32X FDS GG SEGACD SG1000 SMS SUPA; do
 		for st in ready present absent; do echo "cores.$t.$st"; done
 	done
 	for st in ready dual present absent; do echo "cores.GB.$st"; done

@@ -20,7 +20,7 @@
 # are never touched, and `down` (or a reboot) restores everything.
 #
 # Why the copy has to include the pak's other files: the mount replaces the
-# whole directory, and paks like FBN and SUPA bundle their core and locate it
+# whole directory, and SUPA bundles its core and locates it
 # with CORES_PATH=$(dirname "$0"). Under the mount that resolves into our staged
 # directory, so the core has to be there. Paks that use the system cores dir
 # stage as just a couple of shell scripts.
@@ -144,7 +144,21 @@ do_status() {
 	done
 }
 
+# FBNeo was supported by older releases. A live bind mount survives a pak
+# update, so retire that old wrapper on the next activation.
+retire_fbneo() {
+	_retired="$SD_EMUS/FBN.pak"
+	if mount_is_ours "$_retired"; then
+		umount "$_retired" || { log "could not unmount retired FBN wrapper"; return 1; }
+		log "retired FBN wrapper"
+	fi
+	if ! mount_is_mounted "$_retired"; then
+		rm -rf "$STAGE/FBN.pak"
+	fi
+}
+
 do_activate() {
+	retire_fbneo || return 1
 	for _pak in "$SD_EMUS"/*.pak; do
 		[ -d "$_pak" ] || continue
 		if mount_is_ours "$_pak"; then

@@ -1352,7 +1352,7 @@ static const char* dual_core_option(const char* key) {
  * persistent worker thread, and linked the two copies with Gambatte's own
  * GameLink over loopback TCP. It established and sustained sessions correctly,
  * but the clock-owning console's synchronous SerialIO::send() held an A30/Brick
- * pair to 22-23fps whichever device owned the clock (docs/multi-instance.md).
+ * pair to 22-23fps whichever device owned the clock (docs/gbs/multi-instance.md).
  *
  * The paired core replaced it: gambatte_dual_libretro.so holds both consoles
  * and an in-memory serial coordinator, and one retro_run advances the pair.

@@ -4,7 +4,7 @@
  * Replaces hand-edited config files: pick host or join, discover the other
  * device, arm. Session setup lives here rather than in the shim because
  * minarch's GFX_/PAD_ are compiled into the executable and unreachable from a
- * loaded core (see docs/shim-architecture.md).
+ * loaded core (see docs/analysis/shim-architecture.md).
  */
 
 #include <signal.h>
@@ -453,7 +453,6 @@ static const CoreDef BASE_CORES[] = {
 static const CoreDef EXTRA_CORES[] = {
 	{ "32X",    NULL, NULL, "picodrive",          CK_SHIM },
 	{ "DSP",    NULL, NULL, "dsperate",           CK_DSP },
-	{ "FBN",    NULL, NULL, "fbneo",              CK_SHIM },
 	{ "FDS",    NULL, NULL, "fceumm",             CK_SHIM },
 	{ "GG",     NULL, NULL, "picodrive",          CK_SHIM },
 	{ "MGBA",   NULL, NULL, "mgba",               CK_MGBA },
@@ -471,7 +470,7 @@ static const char* core_name(const char* core) {
 		{ "fceumm", "FCEUmm" }, { "gambatte", "Gambatte" }, { "gpsp", "gpSP" },
 		{ "picodrive", "PicoDrive" }, { "pcsx_rearmed", "PCSX ReARMed" },
 		{ "snes9x", "Snes9x" }, { "snes9x2005", "Snes9x 2005" },
-		{ "mednafen_supafaust", "Supafaust" }, { "fbneo", "FinalBurn Neo" },
+		{ "mednafen_supafaust", "Supafaust" },
 		{ "mgba", "mGBA" }, { "dsperate", "DSperate" }, { "drastic", "DraStic" },
 	};
 	for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)

@@ -141,16 +141,13 @@ do_up() {
 			continue
 		fi
 
-		if ! mount_staged_ok "$_dst"; then
-			log "$_tag not staged - run 'sync' first"
-			_fail=$((_fail + 1))
-			continue
-		fi
-		if mount_needs_resync "$_pak"; then
-			log "$_tag changed on disk - restaging"
-			rm -rf "$_dst"
-			do_sync >/dev/null 2>&1
-			mount_staged_ok "$_dst" || { log "$_tag restage failed - skipping"; _fail=$((_fail + 1)); continue; }
+		if ! mount_staged_ok "$_dst" || mount_needs_resync "$_pak"; then
+			log "$_tag missing or changed on disk - restaging"
+			if ! mount_stage_pak "$_pak" || ! mount_staged_ok "$_dst"; then
+				log "$_tag restage failed - skipping"
+				_fail=$((_fail + 1))
+				continue
+			fi
 		fi
 
 		if mount --bind "$_dst" "$_pak" 2>/dev/null; then

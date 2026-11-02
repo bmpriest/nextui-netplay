@@ -29,7 +29,7 @@ MARKER="Installed by Netplay.pak"
 
 # Cores the netplay shim knows how to drive. Systems whose pak uses anything
 # else are left alone.
-NETPLAY_CORES="fbneo fceumm snes9x snes9x2005 mednafen_supafaust picodrive pcsx_rearmed gpsp gambatte"
+NETPLAY_CORES="fceumm snes9x snes9x2005 mednafen_supafaust picodrive pcsx_rearmed gpsp gambatte"
 
 log() { echo "[netplay-stubs] $*"; }
 

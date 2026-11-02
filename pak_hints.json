@@ -58,11 +58,6 @@
       "absent": "Press A to install DSP.pak (DSperate).",
       "unavailable": "DSperate is not built for this device."
     },
-    "FBN": {
-      "ready": "Shared screen, untested.",
-      "present": "This FBN.pak uses a core Netplay does not drive.",
-      "absent": "Not installed. Add it from NextUI's extras."
-    },
     "FDS": {
       "ready": "Shared screen, untested.",
       "present": "This FDS.pak uses a core Netplay does not drive.",

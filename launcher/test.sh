@@ -168,19 +168,24 @@ minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$1"
 EOF
 chmod 755 "$SYSTEM_PATH/paks/Emus/MD.pak/launch.sh"
 
-# An EXTRAS pak already sitting on the SD path - must be left alone. Bundles
-# its own core and locates it via CORES_PATH=$(dirname "$0"), like FBN/SUPA.
-mkdir -p "$ROOT/Emus/$PLATFORM/FBN.pak"
-cat > "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh" <<'EOF'
+# A supported EXTRAS pak already sitting on the SD path bundles its own core
+# and locates it via CORES_PATH=$(dirname "$0").
+mkdir -p "$ROOT/Emus/$PLATFORM/SUPA.pak"
+cat > "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh" <<'EOF'
 #!/bin/sh
-EMU_EXE=fbneo
+EMU_EXE=mednafen_supafaust
 CORES_PATH=$(dirname "$0")
 EMU_TAG=$(basename "$(dirname "$0")" .pak)
 echo "tag=$EMU_TAG"
 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$1"
 EOF
-chmod 755 "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh"
-echo "fake fbneo core" > "$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so"
+chmod 755 "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh"
+echo "fake Supafaust core" > "$ROOT/Emus/$PLATFORM/SUPA.pak/mednafen_supafaust_libretro.so"
+SUPA_BEFORE=$(cat "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh")
+
+# FBNeo may remain installed for ordinary play, but Netplay must not cover it.
+mkdir -p "$ROOT/Emus/$PLATFORM/FBN.pak"
+printf '#!/bin/sh\nEMU_EXE=fbneo\n' > "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh"
 FBN_BEFORE=$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")
 
 export CORES_PATH="$SYSTEM_PATH/cores"
@@ -212,8 +217,9 @@ echo "== install"
 [ -f "$ROOT/Emus/$PLATFORM/VB.pak/launch.sh" ]  && bad "VB should be skipped (unsupported core)" || ok "VB skipped"
 [ -f "$ROOT/Emus/$PLATFORM/GBA282.pak/launch.sh" ] && ok "my282 case-statement pak detected" \
 	|| bad "my282 case-statement pak missed (anchored EMU_EXE match?)"
-check "EXTRAS pak untouched" "$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")" "$FBN_BEFORE"
-grep -q "skip FBN (fbneo)" "$ROOT/install.log" && ok "EXTRAS pak reported as uncovered" || bad "no report for FBN"
+check "EXTRAS pak untouched" "$(cat "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh")" "$SUPA_BEFORE"
+check "FBNeo pak untouched" "$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")" "$FBN_BEFORE"
+grep -q "skip SUPA (mednafen_supafaust)" "$ROOT/install.log" && ok "EXTRAS pak reported as uncovered" || bad "no report for SUPA"
 cmp -s "$ROOT/Emus/$PLATFORM/GBA.pak/default.cfg" "$SYSTEM_PATH/paks/Emus/GBA.pak/default.cfg" \
 	&& cmp -s "$ROOT/Emus/$PLATFORM/GBA.pak/default-brick.cfg" "$SYSTEM_PATH/paks/Emus/GBA.pak/default-brick.cfg" \
 	&& ok "stub carries the pak's default configs" || bad "stub lost default.cfg - minarch would run core defaults"
@@ -399,7 +405,8 @@ echo
 echo "== uninstall"
 "$NP/launcher/install-stubs.sh" uninstall > /dev/null 2>&1
 [ -e "$ROOT/Emus/$PLATFORM/GBA.pak" ] && bad "GBA stub dir left behind" || ok "GBA stub removed"
-check "EXTRAS pak still untouched" "$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")" "$FBN_BEFORE"
+check "EXTRAS pak still untouched" "$(cat "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh")" "$SUPA_BEFORE"
+check "FBNeo pak still untouched" "$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")" "$FBN_BEFORE"
 
 echo
 echo "== uninstall leaves a pak that became someone else's alone"
@@ -415,45 +422,54 @@ echo
 echo "== wrap-pak: stage an EXTRAS pak without touching it"
 cp "$HERE/wrap-pak.sh" "$NP/launcher/" && chmod 755 "$NP/launcher/wrap-pak.sh"
 "$NP/launcher/wrap-pak.sh" sync > "$ROOT/sync.log" 2>&1 || bad "sync exited non-zero"
-check "original still untouched" "$(cat "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh")" "$FBN_BEFORE"
-check "launch.sh.old is the original, verbatim" "$(cat "$NP/wrapped/FBN.pak/launch.sh.old")" "$FBN_BEFORE"
-grep -q "Installed by Netplay.pak" "$NP/wrapped/FBN.pak/launch.sh" && ok "staged launch.sh is ours" || bad "staged launch.sh not marked"
-[ -f "$NP/wrapped/FBN.pak/fbneo_libretro.so" ] && ok "bundled core copied into staging" || bad "bundled core missing from staging"
+check "original still untouched" "$(cat "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh")" "$SUPA_BEFORE"
+check "launch.sh.old is the original, verbatim" "$(cat "$NP/wrapped/SUPA.pak/launch.sh.old")" "$SUPA_BEFORE"
+grep -q "Installed by Netplay.pak" "$NP/wrapped/SUPA.pak/launch.sh" && ok "staged launch.sh is ours" || bad "staged launch.sh not marked"
+[ -f "$NP/wrapped/SUPA.pak/mednafen_supafaust_libretro.so" ] && ok "bundled core copied into staging" || bad "bundled core missing from staging"
+[ ! -e "$NP/wrapped/FBN.pak" ] && ok "FBNeo excluded from wrapping" || bad "FBNeo was wrapped"
+mkdir -p "$NP/wrapped/FBN.pak"
+echo old-wrapper > "$NP/wrapped/FBN.pak/launch.sh"
 
 echo
 echo "== wrap-pak: up restages a pak that changed on disk"
-# A core update made the staged copy stale; up used to skip it, report no
-# mounts, and send the whole session to launch stubs.
+# Use a same-size edit and restore the original timestamp: the directory
+# listing alone cannot see this kind of core replacement.
 mkdir -p "$ROOT/fake-mount-bin"
 printf '#!/bin/sh\necho "$@" >> "%s/mount.log"\n' "$ROOT" > "$ROOT/fake-mount-bin/mount"
 chmod 755 "$ROOT/fake-mount-bin/mount"
 : > "$ROOT/mountinfo.empty"
-echo "updated fbneo core" > "$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so"
+SUPA_CORE="$ROOT/Emus/$PLATFORM/SUPA.pak/mednafen_supafaust_libretro.so"
+cp -p "$SUPA_CORE" "$ROOT/supa-core-before"
+echo "fake Supafaust c0re" > "$SUPA_CORE"
+touch -r "$ROOT/supa-core-before" "$SUPA_CORE"
+NETPLAY_MOUNTINFO_FILE="$ROOT/mountinfo.empty" "$NP/launcher/wrap-pak.sh" status \
+	| grep -q 'stale   SUPA' && ok "same-size core change detected" || bad "core change missed"
 rc=0
 PATH="$ROOT/fake-mount-bin:$PATH" NETPLAY_MOUNTINFO_FILE="$ROOT/mountinfo.empty" \
 	"$NP/launcher/wrap-pak.sh" up > "$ROOT/wrapup.log" 2>&1 || rc=$?
 check "up succeeds" "$rc" "0"
-check "staged copy carries the update" "$(cat "$NP/wrapped/FBN.pak/fbneo_libretro.so")" "updated fbneo core"
+check "staged copy carries the update" "$(cat "$NP/wrapped/SUPA.pak/mednafen_supafaust_libretro.so")" "fake Supafaust c0re"
 check "the restaged copy is mounted" "$(cat "$ROOT/mount.log")" \
-	"--bind $NP/wrapped/FBN.pak $ROOT/Emus/$PLATFORM/FBN.pak"
-echo "fake fbneo core" > "$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so"
+	"--bind $NP/wrapped/SUPA.pak $ROOT/Emus/$PLATFORM/SUPA.pak"
+[ ! -e "$NP/wrapped/FBN.pak" ] && ok "retired FBNeo staging removed" || bad "old FBNeo staging remained"
+echo "fake Supafaust core" > "$SUPA_CORE"
 
 echo
 echo "== wrap-pak: what the bind mount would present"
 # cp -a of the staged dir over the original path presents exactly the contents
 # the bind mount does, so $0-derived EMU_TAG and CORES_PATH resolve identically.
-rm -rf "$ROOT/Emus/$PLATFORM/FBN.pak"
-cp -a "$NP/wrapped/FBN.pak" "$ROOT/Emus/$PLATFORM/FBN.pak"
+rm -rf "$ROOT/Emus/$PLATFORM/SUPA.pak"
+cp -a "$NP/wrapped/SUPA.pak" "$ROOT/Emus/$PLATFORM/SUPA.pak"
 
-OUT=$("$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh" /roms/game.zip 2>&1)
-echo "$OUT" | grep -qx "tag=FBN" && ok "EMU_TAG still resolves to FBN" || bad "EMU_TAG wrong: $OUT"
-echo "$OUT" | grep -q "core=$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so" \
+OUT=$("$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh" /roms/game.sfc 2>&1)
+echo "$OUT" | grep -qx "tag=SUPA" && ok "EMU_TAG still resolves to SUPA" || bad "EMU_TAG wrong: $OUT"
+echo "$OUT" | grep -q "core=$ROOT/Emus/$PLATFORM/SUPA.pak/mednafen_supafaust_libretro.so" \
 	&& ok "CORES_PATH finds the bundled core" || bad "CORES_PATH wrong: $OUT"
 
-OUT=$(NETPLAY_SESSION=/tmp/session "$ROOT/Emus/$PLATFORM/FBN.pak/launch.sh" /roms/game.zip 2>&1)
-echo "$OUT" | grep -q "core=$NP/cores/fbneo_libretro.so" \
+OUT=$(NETPLAY_SESSION=/tmp/session "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh" /roms/game.sfc 2>&1)
+echo "$OUT" | grep -q "core=$NP/cores/mednafen_supafaust_libretro.so" \
 	&& ok "wrapped pak routes through the shim" || bad "no shim routing: $OUT"
-echo "$OUT" | grep -q "real=$ROOT/Emus/$PLATFORM/FBN.pak/fbneo_libretro.so" \
+echo "$OUT" | grep -q "real=$ROOT/Emus/$PLATFORM/SUPA.pak/mednafen_supafaust_libretro.so" \
 	&& ok "real core passed to the shim" || bad "wrong real core: $OUT"
 
 echo
@@ -532,6 +548,20 @@ MARKER="Installed by Netplay.pak"
 . "$NP/launcher/mount-common.sh"
 mount_is_ours "$OWN_TARGET" && ok "recognises Netplay-owned mount" || bad "owned mount not recognised"
 mount_is_ours "$FOREIGN_TARGET" && bad "foreign mount claimed as ours" || ok "foreign mount left unowned"
+
+# A stale GBA pak must be refreshed even though GB is already mounted. The old
+# path called do_sync, which refused to work while GB was mounted.
+printf '30 1 179:33 / %s rw - exfat /dev/mmcblk1p1 rw\n' "$ROOT" > "$MOUNTINFO_FIXTURE"
+printf '31 30 179:33 %s %s rw - exfat /dev/mmcblk1p1 rw\n' \
+	"${OWN_SOURCE#$ROOT}" "$OWN_TARGET" >> "$MOUNTINFO_FIXTURE"
+: > "$ROOT/mount.log"
+rc=0
+PATH="$ROOT/fake-mount-bin:$PATH" NETPLAY_MOUNTINFO_FILE="$MOUNTINFO_FIXTURE" \
+	"$NP/launcher/bind-mount.sh" up > "$ROOT/re-up.log" 2>&1 || rc=$?
+check "mixed mount activation succeeds" "$rc" "0"
+grep -q 'echo updated' "$NP/mounts/GBA.pak/launch.sh.old" \
+	&& ok "stale system pak restaged beside a mounted pak" || bad "GBA was not restaged"
+"$NP/launcher/bind-mount.sh" hook-remove > /dev/null 2>&1
 unset NETPLAY_MOUNTINFO_FILE
 
 echo

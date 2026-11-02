@@ -111,7 +111,7 @@ The patch builds `layout.cpp` outside LTO on GCC 8 only. Placement runs only whe
 | `0101-lan-join-retry` | upstreamable | Non-blocking `--lan-join` that keeps a guest trying until its host's emulator answers ("WAITING FOR HOST") |
 | `0102-input-open-every-controller` | upstreamable | Every mappable pad is opened, not just the first; `pad.face_fix` is per pad |
 | `0103-lan-configurable-timeout` | upstreamable | `net.lan_timeout_ms` / `DS_LAN_TIMEOUT_MS` (default 25 ms, as upstream) and MP wait statistics under `DS_VERBOSE` |
-| `0104-wifi-late-transport-begin` | upstreamable bug fix | A transport attached while the radio is on says `begin()`: the Mario Kart "Communication error" (`../docs/dsperate.md`) |
+| `0104-wifi-late-transport-begin` | upstreamable bug fix | A transport attached while the radio is on says `begin()`: the Mario Kart "Communication error" (`../docs/nintendo-ds/dsperate.md`) |
 | `0105-gameswitcher-network-session` | Netplay behaviour | Upstream refuses MENU + SELECT during a network session; here it still leaves for the game switcher, with the battery save and no state |
 | `0106-pad-map-virtual` | Netplay testing | `add_pad_mapping` also maps DevBridge's virtual pad: the built-in body on TrimUI (same ids but the name CRC), `MINUI_PAD_MAP_VIRTUAL` for a second `ANBERNIC-keys` on h700 |
 | `0107-io-vcount-writes` | upstreamable bug fix | VCOUNT writes were dropped. Wireless games use them to line the client's frames up with the host's; without them each session kept a random frame phase, and in most the host's MP command beat the guest's AID setup, so every frame paid two or three exchanges (Mario Kart DS on two Bricks: 40-58 fps by session, 52-54 with this) |

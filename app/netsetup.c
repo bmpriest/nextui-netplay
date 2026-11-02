@@ -665,7 +665,7 @@ bool NS_coreInstalled(const char* core) {
 
 /* Cores the shim drives, as install-stubs.sh's NETPLAY_CORES lists them. */
 static const char* const SHIM_CORES[] = {
-	"fbneo", "fceumm", "snes9x", "snes9x2005", "mednafen_supafaust",
+	"fceumm", "snes9x", "snes9x2005", "mednafen_supafaust",
 	"picodrive", "pcsx_rearmed", "gpsp", "gambatte",
 };
 
