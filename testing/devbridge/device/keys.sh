@@ -34,13 +34,14 @@ if [ "$1" = --bg ]; then
 fi
 
 # A menu in front means the game is gone (crashed or quit): pressing on would
-# walk the device through NextUI or toggle DevBridge's own settings.
+# walk the device through NextUI or toggle DevBridge's own settings. On spruce
+# both spruce's menu and DevBridge's are PyUI (mainui.py).
 in_menu() {
 	# Brackets keep grep from finding its own command line.
-	grep -qs -e 'nextui[.]elf' -e 'DevBridge[.]pak/launch[.]sh' /proc/[0-9]*/cmdline
+	grep -qs -e 'nextui[.]elf' -e 'DevBridge[.]pak/launch[.]sh' -e 'mainui[.]py' /proc/[0-9]*/cmdline
 }
 
-IN=$(ls /mnt/SDCARD/Tools/*/DevBridge.pak/bin/input 2>/dev/null | head -1)
+IN=$(ls /mnt/SDCARD/Tools/*/DevBridge.pak/bin/input /mnt/SDCARD/App/DevBridge/bin/input 2>/dev/null | head -1)
 [ -x "$IN" ] || { echo "keys.sh: DevBridge input helper not found" >&2; exit 1; }
 
 for step in "$@"; do
@@ -49,6 +50,14 @@ for step in "$@"; do
 	sleep:*) sleep "${step#sleep:}"; continue ;;
 	esac
 	buttons=${step%%:*}; rest=${step#*:}; hold=${rest%%:*}; gap=${rest#*:}
+	# One button: tap holds and releases inside one call. On spruce each call
+	# is a shell plus sendevent, and a separate release lands late enough to
+	# turn a 0.3 s hold into a menu auto-repeat.
+	case $buttons in *+*) ;; *)
+		"$IN" tap "$buttons" "$(awk -v s="$hold" 'BEGIN { printf "%d", s * 1000 }')" >/dev/null || exit 1
+		sleep "$gap"
+		continue ;;
+	esac
 	for b in $(echo "$buttons" | tr + ' '); do "$IN" press "$b" >/dev/null || exit 1; done
 	sleep "$hold"
 	for b in $(echo "$buttons" | tr + ' '); do "$IN" release "$b" >/dev/null; done

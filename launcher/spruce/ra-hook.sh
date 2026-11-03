@@ -12,7 +12,9 @@
 
 . /mnt/SDCARD/App/Netplay/launcher/firmware.sh
 NP="$NETPLAY_PAK"
-RA_DIR="$SDCARD_PATH/RetroArch"
+# Physical path: mountinfo records it, and on some devices /mnt/SDCARD is a
+# symlink to the real mount (/mnt/sdcard on the RG35XXH).
+RA_DIR="$(cd -P "$SDCARD_PATH/RetroArch" 2>/dev/null && pwd)" || RA_DIR="$SDCARD_PATH/RetroArch"
 STASH=/tmp/netplay/ra
 SHADOW="$NP/launcher/retroarch.sh"
 BINS="ra64.universal ra64.h700"

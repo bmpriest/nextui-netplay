@@ -16,7 +16,7 @@ MARK=/tmp/netplay-devbridge/started
 
 fail() { echo "FAIL: $*"; exit 1; }
 
-log=$(ls -t $(find /mnt/SDCARD/.userdata/*/logs/netplay-games -name '*.log' -newer "$MARK" 2>/dev/null) 2>/dev/null |
+log=$(ls -t $(find /mnt/SDCARD/.userdata/*/logs/netplay-games /mnt/SDCARD/Saves/netplay/logs/netplay-games -name '*.log' -newer "$MARK" 2>/dev/null) 2>/dev/null |
 	grep -F "$ROM" | head -1)
 [ -n "$log" ] || fail "no netplay log for $ROM since this test started"
 echo "log: $log"

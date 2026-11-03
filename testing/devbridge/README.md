@@ -39,8 +39,18 @@ up as frames held waiting for the peer.
 
     testing/devbridge/run.sh HOST_ADDR GUEST_ADDR testing/devbridge/*.test
 
-Options: `--port N` (both devices), `--identity KEY`, `--keep-going`,
-`--record`. Sessions, screenshots and closest-miss captures go to
+Options: `--port N` (both devices), `--identity KEY`, `--user USER`,
+`--keep-going`, `--record`.
+
+On spruce (App/Netplay), log in as spruce with its password:
+
+    DEVBRIDGE_PASSWORD=... testing/devbridge/run.sh --user spruce HOST GUEST testing/devbridge/sor2.test
+
+run.sh maps the tests' NextUI ROM folders to spruce's (`Sega Genesis (MD)/` to
+`MD/`) and keeps spruce references in `refs/spruce-<platform>`; `quit.sh`
+quits spruce's RetroArch. sor2, rcr and contra3 pass Brick to RG35XXH. The
+paired-core tests (tetris, mkart) need instanced cores the spruce build does
+not offer yet, and ctr needs CTR on both cards. Sessions, screenshots and closest-miss captures go to
 `testing/results/devbridge/`.
 
 On an ad hoc network the guest is not on your LAN. Tunnel through the host,

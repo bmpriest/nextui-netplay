@@ -2288,7 +2288,12 @@ void NS_endSession(void) {
 /* Covered by either route: mounts (preferred) or legacy stubs. */
 bool NS_stubsInstalled(void) {
 #ifdef NETPLAY_SPRUCE
-	return system("grep -q ' /mnt/SDCARD/RetroArch/ra64' /proc/self/mountinfo") == 0;
+	{
+		char cmd[600];
+		snprintf(cmd, sizeof(cmd),
+		         "sh '%s/launcher/ra-hook.sh' status 2>/dev/null | grep -q '^covered'", ns_pak);
+		return system(cmd) == 0;
+	}
 #endif
 	char p[512];
 	snprintf(p, sizeof(p), "%s/mounts.list", ns_state);
