@@ -130,6 +130,15 @@ bool NS_validAdhocPsk(const char* psk) {
 	return psk && alnum_run(psk, 8, NS_PSK_LEN - 1);
 }
 
+/* The network this device is on, from the platform helper. */
+bool NS_wifiSSID(char* out, int len) {
+	if (!out || len <= 0) return false;
+	out[0] = '\0';
+	wifi_plat_out(out, len, "assoc-ssid");
+	out[strcspn(out, "\r\n")] = '\0';
+	return out[0] != '\0';
+}
+
 /* Associated to this SSID, or to anything when ssid is NULL. */
 static bool wifi_associated(const char* ssid) {
 	if (ssid && ssid[0]) return wifi_plat("assoc '%s'", ssid) == 0;
@@ -149,6 +158,12 @@ void NS_init(void) {
 
 	snprintf(ns_pak, sizeof(ns_pak), "%s/Tools/%s/Netplay.pak", ns_sd, ns_platform);
 	snprintf(ns_state, sizeof(ns_state), "%s/.userdata/shared/Netplay", ns_sd);
+	/* Where another firmware keeps the app and its state (spruce: App/Netplay,
+	 * Saves/netplay); its launcher says so. */
+	const char* pak = getenv("NETPLAY_PAK");
+	if (pak && pak[0]) snprintf(ns_pak, sizeof(ns_pak), "%s", pak);
+	const char* state = getenv("NETPLAY_STATE");
+	if (state && state[0]) snprintf(ns_state, sizeof(ns_state), "%s", state);
 
 	/* Updates replace the pak directory, so no user preference or recovery
 	 * record may live underneath it. Migrate files from the historical location
@@ -451,6 +466,9 @@ static void settings_path(char* out, int len) {
 /* The status icon watcher follows the setting and the session file on its own
  * once running; this starts it, or stops it and hides the icon, right away. */
 void NS_statusIconSync(void) {
+#ifdef NETPLAY_SPRUCE
+	return;     /* the icon is Varnish's, and Varnish is NextUI's */
+#endif
 	char cmd[1200];
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -461,6 +479,9 @@ void NS_statusIconSync(void) {
 
 /* The quick menu runs for as long as the setting is on, armed or not. */
 void NS_quickMenuSync(void) {
+#ifdef NETPLAY_SPRUCE
+	return;
+#endif
 	char cmd[1200];
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -470,6 +491,9 @@ void NS_quickMenuSync(void) {
 }
 
 bool NS_varnishInstalled(void) {
+#ifdef NETPLAY_SPRUCE
+	return false;
+#endif
 	char path[512];
 	snprintf(path, sizeof(path), "%s/Tools/%s/Varnish.pak/varnish", ns_sd, ns_platform);
 	return access(path, X_OK) == 0;
@@ -482,6 +506,9 @@ bool NS_varnishBundled(void) {
 }
 
 NS_VarnishState NS_varnishStatus(void) {
+#ifdef NETPLAY_SPRUCE
+	return NS_VARNISH_UNAVAILABLE;
+#endif
 	char cmd[1024], line[32] = "";
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -623,6 +650,9 @@ void NS_settingsSave(void) {
 	fclose(f);
 	if (rename(tmp, path) != 0) remove(tmp);
 
+#ifdef NETPLAY_SPRUCE
+	return;     /* Game Switcher, the icon and the quick menu are NextUI's */
+#endif
 	/* The redirect and recents view are derived state. Keep them synchronized
 	 * immediately so toggling the option never requires a reboot or re-arm. */
 	char cmd[1200];
@@ -634,6 +664,16 @@ void NS_settingsSave(void) {
 	system(cmd);
 	NS_statusIconSync();
 	NS_quickMenuSync();
+}
+
+/* The firmware's own copy of a core: NextUI's system cores, or the 64-bit
+ * RetroArch cores every 64-bit spruce device shares. */
+static void system_core_path(const char* core, char* out, int len) {
+#ifdef NETPLAY_SPRUCE
+	snprintf(out, len, "%s/RetroArch/.retroarch/cores64/%s_libretro.so", ns_sd, core);
+#else
+	snprintf(out, len, "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
+#endif
 }
 
 /* Three places a core can legitimately live: the platform's own directory, the
@@ -650,7 +690,7 @@ bool NS_coreInstalled(const char* core) {
 		return file_exists(p);
 	}
 
-	snprintf(p, sizeof(p), "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
+	system_core_path(core, p, sizeof(p));
 	if (file_exists(p)) return true;
 
 	snprintf(p, sizeof(p), "%s/cores/compatibility/%s/%s_libretro.so",
@@ -700,6 +740,23 @@ static bool system_launcher(const char* tag, char* out, int len) {
 NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len) {
 	char path[700], line[256], first[32] = "";
 	if (core && core_len) core[0] = '\0';
+#ifdef NETPLAY_SPRUCE
+	/* spruce keeps the choice in Emu/<TAG>/config.json, per device; its own
+	 * resolver answers, through launcher/systems.sh. */
+	(void)path;
+	char cmd[700];
+	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/systems.sh' core '%s' 2>/dev/null", ns_pak, tag);
+	FILE* p = popen(cmd, "r");
+	if (!p) return NS_SYS_ABSENT;
+	if (!fgets(line, sizeof(line), p)) line[0] = '\0';
+	pclose(p);
+	line[strcspn(line, "\r\n")] = '\0';
+	if (!line[0]) return NS_SYS_ABSENT;
+	if (core && core_len) snprintf(core, core_len, "%s", line);
+	for (size_t i = 0; i < sizeof(SHIM_CORES) / sizeof(SHIM_CORES[0]); i++)
+		if (!strcmp(line, SHIM_CORES[i])) return NS_SYS_READY;
+	return NS_SYS_PRESENT;
+#endif
 	if (!system_launcher(tag, path, sizeof(path))) return NS_SYS_ABSENT;
 	FILE* f = fopen(path, "r");
 	if (!f) return NS_SYS_ABSENT;
@@ -897,7 +954,7 @@ static void probe_version(const char* path, char* out, int len) {
  * are deliberately excluded here; otherwise merely bundling one would make it
  * look like the device was already using it. */
 static bool installed_core_path(const char* core, char* out, int len) {
-	snprintf(out, len, "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
+	system_core_path(core, out, len);
 	if (file_exists(out)) return true;
 
 	/* EXTRAS paks bundle their own - mgba lives in MGBA.pak, not the cores dir. */
@@ -1484,6 +1541,20 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst) {
 	NS_CheckResult w = NS_CHECK_OK;
 	char path[512], line[512];
 
+#ifdef NETPLAY_SPRUCE
+	/* 1. spruce launches every game through its RetroArch binary, which the
+	 *    hook covers; with no binary there is nothing to cover. */
+	(void)line;
+	{
+		char ra[512], ra2[512];
+		snprintf(ra, sizeof(ra), "%s/RetroArch/ra64.universal", ns_sd);
+		snprintf(ra2, sizeof(ra2), "%s/RetroArch/ra64.h700", ns_sd);
+		bool ok = file_exists(ra) || file_exists(ra2);
+		add(out, &n, max, ok ? NS_CHECK_OK : NS_CHECK_FAIL, "RetroArch",
+		    ok ? "64-bit RetroArch found" : "no 64-bit RetroArch");
+		(void)path;
+	}
+#else
 	/* 1. Emu paks must invoke minarch.elf unqualified, or our PATH shim is
 	 *    never consulted and netplay silently does nothing. */
 	int checked = 0, unqualified = 0;
@@ -1560,6 +1631,8 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst) {
 		         : (ok ? "naming ok (no existing GBA states)" : "naming rule changed"));
 		add(out, &n, max, ok ? NS_CHECK_OK : NS_CHECK_FAIL, "Save state paths", detail);
 	}
+
+#endif
 
 	/* 4. Our own pieces are present for this platform. */
 	{
@@ -2082,6 +2155,16 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		return false;
 	}
 
+#ifdef NETPLAY_SPRUCE
+	/* spruce starts every game through its RetroArch binary, so one shadow
+	 * mounted over that covers every system; see launcher/ra-hook.sh. */
+	snprintf(cmd, sizeof(cmd),
+	         "PLATFORM='%s' sh '%s/launcher/ra-hook.sh' up 1>&2", ns_platform, ns_pak);
+	if (system(cmd) != 0) {
+		snprintf(err, errlen, "could not hook RetroArch");
+		return false;
+	}
+#else
 	/* Bind mounts first, launch stubs only if that fails.
 	 *
 	 * The mount route writes nothing to the user's Emus tree - it stages a copy
@@ -2116,6 +2199,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 			return false;
 		}
 	}
+#endif
 
 	/* The launch stub does this again per game - power save comes back when the
 	 * interface reassociates - but doing it here means discovery and the
@@ -2138,6 +2222,9 @@ void NS_disarm(void) {
 	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
+#ifdef NETPLAY_SPRUCE
+	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/ra-hook.sh' down >/dev/null 2>&1", ns_pak);
+#else
 	/* Takes both routes down - mounts, the boot hook, and any legacy stubs -
 	 * so "off" means off regardless of how this device was covered. */
 	snprintf(cmd, sizeof(cmd),
@@ -2145,6 +2232,7 @@ void NS_disarm(void) {
 	         "USERDATA_PATH='%s/.userdata/%s' "
 	         "sh '%s/launcher/bind-mount.sh' down >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_sd, ns_platform, ns_sd, ns_platform, ns_pak);
+#endif
 	system(cmd);
 
 	snprintf(cmd, sizeof(cmd), "rm -f '%s/session' '%s/force-shim'",
@@ -2199,6 +2287,9 @@ void NS_endSession(void) {
 
 /* Covered by either route: mounts (preferred) or legacy stubs. */
 bool NS_stubsInstalled(void) {
+#ifdef NETPLAY_SPRUCE
+	return system("grep -q ' /mnt/SDCARD/RetroArch/ra64' /proc/self/mountinfo") == 0;
+#endif
 	char p[512];
 	snprintf(p, sizeof(p), "%s/mounts.list", ns_state);
 	if (file_exists(p)) return true;

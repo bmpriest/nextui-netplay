@@ -26,7 +26,7 @@ STATE="$ROOT/.userdata/shared/Netplay"
 VARNISH_DIR="$ROOT/Tools/$PLATFORM/Varnish.pak"
 export PLATFORM SDCARD_PATH NETPLAY_PAK="$NP"
 mkdir -p "$NP/launcher" "$NP/bin/$PLATFORM" "$STATE" "$VARNISH_DIR"
-cp "$HERE/../launcher/quick-menu.sh" "$HERE/../launcher/state-path.sh" "$NP/launcher/"
+cp "$HERE/../launcher/nextui/quick-menu.sh" "$HERE/../launcher/common/state-path.sh" "$NP/launcher/"
 SCRIPT="$NP/launcher/quick-menu.sh"
 
 printf '#!/bin/sh\nexit 0\n' > "$VARNISH_DIR/varnish"

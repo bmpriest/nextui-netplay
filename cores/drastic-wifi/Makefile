@@ -1,6 +1,6 @@
 CC ?= cc
 CFLAGS ?= -O2 -g
-override CFLAGS += -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -fPIC -Iinclude -I../shim
+override CFLAGS += -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -fPIC -Iinclude -I../../shim
 
 CXX ?= c++
 CXXFLAGS ?= -O2 -g
@@ -52,11 +52,11 @@ $(BUILD)/obj/hook_helpers.o: src/hook.c include/drastic_wifi_hook.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -fvisibility=hidden -DDWIFI_NO_RUNTIME -c $< -o $@
 
-$(DIAG_LIB): src/hook.c src/model.c src/adapter.c src/transport.c ../shim/netlink.c \
+$(DIAG_LIB): src/hook.c src/model.c src/adapter.c src/transport.c ../../shim/netlink.c \
 	include/drastic_wifi_hook.h include/drastic_wifi_model.h \
 	include/drastic_wifi_adapter.h include/drastic_wifi_transport.h | $(BUILD)
 	$(CC) $(CFLAGS) -shared src/hook.c src/model.c src/adapter.c \
-		src/transport.c ../shim/netlink.c -o $@
+		src/transport.c ../../shim/netlink.c -o $@
 
 $(HOOK_TEST): tests/test_hook.c src/hook.c include/drastic_wifi_hook.h | $(BUILD)
 	$(CC) $(CFLAGS) -DDWIFI_NO_RUNTIME tests/test_hook.c src/hook.c -o $@

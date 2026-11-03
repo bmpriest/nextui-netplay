@@ -6,8 +6,10 @@
 
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
+FLAT=$(mktemp -d)
+"$HERE/flatten.sh" nextui "$FLAT"
 ROOT=$(mktemp -d)
-trap 'rm -rf "$ROOT"' EXIT
+trap 'rm -rf "$ROOT" "$FLAT"' EXIT
 
 export SDCARD_PATH="$ROOT"
 export PLATFORM=tg5040
@@ -23,10 +25,10 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; 
 
 # --- fake SD card ---------------------------------------------------------
 mkdir -p "$USERDATA_PATH" "$STATE" "$SYSTEM_PATH/bin" "$SYSTEM_PATH/cores" "$NP/launcher" "$NP/bin/$PLATFORM"
-cp "$HERE/launch-stub.sh" "$HERE/install-stubs.sh" "$HERE/minarch.elf" "$HERE/wrap-pak.sh" \
-	   "$HERE/bind-mount.sh" "$HERE/mount-common.sh" "$HERE/pre-launch.sh" \
-	   "$HERE/adhoc-join.sh" "$HERE/session-cleanup.sh" "$HERE/wifi-platform.sh" \
-	   "$HERE/state-path.sh" "$HERE/gameswitcher.sh" "$HERE/gameswitcher-launch.sh" "$NP/launcher/"
+cp "$FLAT/launch-stub.sh" "$FLAT/install-stubs.sh" "$FLAT/minarch.elf" "$FLAT/wrap-pak.sh" \
+	   "$FLAT/bind-mount.sh" "$FLAT/mount-common.sh" "$FLAT/pre-launch.sh" \
+	   "$FLAT/adhoc-join.sh" "$FLAT/session-cleanup.sh" "$FLAT/wifi-platform.sh" \
+	   "$FLAT/state-path.sh" "$FLAT/gameswitcher.sh" "$FLAT/gameswitcher-launch.sh" "$FLAT/core-route.sh" "$NP/launcher/"
 chmod 755 "$NP/launcher"/*
 : > "$NP/bin/$PLATFORM/netplay_shim.so"
 
@@ -420,7 +422,7 @@ echo "#!/bin/sh
 
 echo
 echo "== wrap-pak: stage an EXTRAS pak without touching it"
-cp "$HERE/wrap-pak.sh" "$NP/launcher/" && chmod 755 "$NP/launcher/wrap-pak.sh"
+cp "$FLAT/wrap-pak.sh" "$NP/launcher/" && chmod 755 "$NP/launcher/wrap-pak.sh"
 "$NP/launcher/wrap-pak.sh" sync > "$ROOT/sync.log" 2>&1 || bad "sync exited non-zero"
 check "original still untouched" "$(cat "$ROOT/Emus/$PLATFORM/SUPA.pak/launch.sh")" "$SUPA_BEFORE"
 check "launch.sh.old is the original, verbatim" "$(cat "$NP/wrapped/SUPA.pak/launch.sh.old")" "$SUPA_BEFORE"

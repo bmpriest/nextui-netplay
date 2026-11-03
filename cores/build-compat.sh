@@ -43,6 +43,11 @@ build() {
 	dir_abs=$(cd "$dir" && pwd)
 	echo "== compatibility $arch: $name"
 	make -C "$dir" -f "$makefile" PWD="$dir_abs" platform="$platform_name" CC="$cc" CXX="$cxx" AR="$ar" clean >/dev/null 2>&1 || true
+	# Not every core's clean removes every object (picodrive keeps
+	# pico/sound/mix.o), and an object left from the other architecture
+	# breaks the link. Clear untracked build output, keeping the pin stamp.
+	git -C "$dir" clean -fdxq -e '.compat-pinned*'
+	git -C "$dir" submodule foreach -q --recursive git clean -fdxq
 	CFLAGS="$base_flags" CXXFLAGS="$base_flags" LDFLAGS="$base_ldflags" \
 		make -C "$dir" -f "$makefile" PWD="$dir_abs" platform="$platform_name" \
 		CC="$cc" CXX="$cxx" AR="$ar" -j"$jobs" "$@"

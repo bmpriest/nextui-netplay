@@ -1081,8 +1081,10 @@ static void ensure_loaded(void) {
 	}
 
 	const char* session = getenv(SHIM_ENV_SESSION);
+	// Configure only: the transport thread starts in retro_init. RetroArch
+	// opens a core once just to read its system info and then dlcloses it, and
+	// a worker thread started from that probe would outlive the code it runs.
 	session_active = (session && session[0] && NetLink_configure(session));
-	if (session_active) NetLink_start();
 	/* Four different reasons the running core is not the installed one, and the
 	 * player is owed the difference. "Compatibility" means the two devices'
 	 * builds disagreed and both fell back to a packaged one; the link cores are
@@ -2935,6 +2937,8 @@ void retro_set_input_state(retro_input_state_t cb) {
 
 void retro_init(void) {
 	ensure_loaded();
+	// Before the core's own init, so link-capable cores see a ready transport.
+	if (session_active) NetLink_start();
 	core.init();
 }
 

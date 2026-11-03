@@ -142,15 +142,19 @@ release is the only record. tg5040, tg5050 and h700 ship identical revisions
 | mgba | `0.11-1-7a12d6d` | same revision + lockstep drivers (MGBA.pak) and the paired frontend |
 | gambatte | `d9d6cd0` | the bmpriest fork `b3803b3`; upstream since its base is two translation commits |
 | gpsp | `5819380` | same revision + the RFU patches (`v1.1.0-netplay-5819380`) |
-| fceumm | `ac0d00a` | compatibility core `afe65ef` |
-| snes9x | `fae2fea` | compatibility fallback is Supafaust `d6187e5` |
-| mednafen_supafaust | `642d1d1` | compatibility core `d6187e5` |
-| pcsx_rearmed | `c881679` | compatibility core `050981b6` |
-| picodrive | `b0be121` | `b0be121` |
+| fceumm | `ac0d00a` | compatibility core `3544ff5` |
+| snes9x | `fae2fea` | compatibility fallback is Supafaust `e25f667` |
+| mednafen_supafaust | `642d1d1` | compatibility core `e25f667` |
+| pcsx_rearmed | `c881679` | compatibility core `febf224` |
+| picodrive | `b0be121` | compatibility core `7102a71` (2.04) |
 
-The compatibility cores stay on their own pins: they are the common build both
-devices fall back to, on ARMv7 and AArch64 alike, and need not match anyone's
-installed core.
+The compatibility cores we do not patch are pinned to the revisions spruce ships
+(prebuilt in the spruceOS repo since 2025-05-31; spruce updates them only on
+request). They are still the common build both devices fall back to, on ARMv7
+and AArch64 alike. On AArch64, Netplay's builds of fceumm, picodrive and
+Supafaust at those revisions play and serialize identically to spruce's own
+binaries (corecmp, 2026-11-03). gambatte, gpsp and mgba keep Netplay's own
+patched builds.
 
 ### What "floats" means, and why it matters here
 

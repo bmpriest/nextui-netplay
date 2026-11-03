@@ -450,17 +450,25 @@ static const CoreDef BASE_CORES[] = {
 	{ "PS",  NULL,  NULL,     "pcsx_rearmed", CK_SHIM },
 	{ "SFC", NULL,  NULL,     "snes9x",       CK_SHIM },
 };
+/* The paks Netplay installs (DSP, MGBA, NDS) and SUPA are NextUI Extras paks;
+ * spruce has none of them. */
 static const CoreDef EXTRA_CORES[] = {
 	{ "32X",    NULL, NULL, "picodrive",          CK_SHIM },
+#ifndef NETPLAY_SPRUCE
 	{ "DSP",    NULL, NULL, "dsperate",           CK_DSP },
+#endif
 	{ "FDS",    NULL, NULL, "fceumm",             CK_SHIM },
 	{ "GG",     NULL, NULL, "picodrive",          CK_SHIM },
+#ifndef NETPLAY_SPRUCE
 	{ "MGBA",   NULL, NULL, "mgba",               CK_MGBA },
 	{ "NDS",    NULL, NULL, "drastic",            CK_NDS },
+#endif
 	{ "SEGACD", NULL, NULL, "picodrive",          CK_SHIM },
 	{ "SG1000", NULL, NULL, "picodrive",          CK_SHIM },
 	{ "SMS",    NULL, NULL, "picodrive",          CK_SHIM },
+#ifndef NETPLAY_SPRUCE
 	{ "SUPA",   NULL, NULL, "mednafen_supafaust", CK_SHIM },
+#endif
 };
 #define BASE_COUNT  (int)(sizeof(BASE_CORES) / sizeof(BASE_CORES[0]))
 #define EXTRA_COUNT (int)(sizeof(EXTRA_CORES) / sizeof(EXTRA_CORES[0]))
@@ -673,8 +681,11 @@ static void build_settings_rows(void) {
 	bool varnish = NS_varnishInstalled();
 	const char* need = NS_varnishBundled() ? "needs_varnish" : "unavailable";
 	row_count = 0;
+	Row* r;
 
-	Row* r = add_row(ROW_VALUE, SET_QUICK_MENU, "Quick Menu",
+#ifndef NETPLAY_SPRUCE
+	/* Varnish draws both, and Game Switcher is NextUI's own. */
+	r = add_row(ROW_VALUE, SET_QUICK_MENU, "Quick Menu",
 	                 HINT_getf("settings.quick_menu.%s",
 	                           c->quick_menu ? (c->quick_keys[0] ? "custom" : "on")
 	                           : varnish ? "off" : need));
@@ -688,14 +699,19 @@ static void build_settings_rows(void) {
 	            HINT_getf("settings.icon.%s",
 	                      c->status_icon == NS_ICON_OFF && !varnish ? need : ICON_HINT[c->status_icon]));
 	snprintf(r->value, sizeof(r->value), "%s", ICON_NAMES[c->status_icon]);
+#else
+	(void)varnish; (void)need;
+#endif
 
 	r = add_row(ROW_VALUE, SET_COMPAT, "Use compatibility cores",
 	            HINT_getf("settings.compat.%s", c->compatibility_cores ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->compatibility_cores));
 
+#ifndef NETPLAY_SPRUCE
 	r = add_row(ROW_VALUE, SET_GAMESWITCHER, "Add Netplay to GameSwitcher",
 	            HINT_getf("settings.gameswitcher.%s", c->add_gameswitcher ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->add_gameswitcher));
+#endif
 
 	r = add_row(ROW_VALUE, SET_POWERSAVE, "Disable Wi-Fi Power Saving",
 	            HINT_getf("settings.powersave.%s", c->disable_powersave ? "on" : "off"));
@@ -921,7 +937,13 @@ static void wifi_poll(bool force) {
 
 	struct WIFI_connection c;
 	memset(&c, 0, sizeof(c));
+#ifdef NETPLAY_SPRUCE
+	/* NextUI's reader asks a supplicant socket path spruce does not use. */
+	c.valid = NS_wifiSSID(c.ssid, sizeof(c.ssid));
+	if (c.valid) NS_localIP(c.ip, sizeof(c.ip));
+#else
 	PLAT_wifiConnection(&c);
+#endif
 
 	wifi_up = c.valid && c.ssid[0];
 	wifi_rssi = c.rssi;
@@ -932,7 +954,8 @@ static void wifi_poll(bool force) {
 /* SSID plus what it means for us: the address a peer would dial. */
 static int draw_wifi_line(SDL_Surface* s, int y) {
 	char line[160];
-	if (wifi_up) snprintf(line, sizeof(line), "%s  (%d dBm)  -  %s", wifi_ssid, wifi_rssi, local_ip);
+	if (wifi_up && wifi_rssi) snprintf(line, sizeof(line), "%s  (%d dBm)  -  %s", wifi_ssid, wifi_rssi, local_ip);
+	else if (wifi_up) snprintf(line, sizeof(line), "%s  -  %s", wifi_ssid, local_ip);
 	else         snprintf(line, sizeof(line), "WiFi: %s", wifi_ssid);
 	return draw_line(s, line, y, COLOR_GRAY, true);
 }
@@ -2477,7 +2500,11 @@ int main(int argc, char* argv[]) {
 
 		}
 
+#ifndef NETPLAY_SPRUCE
+		// spruce's own daemons own sleep and the power button; NextUI's
+		// autosleep here suspends the device behind spruce's back.
 		PWR_update(&dirty, NULL, NULL, NULL);
+#endif
 
 		if (dirty) { render(s); dirty = 0; }
 		else GFX_sync();

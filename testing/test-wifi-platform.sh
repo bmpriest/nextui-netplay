@@ -10,7 +10,7 @@
 
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-WP="$HERE/../launcher/wifi-platform.sh"
+WP="$HERE/../launcher/common/wifi-platform.sh"
 fail=0
 ok()   { echo "  ok   $1"; }
 bad()  { echo "  FAIL $1"; fail=1; }

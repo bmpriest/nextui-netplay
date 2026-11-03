@@ -43,6 +43,7 @@ const char* NS_pakPath(void);
 const char* NS_sdPath(void);
 const char* NS_statePath(void); /* durable state in .userdata/shared/Netplay */
 bool NS_localIP(char* out, int len);
+bool NS_wifiSSID(char* out, int len);
 
 /* --- assumption checks -------------------------------------------------
  *
