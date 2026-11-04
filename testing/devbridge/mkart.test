@@ -8,9 +8,15 @@
 # role. Run with run.sh, which fills in {host_refs}, {guest_refs} and {helpers}.
 
 all:WAIT_FOR devbridge 30000
-host:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip"
+# spruce has no MGBA system: GBA, with spruce's per-game core set to mgba so
+# Netplay's routing picks the paired mGBA (put back after the quit).
+#spruce host:TRM sh {helpers}/spruce-core.sh set GBA "Mario Kart - Super Circuit (USA).zip" mgba
+#spruce guest:TRM sh {helpers}/spruce-core.sh set GBA "Mario Kart - Super Circuit (USA).zip" mgba
+host:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip" # not-spruce
+#spruce host:OPEN_GAME GBA "Game Boy Advance (GBA)/Mario Kart - Super Circuit (USA).zip"
 WAIT 3000
-guest:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip"
+guest:OPEN_GAME MGBA "Game Boy Advance (MGBA)/Mario Kart - Super Circuit (USA).zip" # not-spruce
+#spruce guest:OPEN_GAME GBA "Game Boy Advance (GBA)/Mario Kart - Super Circuit (USA).zip"
 all:WAIT_FOR game 30000
 WAIT 8000
 
@@ -81,4 +87,6 @@ guest:TRM sh {helpers}/check.sh instanced Mario_Kart 50
 # quit.sh: MinArch's own menu, then SIGTERM, then SIGKILL (QUIT_GAME's remote
 # presses stretched through a tunnel and left a Brick in the game).
 all:TRM sh {helpers}/quit.sh minarch
+#spruce host:TRM sh {helpers}/spruce-core.sh restore GBA
+#spruce guest:TRM sh {helpers}/spruce-core.sh restore GBA
 all:WAIT_FOR devbridge 30000

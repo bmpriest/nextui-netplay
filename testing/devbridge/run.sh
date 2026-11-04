@@ -82,18 +82,24 @@ platform_of() {
 	echo "$p"
 }
 
-# For a spruce device, NextUI's "Name (TAG)/rom" becomes "TAG/rom" on that
-# device's lines (and on all: lines when both are spruce).
+# For a spruce device's lines (and all: lines when both are spruce):
+#   - NextUI's "Name (TAG)/rom" becomes "TAG/rom";
+#   - a line ending "# not-spruce" is dropped, and "#spruce LINE" becomes LINE,
+#     for steps spruce's RetroArch needs done differently.
 spruce_roms() {
 	roles=
 	case $host_platform in spruce-*) roles="$roles host" ;; esac
 	case $guest_platform in spruce-*) roles="$roles guest" ;; esac
 	case "$roles" in " host guest") roles="$roles all" ;; esac
-	prog=
-	for r in $roles; do
-		prog="$prog -e '/^$r:OPEN_GAME/s#\"[^\"/]* (\([A-Z0-9]*\))/#\"\\1/#'"
-	done
-	if [ -n "$prog" ]; then eval sed "$prog"; else cat; fi
+	awk -v roles="$roles" '
+		function spruce(line,   r) { r = line; sub(/:.*/, "", r); return index(roles " ", " " r " ") > 0 }
+		/^#spruce / { if (!spruce(substr($0, 9))) next; $0 = substr($0, 9) }
+		/# not-spruce$/ { if (spruce($0)) next; sub(/ *# not-spruce$/, "") }
+		{
+			if ($0 ~ /^[a-z]+:OPEN_GAME / && spruce($0))
+				$0 = gensub(/"[^"\/]* \(([A-Z0-9]+)\)\//, "\"\\1/", 1)
+			print
+		}'
 }
 
 push_helpers() {

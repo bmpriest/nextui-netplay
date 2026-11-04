@@ -48,9 +48,17 @@ On spruce (App/Netplay), log in as spruce with its password:
 
 run.sh maps the tests' NextUI ROM folders to spruce's (`Sega Genesis (MD)/` to
 `MD/`) and keeps spruce references in `refs/spruce-<platform>`; `quit.sh`
-quits spruce's RetroArch. sor2, rcr and contra3 pass Brick to RG35XXH. The
-paired-core tests (tetris, mkart) need instanced cores the spruce build does
-not offer yet, and ctr needs CTR on both cards. Sessions, screenshots and closest-miss captures go to
+quits spruce's RetroArch. A step spruce needs done differently is written
+twice: the NextUI line ends `# not-spruce`, and the spruce one follows as
+`#spruce LINE` (Tetris cannot soft-reset there, since Select is RetroArch's
+hotkey). Paired cores are off by default: `device/ctl.sh set instanced 1` on
+both before arming. mkart runs GBA through spruce's mgba with
+`device/spruce-core.sh`, which also puts spruce's core choice back.
+
+Brick to RG35XXH: sor2, rcr, contra3 and tetris pass; ctr needs CTR on both
+cards.
+
+Sessions, screenshots and closest-miss captures go to
 `testing/results/devbridge/`.
 
 On an ad hoc network the guest is not on your LAN. Tunnel through the host,

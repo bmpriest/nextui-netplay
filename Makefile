@@ -624,6 +624,9 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		for l in $$libs; do cp -L "$(NEXTUI_SYSTEM)/$$p/lib/$$l" "$$D/bin/$$p/" || exit 1; done && \
 		cp dist/cores/$$p/gambatte_libretro.so dist/cores/$$p/gpsp_libretro.so \
 		   dist/cores-experimental/$$p/gambatte_dual_libretro.so "$$D/cores/override/$$p/" || exit 1; \
+		case " $(MGBA_PLATFORMS) " in *" $$p "*) \
+			cp dist/cores-experimental/$$p/mgba_dual_libretro.so "$$D/cores/override/$$p/" || exit 1 ;; \
+		esac; \
 	done && \
 	if [ -d dist/compatibility/aarch64 ]; then \
 		mkdir -p "$$D/cores/compatibility" && \

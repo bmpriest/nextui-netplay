@@ -1682,6 +1682,7 @@ static void join_peer(SDL_Surface* s, int i) {
  *   --ctl powersave on|off
  *   --ctl pak dsperate|drastic install
  *   --ctl set adhoc_switch|compatibility_cores 0|1
+ *   --ctl set instanced 0|1|2      paired cores: off, all, selected
  */
 static void ctl_print_status(void) {
 	NS_SessionInfo si;
@@ -1870,8 +1871,19 @@ static int ctl_main(int argc, char* argv[]) {
 	}
 
 	if (!strcmp(cmd, "set")) {
-		/* set adhoc_switch|compatibility_cores 0|1 */
+		/* set adhoc_switch|compatibility_cores 0|1, set instanced 0|1|2 */
 		NS_Settings* c = NS_settings();
+		if (!strcmp(arg, "instanced") && argc >= 3) {
+			int v = atoi(argv[2]);
+			if (v < NS_INST_OFF || v > NS_INST_SELECTED) {
+				snprintf(status, sizeof(status), "set instanced 0|1|2");
+				return ctl_result(false);
+			}
+			c->instanced = (NS_InstMode)v;
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "instanced=%d", v);
+			return ctl_result(true);
+		}
 		bool* value = !strcmp(arg, "adhoc_switch") ? &c->adhoc_switch
 		            : !strcmp(arg, "compatibility_cores") ? &c->compatibility_cores : NULL;
 		if (!value || argc < 3) {
