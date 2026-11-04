@@ -75,6 +75,28 @@ for a in "$@"; do
 done
 shift "$count"
 
+# RetroArch's settings for the session (retroarch-session.cfg): no save states,
+# rewind, run-ahead or fast-forward, and nothing written back to spruce's config
+# on exit. RetroArch keeps one --appendconfig, a |-separated list, so ours joins
+# spruce's when it passed one.
+SESSION_CFG="$NP/launcher/retroarch-session.cfg"
+if [ -f "$SESSION_CFG" ]; then
+	count=$#
+	prev=
+	appended=0
+	for a in "$@"; do
+		if [ "$prev" = "--appendconfig" ]; then
+			set -- "$@" "$a|$SESSION_CFG"
+			appended=1
+		else
+			set -- "$@" "$a"
+		fi
+		prev="$a"
+	done
+	shift "$count"
+	[ "$appended" = 1 ] || set -- --appendconfig "$SESSION_CFG" "$@"
+fi
+
 # spruce stops a game by signalling RetroArch by name (this shell carries the
 # same name), so pass a stop on rather than dying before RetroArch has saved and
 # the shim has put the CPU back.

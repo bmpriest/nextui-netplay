@@ -40,7 +40,7 @@ RESTORE_HOOK="$NETPLAY_STATE/wifi_restore_hook"
 LOCK="/tmp/netplay_watchdog.pid"
 RESTORE_LOCK="/tmp/netplay_wifi_restore.lock"
 HOST=10.0.0.1
-PREFIX=nextui
+PREFIX=netplay
 
 INTERVAL=${NETPLAY_WATCHDOG_INTERVAL:-20}      # seconds between checks
 FAILS_NEEDED=${NETPLAY_WATCHDOG_FAILS:-3}      # ~60s grace by default

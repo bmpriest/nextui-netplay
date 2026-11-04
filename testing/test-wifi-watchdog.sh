@@ -16,7 +16,7 @@ cat > "$BIN/iw" <<EOF
 case "\$*" in
   "dev wlan0 link")
     if [ -f "$ROOT/associated" ]; then printf 'Connected to 00:11:22:33:44:55\nSSID: home\n'
-    elif [ -f "$ROOT/adhoc" ]; then printf 'Connected to 66:77:88:99:aa:bb\nSSID: nextui-TEST\n'; fi
+    elif [ -f "$ROOT/adhoc" ]; then printf 'Connected to 66:77:88:99:aa:bb\nSSID: netplay-TEST\n'; fi
     ;;
   "dev wlan0 set power_save on") touch "$ROOT/powersave-restored" ;;
 esac
@@ -59,7 +59,7 @@ chmod 755 "$NP/launcher/gameswitcher.sh"
 
 printf '%s\n' "$BIN/wpa_supplicant -iwlan0 -c/tmp/original.conf" > "$STATE/wifi_restore"
 printf 'on\n' > "$STATE/wifi_powersave"
-printf 'role=client\npeer=10.0.0.1\nadhoc_ssid=nextui-TEST\nadhoc_psk=testpass\n' > "$STATE/session"
+printf 'role=client\npeer=10.0.0.1\nadhoc_ssid=netplay-TEST\nadhoc_psk=testpass\n' > "$STATE/session"
 
 PATH="$BIN:$PATH" SDCARD_PATH="$ROOT" NETPLAY_WATCHDOG_INTERVAL=0 NETPLAY_WATCHDOG_FAILS=1 \
 	NETPLAY_WATCHDOG_MAX_CHECKS=2 "$NP/launcher/wifi-watchdog.sh" "$NP"
@@ -75,7 +75,7 @@ bad() { echo "  FAIL $1"; fail=1; }
 
 rm -f "$ROOT/associated" "$ROOT/gameswitcher-idle"
 printf '%s\n' "$BIN/wpa_supplicant -iwlan0 -c/tmp/original.conf" > "$STATE/wifi_restore"
-printf 'role=host\nadhoc_ssid=nextui-TEST\nadhoc_psk=testpass\n' > "$STATE/session"
+printf 'role=host\nadhoc_ssid=netplay-TEST\nadhoc_psk=testpass\n' > "$STATE/session"
 PATH="$BIN:$PATH" SDCARD_PATH="$ROOT" NETPLAY_WATCHDOG_INTERVAL=0 NETPLAY_WATCHDOG_FAILS=1 \
 	NETPLAY_WATCHDOG_MAX_CHECKS=2 "$NP/launcher/wifi-watchdog.sh" "$NP"
 
@@ -91,7 +91,7 @@ PATH="$BIN:$PATH" SDCARD_PATH="$ROOT" NETPLAY_WATCHDOG_INTERVAL=0 NETPLAY_WATCHD
 rm -f "$ROOT/associated" "$ROOT/gameswitcher-idle" "$ROOT/pings"
 touch "$ROOT/adhoc" "$ROOT/host-up"
 printf '%s\n' "$BIN/wpa_supplicant -iwlan0 -c/tmp/original.conf" > "$STATE/wifi_restore"
-printf 'role=client\npeer=10.0.0.1\nadhoc_ssid=nextui-TEST\nadhoc_psk=testpass\n' > "$STATE/session"
+printf 'role=client\npeer=10.0.0.1\nadhoc_ssid=netplay-TEST\nadhoc_psk=testpass\n' > "$STATE/session"
 PATH="$BIN:$PATH" SDCARD_PATH="$ROOT" NETPLAY_WATCHDOG_INTERVAL=0 NETPLAY_WATCHDOG_FAILS=1 \
 	NETPLAY_WATCHDOG_MAX_CHECKS=2 "$NP/launcher/wifi-watchdog.sh" "$NP"
 [ -e "$ROOT/associated" ] && [ ! -e "$STATE/session" ] &&

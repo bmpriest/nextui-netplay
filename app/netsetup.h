@@ -269,6 +269,7 @@ typedef enum {
 NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len);
 /* The paired Gambatte core that dual-instance link play needs is staged. */
 bool NS_gambatteDualAvailable(void);
+bool NS_mgbaDualAvailable(void);
 
 /* --- core manifest ------------------------------------------------------
  *
@@ -342,9 +343,9 @@ int NS_compatSync(const char* host_ip, char* err, int errlen);
  * 6.5/26-43/118-300ms through an access point - one hop instead of two. That
  * worst case sits far inside the shim's input-delay window, which the
  * two-hop path did not. */
-#define NS_ADHOC_PREFIX "nextui"
-/* Legacy fixed name, still accepted when joining so an older host is reachable. */
-#define NS_ADHOC_SSID   "nextui-netplay"
+#define NS_ADHOC_PREFIX "netplay"
+/* Joined when a host announces a network without naming it. */
+#define NS_ADHOC_SSID   NS_ADHOC_PREFIX "-netplay"
 #define NS_ADHOC_PSK  "playwithme"
 
 /* Join retry shape. Each attempt is bounded so five failures cannot take
@@ -416,7 +417,7 @@ void NS_setProgressCallback(NS_ProgressFn fn);
 void NS_announceStart(NS_Mode mode);
 void NS_announceHotspot(const char* ssid, const char* psk);
 
-/* True for the network names and passphrases Netplay generates ("nextui-" plus
+/* True for the network names and passphrases Netplay generates ("netplay-" plus
  * letters and digits; an alphanumeric passphrase of 8+ characters). Scan
  * results, announcements and session values that fail are ignored. */
 bool NS_validAdhocSsid(const char* ssid);

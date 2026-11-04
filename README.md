@@ -156,15 +156,15 @@ used, and buttons NextUI also uses will do both things.
 
 1. From one device, open the .pak and select 'Host.' If ad hoc is recognized as being available for your device, the option will be available. 
     - For ad hoc, the device will scan the local wifi channels for one with the least noise
-    - It will create a nextui-XXXX network while still staying connected to the original host network
+    - It will create a netplay-XXXX network while still staying connected to the original host network
 2. From the other device, open the .pak and select 'Join.' 
 3. Select the wifi network of the Host device. If none appear, press 'rescan'
 4. After both devices are connected, exit the .pak and navigate to the game you want to play together
 5. When you are done playing, go back to the .pak and press X to end the session. Previous wifi networks should be re-established.
 
 Hosting continues in a detached session broker after the setup app closes. If
-you reopen Netplay.pak, the main screen shows `Hosting: nextui-XXXX` and its
-connected guests on the host, or `Joined: nextui-XXXX` and the host address on
+you reopen Netplay.pak, the main screen shows `Hosting: netplay-XXXX` and its
+connected guests on the host, or `Joined: netplay-XXXX` and the host address on
 the guest. Host and Join stay hidden until the session ends.
 
 An empty host remains available for guests to leave and rejoin. If the device

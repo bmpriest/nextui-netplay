@@ -12,7 +12,8 @@
 #   --keep-going    run every line even after a failure
 #
 # HOST_ADDR is the device that hosts the armed session (Player 1), GUEST_ADDR
-# the one that joined. Both must already be armed together and sitting in
+# the one that joined. Either may be adb:SERIAL for a device on USB ADB, which
+# mixes with an SSH one (a NextUI Brick on USB against a spruce device on WiFi). Both must already be armed together and sitting in
 # DevBridge, not in the Netplay app. See README.md.
 #
 # Tests use three placeholders, filled in here:
@@ -57,6 +58,11 @@ fi
 
 sshd() {
 	addr=$1; shift
+	# adb shell ends its lines with CRLF.
+	case $addr in adb:*)
+		adb -s "${addr#adb:}" shell "$@" | tr -d '\r'
+		return ;;
+	esac
 	if [ -n "$askpass" ]; then
 		SSH_ASKPASS=$askpass SSH_ASKPASS_REQUIRE=force DEVBRIDGE_PASSWORD=$DEVBRIDGE_PASSWORD \
 			setsid -w ssh -p "$port" -o ConnectTimeout=10 -o PubkeyAuthentication=no \
@@ -105,8 +111,19 @@ spruce_roms() {
 push_helpers() {
 	sshd "$1" "mkdir -p $HELPERS"
 	for f in "$HERE"/device/*.sh; do
-		sshd "$1" "cat > $HELPERS/$(basename "$f")" < "$f"
+		case $1 in
+		adb:*) adb -s "${1#adb:}" push "$f" "$HELPERS/" >/dev/null ;;
+		*) sshd "$1" "cat > $HELPERS/$(basename "$f")" < "$f" ;;
+		esac
 	done
+}
+
+# DevBridge's way to reach each device: --adb SERIAL=ALIAS or --connect.
+devbridge_target() {
+	case $1 in
+	adb:*) echo "--adb ${1#adb:}=$2" ;;
+	*) echo "--connect $1:$2" ;;
+	esac
 }
 
 auth="--identity $identity"
@@ -155,8 +172,10 @@ for test in "$@"; do
 
 	echo "== $name"
 	# -P, not -I: VERIFY needs Pillow, often only in user site-packages.
+	# shellcheck disable=SC2046
 	if python3 -P "$DEVBRIDGE/tools/devbridge.py" $auth --port "$port" \
-		--user "$user" --connect "$host:host" --connect "$guest:guest" $keep run "$script"; then
+		--user "$user" $(devbridge_target "$host" host) $(devbridge_target "$guest" guest) \
+		$keep run "$script"; then
 		echo "== $name: PASS"
 	else
 		echo "== $name: FAIL (session $OUT/$session)"

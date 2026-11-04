@@ -46,6 +46,11 @@ On spruce (App/Netplay), log in as spruce with its password:
 
     DEVBRIDGE_PASSWORD=... testing/devbridge/run.sh --user spruce HOST GUEST testing/devbridge/sor2.test
 
+A device on USB ADB is `adb:SERIAL`, and mixes with SSH ones: a NextUI Brick on
+USB hosting a spruce device on WiFi is
+
+    DEVBRIDGE_PASSWORD=... testing/devbridge/run.sh --user spruce adb:SERIAL GUEST testing/devbridge/sor2.test
+
 run.sh maps the tests' NextUI ROM folders to spruce's (`Sega Genesis (MD)/` to
 `MD/`) and keeps spruce references in `refs/spruce-<platform>`; `quit.sh`
 quits spruce's RetroArch. A step spruce needs done differently is written

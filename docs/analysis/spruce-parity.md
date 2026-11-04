@@ -39,36 +39,44 @@ on a spruce Brick and RG35XXH, 2026-11-03.
   NextUI's own UI (Varnish, Game Switcher); spruce has neither.
 - **PWR autosleep** is skipped: spruce owns sleep and the power button.
 
+## spruce against NextUI
+
+A NextUI Brick hosting a spruce RG35XXH over house WiFi (2026-11-04): the
+handshake picks compatibility cores for 8 systems (both ends load the build
+pinned to spruce's revision), and paired cores are agreed for Gambatte and
+mGBA. sor2 passes (57-60 fps, 25-27 checkpoints agreed), and mkart passes on
+paired mGBA (53.4 fps, 36 paired checkpoints), the NextUI side on MGBA.pak and
+the spruce side on GBA with the game's core set to mgba.
+
+## RetroArch during a session
+
+launcher/spruce/retroarch-session.cfg is appended to spruce's RetroArch config
+for armed launches only: save states (hotkeys, quick menu entries, auto save
+and auto load), rewind, run-ahead, preemptive frames, fast and slow motion off,
+and `config_save_on_exit = "false"` so none of it is written back to spruce's
+config. When spruce passes its own `--appendconfig` (32-bit RetroArch on
+BaseOS), ours joins its list.
+
 ## Gaps
 
 1. **DS local wireless.** Not offered: DSP.pak and NDS.pak are NextUI paks.
    spruce ships DraStic (drastic32/64) and DSperate in Emu/NDS and launches them
    itself, not through RetroArch, so neither the RetroArch hook nor the MinArch
    shadow reaches them. Needs a hook for spruce's NDS launch, then the DraStic
-   radio and/or Netplay's DSperate against spruce's binaries. The largest gap.
-2. **Instanced mGBA from the app.** The toggle lives on the MGBA row, which is
-   NextUI's MGBA.pak and hidden on spruce. Only `--ctl set instanced` turns it
-   on. spruce's GBA also defaults to gpSP, so the player must pick mgba as the
-   game's core in spruce too. Wants a GBA-row option on spruce, and a hint that
-   the core choice decides link cable (gpSP) vs instanced (mGBA).
-3. **Frontend auto-save during a session.** NextUI turns save states, auto-save
-   and auto-resume off for a session. spruce's RetroArch config has
-   `savestate_auto_save = true`, so quitting a netplay game writes an auto state
-   and the next solo launch resumes from the session's end. Loads are already
-   blocked; the save is not. Fix: pass RetroArch an `--appendconfig` for armed
-   launches with auto save/load, run-ahead, preemptive frames, rewind and
-   fast-forward off (the last four are off by default on spruce, but a user who
-   turns them on would desync).
-4. **Power save default.** spruce leaves WiFi power save on, and the Brick then
-   loses its AP for minutes at a time. Netplay's "Disable Wi-Fi Power Saving"
-   defaults to off. On spruce it should default to on.
-5. **Ad hoc network name.** `nextui-XXXX` on spruce too. Kept for
-   interoperability (the join scan, the watchdog and adhoc-join.sh all key on
-   the prefix, and a NextUI guest must find a spruce host); a neutral prefix
-   would need both sides to accept either.
-6. **Other spruce devices.** Only the Brick and RG35XXH are built and tested.
+   radio and/or Netplay's DSperate against spruce's binaries.
+2. **Power save default.** spruce leaves WiFi power save on, and Bricks then
+   lose their AP for minutes at a time (seen on a NextUI Brick too). Netplay's
+   "Disable Wi-Fi Power Saving" stays off by default; turn it on for sessions on
+   a Brick.
+3. **Other spruce devices.** Only the Brick and RG35XXH are built and tested.
    np_spruce_platform maps BrickPro/SmartPro (tg5040), SmartProS (tg5050) and
-   Flip (my355), but spruce-tg5050/my355 builds are not packaged.
-7. **Test harness:** the final `WAIT_FOR devbridge 30000` in the tests is tight
-   for the RG35XXH's PyUI over an ad hoc tunnel (sor2 played clean and failed
-   only there).
+   Flip (my355), but spruce-tg5050/my355 builds are not packaged; 32-bit
+   RetroArch sessions are not routed yet.
+4. **Paired mGBA toggle** (Cores > Base > GBA on spruce) is built but has only
+   been exercised through `--ctl set instanced`, not the menu.
+5. **Test harness:** the final `WAIT_FOR devbridge 30000` in the tests is tight
+   for the RG35XXH's PyUI over an ad hoc tunnel.
+
+Resolved 2026-11-04: the ad hoc network is `netplay-XXXX` on both firmwares
+(was `nextui-XXXX`); RetroArch's auto save during sessions (above); paired mGBA
+has an app toggle on spruce.

@@ -111,7 +111,7 @@ static void wifi_plat_out(char* out, int len, const char* fmt, ...) {
 /* Ad hoc credentials arrive from Wi-Fi scans and LAN announcements, which any
  * nearby device can forge, and end up in shell commands, supplicant/hostapd
  * configs and the session file. Only the shapes Netplay itself generates are
- * accepted: "nextui-" plus letters and digits, and an alphanumeric passphrase.
+ * accepted: "netplay-" plus letters and digits, and an alphanumeric passphrase.
  * Anything else (quotes, newlines, shell syntax) is dropped at the boundary. */
 static bool alnum_run(const char* s, size_t min, size_t max) {
 	size_t n = 0;
@@ -1277,6 +1277,13 @@ static bool write_compat_file(const char* path,
 bool NS_gambatteDualAvailable(void) {
 	char path[512];
 	snprintf(path, sizeof(path), "%s/cores/override/%s/gambatte_dual_libretro.so",
+	         ns_pak, ns_platform);
+	return file_exists(path);
+}
+
+bool NS_mgbaDualAvailable(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/cores/override/%s/mgba_dual_libretro.so",
 	         ns_pak, ns_platform);
 	return file_exists(path);
 }
