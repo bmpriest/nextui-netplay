@@ -70,7 +70,6 @@ enum {
 #define DEV_ANALOG   5
 
 #define INPUT_RING     1024
-#define PAUSE_AFTER_MS 250
 #define IO_TIMEOUT_MS  5000
 #define CONNECT_RETRY_MS 500
 #define CONNECT_GIVE_UP_MS 30000
@@ -110,7 +109,6 @@ static struct {
 
 	struct timeval last_frame;
 	int frames_seen;
-	int pause_sent;
 	struct timeval ping_sent;
 	int ping_pending;
 	int32_t ping_ms;
@@ -420,7 +418,6 @@ static void close_connection(const char* why) {
 	uint32_t horizon = ra.remote_started ? ra.remote_next : 0;
 	ra.connected = 0;
 	ra.remote_started = 0;
-	ra.pause_sent = 0;
 	ra.ping_pending = 0;
 	pthread_mutex_unlock(&ra.lock);
 	ra_log("connection closed: %s\n", why);
@@ -927,34 +924,23 @@ static int dial(const char* host, uint16_t port) {
 	return fd;
 }
 
-/* Liveness and pings, between commands. */
+/* Pings, between commands.
+ *
+ * No PAUSE is ever sent. RetroArch 1.22.2 cannot be resumed once paused by a
+ * peer: remote_unpaused tests
+ *     sc->flags & ((ACTIVE | PAUSED) == (ACTIVE | PAUSED))
+ * and the comparison binds first, so the test is "flags & 1" - true for any
+ * active connection - and remote_paused is set straight back. A PAUSE from us
+ * therefore freezes the RetroArch side for good; that was the 2026-11-04
+ * deadlock with a spruce client, set off by the 260ms the host's own initial
+ * serialize took. A frontend stall (menu, sleep) is simply silence: RetroArch
+ * predicts for up to 60 frames, then stalls, and hangs up after 5 s (as a
+ * host) or 10 s (as a client). See retroarch-protocol.md, Pause and menus. */
 static void worker_housekeeping(void) {
 	pthread_mutex_lock(&ra.lock);
 	int connected = ra.connected;
-	int frames_seen = ra.frames_seen;
-	long idle = frames_seen ? ms_since(&ra.last_frame) : 0;
-	int pause_sent = ra.pause_sent;
-	bool may_pause = ra.cfg.role == RAPROTO_ROLE_HOST || ra.host_allows_pausing;
 	pthread_mutex_unlock(&ra.lock);
 	if (!connected) return;
-
-	if (frames_seen && idle > PAUSE_AFTER_MS && !pause_sent && may_pause) {
-		char nick[RAPROTO_NICK_LEN] = {0};
-		snprintf(nick, sizeof(nick), "%s", ra.cfg.nick[0] ? ra.cfg.nick : "Netplay");
-		if (send_cmd(CMD_PAUSE, nick, sizeof(nick))) {
-			ra_log("frontend stalled %ldms: sent PAUSE\n", idle);
-			pthread_mutex_lock(&ra.lock);
-			ra.pause_sent = 1;
-			pthread_mutex_unlock(&ra.lock);
-		}
-	} else if (pause_sent && idle < PAUSE_AFTER_MS) {
-		if (send_cmd(CMD_RESUME, NULL, 0)) {
-			ra_log("frontend back: sent RESUME\n");
-			pthread_mutex_lock(&ra.lock);
-			ra.pause_sent = 0;
-			pthread_mutex_unlock(&ra.lock);
-		}
-	}
 
 	/* netplay_request_ping: protocol 6+, every few seconds, from the client. */
 	struct timeval now;

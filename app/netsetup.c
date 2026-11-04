@@ -2081,8 +2081,31 @@ void NS_sanitizeNickname(char* nick) {
 	while (w > nick && w[-1] == ' ') *--w = '\0';
 }
 
-/* The setting, else the board's model name (an H700 is about twelve devices,
- * so the platform alone would not tell two of them apart), else the platform. */
+/* True when the file contains needle; for model strings inside a binary. */
+static bool file_contains(const char* path, const char* needle) {
+	FILE* f = fopen(path, "rb");
+	if (!f) return false;
+	size_t nl = strlen(needle);
+	char buf[65536 + 64];
+	size_t keep = 0, n;
+	bool found = false;
+	while (!found && (n = fread(buf + keep, 1, sizeof(buf) - 64 - keep, f)) > 0) {
+		size_t have = keep + n;
+		for (size_t i = 0; i + nl <= have; i++)
+			if (buf[i] == needle[0] && !memcmp(buf + i, needle, nl)) { found = true; break; }
+		keep = have < nl ? have : nl - 1;
+		memmove(buf, buf + have - keep, keep);
+	}
+	fclose(f);
+	return found;
+}
+
+/* A name a person would recognise: the setting; else what NextUI calls the
+ * device (its launcher exports DEVICE, and TRIMUI_MODEL on the TrimUIs, from
+ * the stock MainUI's own model string, which is read here too when the app
+ * runs without NextUI's environment, as under --ctl); else a device-tree
+ * model that reads like a name (on the Brick it is the SoC, "sun50iw10", so
+ * one without a space is not used); else the platform's family name. */
 void NS_nickname(char* out, int len) {
 	if (len <= 0) return;
 	out[0] = '\0';
@@ -2090,16 +2113,49 @@ void NS_nickname(char* out, int len) {
 		snprintf(out, len, "%s", NS_settings()->nickname);
 		return;
 	}
+	static const struct { const char* device; const char* name; } DEVICES[] = {
+		{ "brick", "TrimUI Brick" }, { "brickpro", "TrimUI Brick Pro" },
+		{ "smartpro", "TrimUI Smart Pro" }, { "smartpros", "TrimUI Smart Pro S" },
+		{ "my282", "Miyoo A30" }, { "my355", "Miyoo Flip" },
+	};
+	const char* device = getenv("DEVICE");
+	const char* trimui = getenv("TRIMUI_MODEL");
+	if ((!device || !device[0]) && (!trimui || !trimui[0])) {
+		/* Longest first: "Trimui Brick" is a prefix of "Trimui Brick Pro". */
+		static const char* MAINUI = "/usr/trimui/bin/MainUI";
+		if (file_contains(MAINUI, "Trimui Brick Pro")) device = "brickpro";
+		else if (file_contains(MAINUI, "Trimui Brick")) device = "brick";
+		else if (file_contains(MAINUI, "Trimui Smart Pro")) device = "smartpro";
+	}
+	if (trimui && !strcmp(trimui, "Trimui Brick Pro")) device = "brickpro";
+	else if (trimui && !strcmp(trimui, "Trimui Brick")) device = "brick";
+	for (size_t i = 0; device && i < sizeof(DEVICES) / sizeof(DEVICES[0]); i++)
+		if (!strcmp(device, DEVICES[i].device)) {
+			snprintf(out, len, "%s", DEVICES[i].name);
+			return;
+		}
 	FILE* f = fopen("/proc/device-tree/model", "r");
 	if (f) {
 		char model[64] = "";
 		size_t n = fread(model, 1, sizeof(model) - 1, f);
 		fclose(f);
 		model[n] = '\0';
-		snprintf(out, len, "%.31s", model);
-		NS_sanitizeNickname(out);
+		if (strchr(model, ' ')) {
+			snprintf(out, len, "%.31s", model);
+			NS_sanitizeNickname(out);
+			if (out[0]) return;
+		}
 	}
-	if (!out[0]) snprintf(out, len, "%s", ns_platform);
+	static const struct { const char* platform; const char* name; } FAMILIES[] = {
+		{ "tg5040", "TrimUI" }, { "tg5050", "TrimUI Smart Pro S" }, { "my282", "Miyoo A30" },
+		{ "my355", "Miyoo Flip" }, { "h700", "Anbernic H700" },
+	};
+	for (size_t i = 0; i < sizeof(FAMILIES) / sizeof(FAMILIES[0]); i++)
+		if (!strcmp(ns_platform, FAMILIES[i].platform)) {
+			snprintf(out, len, "%s", FAMILIES[i].name);
+			return;
+		}
+	snprintf(out, len, "%s", ns_platform);
 }
 
 bool NS_probeRetroArch(const char* ip, int timeout_ms) {
@@ -2111,26 +2167,34 @@ bool NS_probeRetroArch(const char* ip, int timeout_ms) {
 	int fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0) return false;
 	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-	bool ok = false;
+	bool listening = false, answered = false;
 	if (connect(fd, (struct sockaddr*)&a, sizeof(a)) == 0 || errno == EINPROGRESS) {
 		struct pollfd p = { fd, POLLOUT, 0 };
 		int soerr = 0;
 		socklen_t sl = sizeof(soerr);
-		if (poll(&p, 1, timeout_ms) == 1 &&
-		    getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && !soerr) {
+		listening = poll(&p, 1, timeout_ms) == 1 &&
+		            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && !soerr;
+		if (listening) {
 			uint32_t poke = htonl(0x504F4B45u); /* POKE */
 			if (send(fd, &poke, sizeof(poke), MSG_NOSIGNAL) == (ssize_t)sizeof(poke)) {
 				uint32_t magic = 0;
 				struct pollfd r = { fd, POLLIN, 0 };
 				if (poll(&r, 1, timeout_ms) == 1 &&
 				    recv(fd, &magic, sizeof(magic), MSG_WAITALL) == (ssize_t)sizeof(magic))
-					ok = ntohl(magic) == 0x52414E50u; /* RANP */
+					answered = ntohl(magic) == 0x52414E50u; /* RANP */
 			}
 		}
 	}
 	close(fd);
-	ns_log("RetroArch probe of %s: %s\n", ip, ok ? "a RetroArch host answered" : "no answer");
-	return ok;
+	/* A RetroArch host only answers POKE from its frame loop, so one whose
+	 * menu is still open accepts the connection (the kernel does) and says
+	 * nothing. Nothing of Netplay's own listens on 55435 outside a RetroArch
+	 * session, so an accepting port is taken as RetroArch either way. */
+	ns_log("RetroArch probe of %s:55435: %s\n", ip,
+	       answered ? "a RetroArch host answered" :
+	       listening ? "port open but silent (RetroArch with its menu open?) - taking it as RetroArch" :
+	       "nothing listening");
+	return listening;
 }
 
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {

@@ -16,7 +16,7 @@
  * queue at frame boundaries and sends everything that has a position in the
  * frame stream (SYNC, INPUT, MODE, LOAD_SAVESTATE, CRC, RESET), so the order
  * of those relative to INPUT is decided by one thread. The worker also sends
- * replies that have no frame position (PING_RESPONSE, PAUSE/RESUME).
+ * replies that have no frame position (PING).
  */
 
 #ifndef RAPROTO_H
@@ -167,10 +167,8 @@ bool RaProto_sendReset(uint32_t frame);
 bool RaProto_sendStall(uint32_t frames);
 bool RaProto_requestState(void);
 
-/* Frontend liveness, called once per retro_run. When it stops (a menu, a
- * sleep), the worker sends PAUSE, and RESUME when frames come back. As a
- * client this only happens when the host allows pausing: RetroArch hangs up
- * a client that pauses against an allow_pausing=false host. */
+/* Called once per retro_run: turns away a second client. Frontend stalls are
+ * deliberately not reported to RetroArch (no PAUSE): see raproto.c. */
 void RaProto_markFrame(void);
 
 #endif

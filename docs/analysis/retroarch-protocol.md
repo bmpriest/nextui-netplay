@@ -121,14 +121,33 @@ player's input immediately, and the Netplay player carries the delay.
 
 ### Pause and menus
 
-The worker thread sends PAUSE when `retro_run` has not been called for 250ms
-(MinArch's menu, sleep) and RESUME when it comes back, as netlink does with
-its own pause. A Netplay host always may; a Netplay client only when the host
-sent `SETTING_ALLOW_PAUSING 1`. spruce's RetroArch sends 0, and a RetroArch
-host NAKs a client's PAUSE then, so a Netplay client in its menu sends nothing
-and RetroArch stalls, then hangs up after 5 s
-(`MAX_SERVER_STALL_TIME_USEC`). Feeding neutral input from the worker thread
-during the menu would fix that and is the next pacing item.
+**The shim never sends PAUSE.** RetroArch 1.22.2 cannot be resumed once a
+peer pauses it. `remote_unpaused` (netplay_frontend.c) decides whether any
+other connection is still paused with
+
+    if (sc->flags & ((NETPLAY_CONN_FLAG_ACTIVE | NETPLAY_CONN_FLAG_PAUSED)
+          == (NETPLAY_CONN_FLAG_ACTIVE | NETPLAY_CONN_FLAG_PAUSED)))
+
+and `==` binds before `&`, so the test is `flags & 1`, the ACTIVE bit: true
+for the very connection that just resumed, and `remote_paused` goes straight
+back to true. A RESUME is therefore a no-op, and a PAUSE freezes RetroArch
+for good. That was the 2026-11-04 device deadlock with the Brick hosting a
+spruce client: the host's join-time serialize (266 KB, 260 ms) tripped the
+first version's 250 ms frontend-stall detector, which sent PAUSE, MODE,
+RESUME; spruce's RetroArch stopped running (4% CPU), never sent an INPUT,
+and the host waited on frame 11 until it gave up. Its 3-second
+`REQUEST_SAVESTATE` (achievements builds send one after joining) queued
+behind the same wait. spruce's own host sets `allow_pausing = 0`, perhaps for
+this reason.
+
+A frontend stall is therefore silence. RetroArch predicts our input for up to
+60 frames, then stalls (`NETPLAY_STALL_RUNNING_FAST`), and hangs up after 5 s
+as a host (`MAX_SERVER_STALL_TIME_USEC`) or 10 s as a client
+(`MAX_CLIENT_STALL_TIME_USEC`). A short stall (a slow serialize, a
+loading hitch) costs RetroArch a rollback and nothing else; a menu held open
+longer than that ends the session. Keeping it alive would mean feeding neutral
+input from the worker thread and catching up afterwards, in both roles; that
+is the next pacing item.
 
 A peer's PAUSE holds our frames with "Other player paused...".
 
@@ -156,7 +175,7 @@ them (first free device) and as Netplay already does.
 | Passwords | a host that sets one is refused with a log line; the hash is `sha256("%08X" salt + password)` in hex |
 | Analog and other devices | only joypad bits cross; analog words are sent as zero |
 | Spectators, more than two players | not planned for the first version |
-| Menu on a client of a no-pause host | RetroArch hangs up after 5 s; see Pause above |
+| A menu open longer than 5-10 s | RetroArch hangs up; see Pause and menus |
 | Protocol 8 | RetroArch master only |
 
 ## Protocol choice, detection and names
@@ -196,7 +215,11 @@ work (retroarch-plan.md phase 9).
 
 The joiner then writes the matching `protocol=` into its own session. As
 built: an explicit `--protocol` wins, then a version 2 announcement, then the
-POKE probe (`NS_probeRetroArch`, 700 ms); step 3's broker probe is implicit,
+POKE probe (`NS_probeRetroArch`, 1.5 s). An open but silent port 55435
+also counts as RetroArch: a RetroArch host answers POKE only from its frame
+loop, so one whose menu is open stays silent, and nothing of Netplay's own
+listens there outside a RetroArch session (the first device run missed a
+spruce host this way). Step 3's broker probe is implicit,
 since a Paklink join that finds no broker fails at the manifest exchange as
 before. The probe only finds a RetroArch host whose game is already running,
 since that is when RetroArch listens.
@@ -217,8 +240,12 @@ another name wins.
 
 **Nicknames.** RetroArch shows a nick for every player (`NICK`, `MODE`, the
 lobby). Netplay now has one setting, `nickname`, defaulting to
-`/proc/device-tree/model` (an H700 is about twelve devices, so the platform
-name would not tell them apart), else the platform. Every armed session
+what NextUI calls the device (`DEVICE` and `TRIMUI_MODEL` from its launcher,
+or the stock MainUI's model string when run without that environment, as
+under `--ctl`: "TrimUI Brick"); then `/proc/device-tree/model` only if it
+reads like a name (the Brick's is the SoC, "sun50iw10"); then the platform's
+family name (an H700 is about twelve devices, so on H700 a real model string
+matters). Every armed session
 carries it as `nick=`; the shim sends it as the RetroArch nick and the
 broker's version 2 announcement carries it, and the Join list shows it
 ("Ben's Brick (192.168.0.143)", "WiFi, RetroArch"). Not yet done: a row to
@@ -252,6 +279,12 @@ netplay is not armed by Netplay at all.
 - Cases: shim joins at protocol 7 and 5, shim hosts at 7 (with a mid-session
   savestate request) and 6, and a forced desync on each side, which must
   produce one mismatch, one state, and agreement afterwards.
+- The model reproduces RetroArch 1.22.2's one-way PAUSE (a RESUME never
+  unpauses it), counts any PAUSE it receives, and can play a client that
+  never runs ahead of the host's input (`--no-predict`) and sends `PLAY 0` as
+  spruce does. The case added after the device deadlock stalls the shim's
+  frontend for 600 ms in each role and requires zero PAUSEs; against the
+  first version it fails.
 
 The model does not predict, so it does not reproduce RetroArch's rollback,
 its real catch-up timing, or its behaviour with a peer that holds input back

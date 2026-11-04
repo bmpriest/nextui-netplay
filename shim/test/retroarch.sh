@@ -35,6 +35,8 @@ $CC harness.c   -o "$OUT/harness"          -I../include -O0 -std=gnu99 -ldl
 $CC raproto_test.c ../raproto.c -I../include -o "$OUT/raproto_test" -lz -lpthread
 SHIM=../../bin/native/netplay_shim.so
 
+# From here a failed check is recorded by say, not fatal.
+set +e
 fail=0
 say() { # <condition-result> <description>
 	if [ "$1" -eq 0 ]; then echo "  ok   $2"; else echo "  MISS $2"; fail=1; fi
@@ -74,7 +76,10 @@ shim_host() {
 }
 
 model_ok() { grep -q "^model: ok" "$OUT/$1.model"; }
-model_field() { sed -n "s/.* $2=\([0-9]*\).*/\1/p" "$OUT/$1.model"; }
+model_field() { # prints -1 when the model did not finish
+	v=$(sed -n "s/.* $2=\([0-9]*\).*/\1/p" "$OUT/$1.model")
+	echo "${v:--1}"
+}
 
 echo
 echo "== wire helpers against RetroArch 1.22.2's values"
@@ -113,6 +118,19 @@ say $? "our CRCs agree with the model's simulation"
 [ "$(model_field h7 loads)" -ge 2 ]; say $? "a mid-session savestate request was served at the stream point"
 grep -q "RetroArch client plays port 2 from frame" "$OUT/h7.shim"; say $? "answered PLAY with MODE"
 grep -q "RESULT: ok" "$OUT/h7.shim"; say $? "harness assertions"
+
+echo
+echo "== a RetroArch client that never predicts, with the host's frontend stalling"
+# The 2026-11-04 device deadlock: the host's join-time serialize stalled its
+# frontend long enough to send PAUSE, which RetroArch 1.22.2 never resumes
+# from. The model reproduces that bug, never runs ahead of the host's input,
+# and sends PLAY 0 as spruce does; the host stalls 600ms mid-session too.
+SHIM_ENV="HARNESS_STALL_AT=120 HARNESS_STALL_MS=600" shim_host hn $((BASE + 6)) 900 --no-predict --request-at 300
+model_ok hn; say $? "session runs ($(sed -n 's/^model: //p' "$OUT/hn.model"))"
+[ "$(model_field hn pauses)" -eq 0 ]; say $? "no PAUSE reached RetroArch"
+[ "$(model_field hn crc_bad)" -eq 0 ] && [ "$(model_field hn crc_ok)" -ge 2 ]; say $? "CRCs agree"
+SHIM_ENV="HARNESS_STALL_AT=120 HARNESS_STALL_MS=600" shim_client cn $((BASE + 7)) 900
+model_ok cn && [ "$(model_field cn pauses)" -eq 0 ]; say $? "joining side stalls without PAUSE too"
 
 echo
 echo "== older RetroArch protocols"

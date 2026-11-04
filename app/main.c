@@ -1515,7 +1515,7 @@ static NS_Protocol join_peer_protocol = NS_PROTO_PAKLINK;
 static NS_Protocol decide_join_protocol(const char* peer) {
 	if (join_protocol_override >= 0) return (NS_Protocol)join_protocol_override;
 	if (join_peer_protocol == NS_PROTO_RETROARCH) return NS_PROTO_RETROARCH;
-	return NS_probeRetroArch(peer, 700) ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+	return NS_probeRetroArch(peer, 1500) ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
 }
 
 static void do_arm(NS_Role role, const char* peer) {

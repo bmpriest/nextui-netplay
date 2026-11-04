@@ -187,6 +187,7 @@ class Stats:
         self.confirmed = 0
         self.pings = 0
         self.stalls = 0
+        self.pauses = 0
 
 
 # --------------------------------------------------------------------------
@@ -290,9 +291,13 @@ def run_host(port, frames, request_at, max_proto):
             elif n == "PING_RESPONSE":
                 pass
             elif n == "PAUSE":
+                # RetroArch 1.22.2's remote_unpaused tests
+                # flags & ((ACTIVE|PAUSED) == (ACTIVE|PAUSED)), i.e. flags & 1,
+                # so a peer's RESUME never unpauses it. Modelled faithfully.
                 paused = True
+                st.pauses += 1
             elif n == "RESUME":
-                paused = False
+                pass
             elif n == "DISCONNECT":
                 raise Violation("shim disconnected")
             else:
@@ -351,7 +356,7 @@ def run_host(port, frames, request_at, max_proto):
 # RetroArch as client (the shim hosts)
 # --------------------------------------------------------------------------
 
-def run_client(host, port, frames, request_at, max_proto):
+def run_client(host, port, frames, request_at, max_proto, no_predict=False):
     st = Stats()
     end = time.time() + 20
     while True:
@@ -386,7 +391,7 @@ def run_client(host, port, frames, request_at, max_proto):
     dclients = struct.unpack(">16I", body[88:152])
     if client_num & 0x7FFFFFFF != 1 or devices[0] != 1 or dclients[0] != 1:
         raise Violation("SYNC: client %d devices %s clients %s" % (client_num, devices[:2], dclients[:2]))
-    c.send(CMD["PLAY"], struct.pack(">I", 1 << 16))
+    c.send(CMD["PLAY"], struct.pack(">I", 0))      # as spruce's RetroArch sends it
 
     host_inputs = {}
     state = None
@@ -489,9 +494,10 @@ def run_client(host, port, frames, request_at, max_proto):
             elif n == "PING_RESPONSE":
                 st.pings += 1
             elif n == "PAUSE":
-                peer_paused = True
+                peer_paused = True             # and never resumed: see run_host
+                st.pauses += 1
             elif n == "RESUME":
-                peer_paused = False
+                pass
             elif n == "STALL":
                 stall = min(struct.unpack(">I", b)[0], 60)
                 st.stalls += 1
@@ -521,7 +527,8 @@ def run_client(host, port, frames, request_at, max_proto):
 
         # Our own clock: real time, with RetroArch's catch-up when the host's
         # input is well ahead, and its stall when we are far ahead of it.
-        if t0 is not None and playing_from is not None and not peer_paused:
+        # Like RetroArch, the clock runs from the first state on, player or not.
+        if t0 is not None and not peer_paused:
             now = time.time()
             steps = 0
             while next_tick <= now:
@@ -535,8 +542,14 @@ def run_client(host, port, frames, request_at, max_proto):
                 steps = 0
             if self_frame >= server_frame + 60:
                 steps = 0                      # NETPLAY_STALL_RUNNING_FAST
+            if no_predict:
+                # A client that never runs a frame before the host's input for
+                # it is here: the strictest pacing a host can meet, and the one
+                # that exposes a host waiting on the client before it has sent
+                # input up to the client's MODE frame.
+                steps = min(steps, max(0, server_frame - self_frame))
             for _ in range(steps):
-                if self_frame >= next_send:
+                if next_send is not None and self_frame >= next_send:
                     mine[self_frame] = client_input(self_frame)
                     c.send(CMD["INPUT"], struct.pack(">III", self_frame, 1, mine[self_frame]))
                     next_send = self_frame + 1
@@ -563,17 +576,20 @@ def main():
     ap.add_argument("--frames", type=int, default=600)
     ap.add_argument("--request-at", type=int, action="append", default=[])
     ap.add_argument("--max-proto", type=int, default=7)
+    ap.add_argument("--no-predict", action="store_true")
     a = ap.parse_args()
     try:
         if a.role == "host":
             st = run_host(int(a.args[0]), a.frames, a.request_at, a.max_proto)
         else:
-            st = run_client(a.args[0], int(a.args[1]), a.frames, a.request_at, a.max_proto)
+            st = run_client(a.args[0], int(a.args[1]), a.frames, a.request_at, a.max_proto,
+                            a.no_predict)
     except Violation as e:
         print("model: VIOLATION: %s" % e, flush=True)
         return 1
-    print("model: ok confirmed=%d crc_ok=%d crc_bad=%d loads=%d requests=%d pings=%d stalls=%d"
-          % (st.confirmed, st.crc_ok, st.crc_bad, st.loads, st.requests, st.pings, st.stalls), flush=True)
+    print("model: ok confirmed=%d crc_ok=%d crc_bad=%d loads=%d requests=%d pings=%d stalls=%d pauses=%d"
+          % (st.confirmed, st.crc_ok, st.crc_bad, st.loads, st.requests, st.pings, st.stalls, st.pauses),
+          flush=True)
     return 0
 
 
