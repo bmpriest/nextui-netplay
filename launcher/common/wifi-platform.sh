@@ -496,8 +496,20 @@ np_rtw_reload() {  # np_rtw_reload on|off
 	[ -f "$NP_RTW_KO" ] || { np_rtw_log "no $NP_RTW_KO"; return 1; }
 	_hold=2; [ -e "$NP_RTW_SLOW_FLAG" ] && _hold=5
 
+	# spruce has no NextUI wifi_init.sh: stopping nothing pulled the driver out
+	# from under its supplicant and left the radio down for good. Its wifi.sh
+	# is the one way to change the radio there; `apply` loads the driver only
+	# when it is not loaded, so the one loaded below keeps its power setting.
+	_spruce_wifi=
+	[ "${NETPLAY_FIRMWARE:-}" = spruce ] && [ -f "$SDCARD_PATH/spruce/scripts/wifi.sh" ] &&
+		_spruce_wifi="$SDCARD_PATH/spruce/scripts/wifi.sh"
+
 	np_rtw_log "reloading $NP_RTW_MODULE with rtw_power_mgnt=$_mgnt (radio off ${_hold}s)"
-	np_wifi_init stop
+	if [ -n "$_spruce_wifi" ]; then
+		sh "$_spruce_wifi" suspend --wait >/dev/null 2>&1
+	else
+		np_wifi_init stop
+	fi
 	rmmod "$NP_RTW_MODULE" 2>/dev/null
 	sleep "$_hold"
 	if ! np_rtw_load "$_mgnt" 40; then
@@ -508,7 +520,11 @@ np_rtw_reload() {  # np_rtw_reload on|off
 	fi
 	rfkill unblock wifi 2>/dev/null
 	ip link set "$NP_WIFI_IF" up 2>/dev/null
-	np_wifi_init start
+	if [ -n "$_spruce_wifi" ]; then
+		sh "$_spruce_wifi" apply --wait >/dev/null 2>&1
+	else
+		np_wifi_init start
+	fi
 	_w=0
 	while ! np_has_ip && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
 	np_has_ip || { np_rtw_log "driver reloaded but no address yet"; return 3; }

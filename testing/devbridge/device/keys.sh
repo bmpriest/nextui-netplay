@@ -44,6 +44,23 @@ in_menu() {
 IN=$(ls /mnt/SDCARD/Tools/*/DevBridge.pak/bin/input /mnt/SDCARD/App/DevBridge/bin/input 2>/dev/null | head -1)
 [ -x "$IN" ] || { echo "keys.sh: DevBridge input helper not found" >&2; exit 1; }
 
+# On spruce every event is its own sendevent process, about 60 ms on an
+# RG35XXH, so a tap's release lands that much after its hold: 0.12 s became
+# 0.18 s and Advance Wars 2's menu moved five entries for three presses. Time
+# release-all once (17 events, all no-ops) and take one event's cost off each
+# tap. NextUI's helper is a single process, so nothing to correct there.
+event_ms=0
+case $IN in /mnt/SDCARD/App/DevBridge/*)
+	cache=/tmp/netplay-devbridge/event-ms
+	if ! read -r event_ms 2>/dev/null < "$cache"; then
+		t0=$(cut -d' ' -f1 /proc/uptime)
+		"$IN" release-all >/dev/null
+		t1=$(cut -d' ' -f1 /proc/uptime)
+		event_ms=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%d", (b - a) * 1000 / 17 }')
+		mkdir -p "${cache%/*}" && echo "$event_ms" > "$cache"
+	fi ;;
+esac
+
 for step in "$@"; do
 	in_menu && { echo "keys.sh: a menu is in front, not pressing" >&2; exit 1; }
 	case $step in
@@ -54,7 +71,8 @@ for step in "$@"; do
 	# is a shell plus sendevent, and a separate release lands late enough to
 	# turn a 0.3 s hold into a menu auto-repeat.
 	case $buttons in *+*) ;; *)
-		"$IN" tap "$buttons" "$(awk -v s="$hold" 'BEGIN { printf "%d", s * 1000 }')" >/dev/null || exit 1
+		"$IN" tap "$buttons" "$(awk -v s="$hold" -v e="$event_ms" \
+			'BEGIN { ms = s * 1000 - e; printf "%d", ms < 20 ? 20 : ms }')" >/dev/null || exit 1
 		sleep "$gap"
 		continue ;;
 	esac

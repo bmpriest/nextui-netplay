@@ -604,7 +604,7 @@ app-spruce:
 	done
 	@ls -la bin/spruce/*/netplay*.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
-dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores \
+dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores check-udhcpd \
              $(NEXTUI_SYSTEM)/res/assets@2x.png
 	@rm -rf "$(SPRUCE_STAGE)" "$(SPRUCE_ARCHIVE)"
 	@D="$(SPRUCE_STAGE)/App/Netplay"; mkdir -p "$$D/nextui/.system" && \
@@ -626,6 +626,9 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		   dist/cores-experimental/$$p/gambatte_dual_libretro.so "$$D/cores/override/$$p/" || exit 1; \
 		case " $(MGBA_PLATFORMS) " in *" $$p "*) \
 			cp dist/cores-experimental/$$p/mgba_dual_libretro.so "$$D/cores/override/$$p/" || exit 1 ;; \
+		esac; \
+		case " $(UDHCPD_PLATFORMS) " in *" $$p "*) \
+			cp bin/$$p/udhcpd "$$D/bin/$$p/" || exit 1 ;; \
 		esac; \
 	done && \
 	if [ -d dist/compatibility/aarch64 ]; then \

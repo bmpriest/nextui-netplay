@@ -55,8 +55,10 @@ hotkey). Paired cores are off by default: `device/ctl.sh set instanced 1` on
 both before arming. mkart runs GBA through spruce's mgba with
 `device/spruce-core.sh`, which also puts spruce's core choice back.
 
-Brick to RG35XXH: sor2, rcr, contra3 and tetris pass; ctr needs CTR on both
-cards.
+Run with WiFi power save off on both (`device/ctl.sh powersave off`): spruce
+leaves it on, and a Brick then loses the AP for minutes at a time. Brick to
+RG35XXH: sor2, rcr, contra3, tetris, mkart and aw2 pass (aw2 intermittently:
+its battle start can stall on a jittery link); ctr needs CTR on both cards.
 
 Sessions, screenshots and closest-miss captures go to
 `testing/results/devbridge/`.
