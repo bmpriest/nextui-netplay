@@ -648,6 +648,7 @@ test:
 	@./shim/test/run.sh
 	@./shim/test/link.sh
 	@./shim/test/dual.sh
+	@./shim/test/retroarch.sh
 	@./shim/test/romscan.sh
 	@./cores/tests/run.sh
 	@./cores/tests/mgbalockstep.sh

@@ -45,6 +45,7 @@
 #include "romscan.h"
 #include <zlib.h>
 #include "netlink.h"
+#include "raproto.h"
 #include "overlay.h"
 #include "sha256.h"
 
@@ -284,6 +285,12 @@ static void failure_overlay_message(char* out, size_t len);
 static bool peer_pause_tick(unsigned frame);
 static void present_paused_frame(unsigned frame_counter, const char* msg);
 static void present_paused_audio(void);
+static int ra_mode;
+static int ra_special_state;
+static int ra_suppress_av;
+static int ra_reset_pending;
+static uint32_t ra_content_crc;
+static void ra_read_session(const char* path);
 
 static bool read_whole_file(const char* path, void** out, size_t* out_len) {
 	FILE* f = fopen(path, "rb");
@@ -1135,12 +1142,21 @@ static void ensure_loaded(void) {
 		// reach the same answer without having to negotiate it.
 		int override = session_mode_override(session);
 		netplay_mode = (override >= 0) ? override : !core_wants_link();
+		ra_read_session(session);
+		if (ra_mode) {
+			/* RetroArch peers play shared screen; their link cores speak
+			 * NETPACKET, which raproto does not carry yet. */
+			if (core_wants_link())
+				shim_log("WARNING: link cores are not supported with RetroArch peers yet\n");
+			netplay_mode = 1;
+		}
 
 		struct retro_system_info info;
 		memset(&info, 0, sizeof(info));
 		core.get_system_info(&info);
-		shim_log("mode=%s for %s (%s)\n",
+		shim_log("mode=%s%s for %s (%s)\n",
 		         netplay_mode ? "shared-screen" : "link-cable",
+		         ra_mode ? " with a RetroArch peer" : "",
 		         info.library_name ? info.library_name : "unknown core",
 		         override >= 0 ? "from session" : "from core");
 
@@ -1148,7 +1164,7 @@ static void ensure_loaded(void) {
 		/* NETPLAY_DUAL_DISABLE is set by the launcher when a previous process of
 		 * this game demoted itself: the paired core is not even staged, so this
 		 * is belt and braces against relaunching into the same negotiation. */
-		const char* dual_disabled = getenv(SHIM_ENV_NO_DUAL);
+		const char* dual_disabled = ra_mode ? "1" : getenv(SHIM_ENV_NO_DUAL);
 		bool dual_core_enabled =
 			(core_is_gambatte() && session_instanced_core(session, "gambatte")) ||
 			(core_is_mgba() && session_instanced_core(session, "mgba"));
@@ -1173,7 +1189,9 @@ static void ensure_loaded(void) {
 
 		// After the mode is known: only shared screen compares state, and only
 		// then does a nondeterministic core matter.
-		if (netplay_mode) apply_required_options();
+		/* Not against RetroArch: its peer runs with its own options, and
+		 * lockstep needs both sides to run with the same ones. */
+		if (netplay_mode && !ra_mode) apply_required_options();
 		if (netplay_mode && NetLink_getRole() == NETLINK_ROLE_CLIENT) {
 			snprintf(guest_save_dir, sizeof(guest_save_dir),
 			         "/tmp/netplay-guest-%s%ld",
@@ -1296,6 +1314,23 @@ static bool shim_environment(unsigned cmd, void* data) {
 		const char* forced = var->key ? find_option_override(var->key) : NULL;
 		if (forced) {
 			var->value = forced;
+			return true;
+		}
+	}
+
+	/* RetroArch's netplay serializes "specially" (core_serialize_special):
+	 * the core sees the rollback-netplay savestate context and fast savestates.
+	 * Cores may write different bytes for that context, so the shim answers
+	 * the same way around its own serialize calls in a RetroArch session. */
+	if (ra_special_state) {
+		if (cmd == RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT) {
+			if (data) *(int*)data = RETRO_SAVESTATE_CONTEXT_ROLLBACK_NETPLAY;
+			return true;
+		}
+		if (cmd == RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE) {
+			int flags = 0;
+			if (!fe_environment || !fe_environment(cmd, &flags)) flags = 3;
+			if (data) *(int*)data = flags | 4; /* RETRO_AV_ENABLE_FAST_SAVESTATES */
 			return true;
 		}
 	}
@@ -2126,6 +2161,15 @@ static bool desync_recovery_allowed(void) {
 static void dual_reset_bootstrap(void);
 
 static void retry_failed_session(void) {
+	if (ra_mode) {
+		/* A RetroArch session restarts from its handshake: the host sends a
+		 * fresh SYNC and state to whoever connects. */
+		recovery_failed = 0;
+		recovery_error[0] = '\0';
+		input_stall_since.tv_sec = input_stall_since.tv_usec = 0;
+		shim_log("user chose to wait; RetroArch session continues\n");
+		return;
+	}
 	NetLink_stop();
 	NetLink_resetSync();
 	if (dual_link_mode) {
@@ -2179,6 +2223,7 @@ static bool failure_choice_input(FailureChoice* out) {
 static void failure_choose_exit_or_solo(FailureChoice choice) {
 	if (choice == FAILURE_EXIT) {
 		NetLink_stop();
+		if (ra_mode) RaProto_stop();
 		exit_requested = 1;
 		shim_log("user requested exit from the netplay failure overlay\n");
 		if (fe_environment) fe_environment(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
@@ -2186,6 +2231,7 @@ static void failure_choose_exit_or_solo(FailureChoice choice) {
 	}
 
 	NetLink_stop();
+	if (ra_mode) RaProto_stop();
 	solo_mode = 1;
 	netplay_synced = 0;
 	recovery_failed = 0;
@@ -2698,6 +2744,7 @@ static void pump_netpacket(void) {
 static void present_paused_frame(unsigned frame_counter, const char* msg);
 
 static void shim_video_refresh(const void* data, unsigned width, unsigned height, size_t pitch) {
+	if (ra_suppress_av) return;
 	if (data && session_active) {
 		size_t need = pitch * height;
 		if (need > last_frame_cap) {
@@ -2865,10 +2912,12 @@ static void present_paused_audio(void) {
 }
 
 static void shim_audio_sample(int16_t left, int16_t right) {
+	if (ra_suppress_av) return;
 	if (fe_audio_sample) fe_audio_sample(left, right);
 }
 
 static size_t shim_audio_sample_batch(const int16_t* data, size_t frames) {
+	if (ra_suppress_av) return frames;
 	return fe_audio_sample_batch ? fe_audio_sample_batch(data, frames) : 0;
 }
 
@@ -2938,7 +2987,7 @@ void retro_set_input_state(retro_input_state_t cb) {
 void retro_init(void) {
 	ensure_loaded();
 	// Before the core's own init, so link-capable cores see a ready transport.
-	if (session_active) NetLink_start();
+	if (session_active && !ra_mode) NetLink_start();
 	core.init();
 }
 
@@ -2959,7 +3008,8 @@ void retro_deinit(void) {
 		if (core_netpacket.stop)         core_netpacket.stop();
 		netpacket_started = 0;
 	}
-	if (session_active) NetLink_stop();
+	if (session_active && !ra_mode) NetLink_stop();
+	if (ra_mode) RaProto_stop();
 	free(checkpoint_candidate);
 	checkpoint_candidate = NULL;
 	checkpoint_candidate_len = 0;
@@ -3008,6 +3058,16 @@ void retro_reset(void) {
 		dual_reset_pending = 1;
 		show_runtime_notice("Resetting this linked console...");
 		shim_log("queued reset for logical console %c\n", dual_local_console ? 'B' : 'A');
+		return;
+	}
+	if (session_active && ra_mode && !solo_mode) {
+		if (NetLink_getRole() != NETLINK_ROLE_HOST) {
+			show_runtime_notice("Only the host can reset.");
+			return;
+		}
+		/* Resetting is a new authoritative state for the client, sent at
+		 * the frame-stream point like any other (see ra_host_send_state). */
+		ra_reset_pending = 1;
 		return;
 	}
 	if (session_active && netplay_mode && !solo_mode) {
@@ -3860,6 +3920,585 @@ static bool dual_link_tick(void) {
 	return true;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+// RetroArch peer (session protocol=retroarch)
+//
+// Shared-screen lockstep against stock RetroArch netplay, over raproto.c. The
+// frame numbers are RetroArch's: a client adopts the host's, a host starts at
+// 0 when the first client syncs. What RetroArch requires of a peer, and why
+// each piece below is shaped the way it is, is in
+// docs/analysis/retroarch-protocol.md.
+//////////////////////////////////////////////////////////////////////////////
+
+#define RA_CRC_INTERVAL      300 /* host: CRC cadence (RetroArch's own is 600) */
+#define RA_CRC_SAMPLE        60  /* client: own CRCs kept at these frames */
+#define RA_CRC_RING          32
+#define RA_CATCHUP_MARGIN    4   /* client: frames beyond the delay before catching up */
+#define RA_CATCHUP_TICKS     30
+#define RA_STALL_MARGIN      3   /* host: RetroArch's own threshold for STALL */
+#define RA_STALL_EVERY       120 /* NETPLAY_MAX_REQ_STALL_FREQUENCY */
+#define RA_HELD_EVENTS       8
+
+/* ra_mode: session protocol=retroarch (declared above) */
+static int ra_started;
+/* ra_special_state: answering GET_SAVESTATE_CONTEXT as RetroArch's netplay does */
+static char ra_nick[RAPROTO_NICK_LEN];
+static uint16_t ra_port;
+static int ra_timeline;          /* a shared frame timeline exists */
+static int ra_link_ready;        /* host: the current client has had its SYNC */
+static uint32_t ra_next_send;    /* next frame of our input the stream has not carried */
+static int ra_send_started;
+/* Us as a player: devices (RetroArch ports, bitmask) and the first frame. */
+static int ra_playing;
+static uint32_t ra_devices;
+static uint32_t ra_player_from;
+/* The peer as a player. */
+static int ra_peer_playing;
+static uint32_t ra_peer_from;
+static uint32_t ra_peer_until = UINT32_MAX; /* a client that left: frames from here are 0 */
+static unsigned ra_local_port = 1, ra_remote_port = 0;
+static int ra_peer_paused;
+static uint32_t ra_stall_ticks;
+static int ra_need_sync;         /* host: a client is waiting for SYNC */
+static int ra_state_pending;     /* host: send an authoritative state at the next input frame */
+/* ra_reset_pending: host, a state after a core reset */
+static int ra_request_outstanding; /* client: REQUEST_SAVESTATE sent, no state yet */
+static uint32_t ra_last_stall_frame;
+static unsigned ra_behind_ticks;
+static int ra_catching_up;
+static unsigned ra_crc_checks, ra_crc_mismatches, ra_states_loaded, ra_states_sent;
+static struct { uint32_t frame, crc; int valid; } ra_own_crc[RA_CRC_RING], ra_peer_crc[RA_CRC_RING];
+static RaProtoEvent ra_held[RA_HELD_EVENTS];
+static int ra_held_count;
+static char ra_notice[96];
+
+static void ra_read_session(const char* path) {
+	ra_port = RAPROTO_DEFAULT_PORT;
+	snprintf(ra_nick, sizeof(ra_nick), "Netplay");
+	FILE* f = path ? fopen(path, "r") : NULL;
+	if (!f) return;
+	char line[256];
+	while (fgets(line, sizeof(line), f)) {
+		char* end = strpbrk(line, "\r\n");
+		if (end) *end = '\0';
+		if (!strcmp(line, "protocol=retroarch")) ra_mode = 1;
+		else if (!strncmp(line, "ra_port=", 8)) {
+			int p = atoi(line + 8);
+			if (p > 0 && p < 65536) ra_port = (uint16_t)p;
+		} else if (!strncmp(line, "nick=", 5) && line[5]) {
+			snprintf(ra_nick, sizeof(ra_nick), "%.31s", line + 5);
+		}
+	}
+	fclose(f);
+}
+
+static size_t ra_state_size(void) {
+	ra_special_state = 1;
+	size_t n = core.serialize_size();
+	ra_special_state = 0;
+	return n;
+}
+
+static void* ra_capture(size_t* len) {
+	size_t n = ra_state_size();
+	if (!n) return NULL;
+	void* buf = calloc(1, n);
+	if (!buf) return NULL;
+	ra_special_state = 1;
+	bool ok = core.serialize(buf, n);
+	ra_special_state = 0;
+	if (!ok) { free(buf); return NULL; }
+	*len = n;
+	return buf;
+}
+
+static bool ra_load(const void* data, size_t len) {
+	size_t ours = ra_state_size();
+	if (len != ours)
+		shim_log("RetroArch state is %zu bytes, this core serializes %zu: the builds differ\n",
+		         len, ours);
+	ra_special_state = 1;
+	bool ok = core.unserialize(data, len);
+	ra_special_state = 0;
+	return ok;
+}
+
+/* netplay_delta_frame_crc: zlib's CRC-32 over the core's own bytes. */
+static uint32_t ra_state_crc(const void* data, size_t len) {
+	return (uint32_t)crc32(0L, (const Bytef*)data, (uInt)len);
+}
+
+static void ra_note_own_crc(uint32_t frame, uint32_t crc) {
+	unsigned i = frame / RA_CRC_SAMPLE % RA_CRC_RING;
+	ra_own_crc[i].frame = frame;
+	ra_own_crc[i].crc = crc;
+	ra_own_crc[i].valid = 1;
+}
+
+static void ra_compare_crc(uint32_t frame, uint32_t theirs, uint32_t ours) {
+	ra_crc_checks++;
+	if (theirs == ours) {
+		if (ra_crc_checks <= 3) shim_log("RetroArch CRC agrees at frame %u (%08x)\n", frame, ours);
+		return;
+	}
+	ra_crc_mismatches++;
+	shim_log("RetroArch CRC mismatch at frame %u: host %08x, ours %08x\n", frame, theirs, ours);
+	if (!ra_request_outstanding && RaProto_requestState()) {
+		ra_request_outstanding = 1;
+		shim_log("requested the host's savestate\n");
+	}
+}
+
+static void ra_lowest_device(uint32_t devices, unsigned* port) {
+	for (unsigned i = 0; i < RAPROTO_MAX_DEVICES; i++)
+		if (devices & (1u << i)) { *port = i; return; }
+}
+
+static bool ra_stream_open(void) {
+	return NetLink_getRole() == NETLINK_ROLE_HOST ? ra_link_ready : RaProto_isConnected();
+}
+
+/* Our sampled input for every frame up to netplay_frame + delay that has not
+ * been decided yet, sent when a stream is open. A gap (the first frames after
+ * MODE, or after a state) takes the current sample: it is the input the
+ * player is most likely holding. */
+static void ra_send_inputs(void) {
+	if (!ra_playing) return;
+	if (ra_state_pending || ra_need_sync || ra_reset_pending)
+		return; /* host: draining toward a state */
+	uint32_t target = netplay_frame + (uint32_t)input_delay;
+	if (!ra_send_started) {
+		ra_next_send = ra_player_from > netplay_frame ? ra_player_from : netplay_frame;
+		ra_send_started = 1;
+	}
+	if (ra_next_send > target) return;
+	uint32_t local = fe_input_state
+		? (uint16_t)fe_input_state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK)
+		: 0;
+	bool open = ra_stream_open();
+	for (; ra_next_send <= target; ra_next_send++) {
+		local_inputs[ra_next_send % 256] = local;
+		if (open) RaProto_sendInput(ra_next_send, ra_devices, local);
+	}
+}
+
+/* Host: SYNC, LOAD_SAVESTATE and MODE all name the client's next expected
+ * host input frame (RetroArch NAKs anything else), which is ra_next_send. A
+ * state for that frame exists only once netplay_frame reaches it, so new
+ * input stops while the frames already decided are run. */
+static bool ra_host_at_stream_point(void) {
+	return !ra_send_started || netplay_frame == ra_next_send;
+}
+
+static bool ra_host_send_state(void) {
+	if (ra_reset_pending) {
+		core.reset();
+		ra_reset_pending = 0;
+		shim_log("host reset at frame %u\n", netplay_frame);
+	}
+	size_t len = 0;
+	void* state = ra_capture(&len);
+	if (!state) {
+		recovery_fail("Core cannot save state: RetroArch netplay needs it.");
+		return false;
+	}
+	bool ok = RaProto_sendState(netplay_frame, state, len);
+	/* Both sides hold unserialize(S): state-sync.md invariant 2. RetroArch's
+	 * own host skips this; it costs one load per state sent. */
+	if (ok && !ra_load(state, len)) shim_log("WARNING: host could not reload its own state\n");
+	free(state);
+	ra_states_sent++;
+	return ok;
+}
+
+static void ra_host_sync(void) {
+	uint32_t device_clients[RAPROTO_MAX_DEVICES] = { 1u }; /* device 0: us, client 0 */
+	size_t sram_len = core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
+	void* sram = sram_len ? core.get_memory_data(RETRO_MEMORY_SAVE_RAM) : NULL;
+	if (!sram) sram_len = 0;
+	if (!ra_send_started) {
+		ra_send_started = 1;
+		ra_next_send = netplay_frame;
+		timeline_start_frame = netplay_frame;
+	}
+	RaProto_sendSync(ra_next_send, device_clients, sram, sram_len);
+	ra_need_sync = 0;
+	ra_link_ready = 1;
+	ra_timeline = 1;
+	ra_playing = 1;
+	ra_devices = 1u;
+	ra_local_port = 0;
+	ra_remote_port = 1;
+	ra_peer_playing = 0;
+	ra_host_send_state();
+	shim_log("synced RetroArch client '%s' at frame %u\n", RaProto_peerNick(), netplay_frame);
+}
+
+/* Applied at the frame it names; held until then. */
+static void ra_apply_timed(const RaProtoEvent* ev) {
+	if (ev->type == RAPROTO_EV_STATE) {
+		if (!ra_load(ev->data, ev->len)) {
+			recovery_fail("Could not load the RetroArch host's state.");
+			return;
+		}
+		if (ra_timeline && ev->frame < netplay_frame)
+			shim_log("host state for frame %u arrived at %u; rewound\n", ev->frame, netplay_frame);
+		netplay_frame = ev->frame;
+		if (!ra_timeline) timeline_start_frame = ev->frame;
+		ra_timeline = 1;
+		ra_request_outstanding = 0;
+		ra_states_loaded++;
+		/* RetroArch's host ignores our input for frames before a state it
+		 * sent (netplay_load_savestate / netplay_force_future). */
+		if (ra_send_started && ra_next_send < ev->frame) ra_next_send = ev->frame;
+		shim_log("loaded the host's state for frame %u (%zu bytes)\n", ev->frame, ev->len);
+	} else if (ev->type == RAPROTO_EV_RESET) {
+		core.reset();
+		shim_log("host reset at frame %u\n", ev->frame);
+	}
+}
+
+static void ra_hold(const RaProtoEvent* ev) {
+	if (ra_held_count < RA_HELD_EVENTS) {
+		ra_held[ra_held_count++] = *ev;
+		return;
+	}
+	RaProtoEvent copy = *ev;
+	RaProto_freeEvent(&copy);
+	shim_log("WARNING: too many future-dated RetroArch events; one dropped\n");
+}
+
+static void ra_release_held(void) {
+	int kept = 0;
+	for (int i = 0; i < ra_held_count; i++) {
+		if (ra_held[i].frame <= netplay_frame || !ra_timeline) {
+			ra_apply_timed(&ra_held[i]);
+			RaProto_freeEvent(&ra_held[i]);
+		} else {
+			ra_held[kept++] = ra_held[i];
+		}
+	}
+	ra_held_count = kept;
+}
+
+static void ra_handle_event(RaProtoEvent* ev) {
+	bool host = NetLink_getRole() == NETLINK_ROLE_HOST;
+	switch (ev->type) {
+	case RAPROTO_EV_CLIENT_READY:
+		ra_need_sync = 1;
+		snprintf(ra_notice, sizeof(ra_notice), "%s joined from RetroArch", ev->text);
+		show_runtime_notice(ra_notice);
+		break;
+	case RAPROTO_EV_SYNC: {
+		/* netplay_handshake_pre_sync: adopt the host's port devices and its
+		 * SRAM. The state that follows sets everything else. */
+		for (unsigned i = 0; i < RAPROTO_MAX_DEVICES; i++)
+			core.set_controller_port_device(i, RaProto_configDevice(i));
+		size_t local = core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
+		void* sram = local ? core.get_memory_data(RETRO_MEMORY_SAVE_RAM) : NULL;
+		if (sram && ev->len == local) memcpy(sram, ev->data, local);
+		else if (ev->len) shim_log("host SRAM is %zu bytes, ours %zu: not loaded\n", ev->len, local);
+		ra_peer_playing = 1;
+		ra_peer_from = ev->frame;
+		ra_remote_port = 0;
+		ra_lowest_device(ev->b, &ra_remote_port);
+		break;
+	}
+	case RAPROTO_EV_MODE: {
+		uint32_t mode = ev->a;
+		if (mode & RAPROTO_MODE_YOU) {
+			if (mode & RAPROTO_MODE_PLAYING) {
+				ra_playing = 1;
+				ra_devices = ev->b;
+				ra_player_from = ev->frame;
+				ra_send_started = 0;
+				ra_lowest_device(ev->b, &ra_local_port);
+				shim_log("playing as RetroArch port %u from frame %u\n", ra_local_port + 1, ev->frame);
+				if (ra_local_port > 1)
+					shim_log("WARNING: only ports 1 and 2 reach the core through the shim\n");
+			} else {
+				ra_playing = 0;
+				shim_log("now spectating\n");
+			}
+		} else if ((mode & 0xFFFF) == 0) {
+			ra_peer_playing = (mode & RAPROTO_MODE_PLAYING) != 0; /* the host itself */
+		}
+		break;
+	}
+	case RAPROTO_EV_MODE_REFUSED:
+		shim_log("host refused us a player slot (reason %u)\n", ev->a);
+		recovery_fail("RetroArch host has no free player slot.");
+		break;
+	case RAPROTO_EV_PLAY:
+		if (!host || ra_peer_playing || !ra_link_ready) break;
+		/* netplay_handle_play_spectate: the second device, from the client's
+		 * next expected host input. */
+		ra_peer_playing = 1;
+		ra_peer_from = ra_next_send;
+		ra_peer_until = UINT32_MAX;
+		RaProto_expectRemoteFrom(ra_peer_from);
+		RaProto_sendMode(ra_peer_from, RAPROTO_MODE_YOU | RAPROTO_MODE_PLAYING | 1u, 1u << 1, ev->text);
+		shim_log("RetroArch client plays port 2 from frame %u\n", ra_peer_from);
+		break;
+	case RAPROTO_EV_SPECTATE:
+		if (!host || !ra_peer_playing) break;
+		ra_peer_until = RaProto_remoteHorizon();
+		ra_peer_playing = 0;
+		RaProto_sendMode(ra_peer_until, RAPROTO_MODE_YOU | 1u, 0, ev->text);
+		break;
+	case RAPROTO_EV_STATE:
+	case RAPROTO_EV_RESET:
+		if (!ra_timeline ? ev->type == RAPROTO_EV_RESET : ev->frame > netplay_frame) {
+			ra_hold(ev);
+			return; /* ownership moved to the hold list */
+		}
+		ra_apply_timed(ev);
+		break;
+	case RAPROTO_EV_CRC:
+		if (host) break;
+		if (!ra_timeline || ev->frame >= netplay_frame) {
+			unsigned j = ev->frame % RA_CRC_RING;
+			ra_peer_crc[j].frame = ev->frame;
+			ra_peer_crc[j].crc = ev->a;
+			ra_peer_crc[j].valid = 1;
+		} else {
+			unsigned i = ev->frame / RA_CRC_SAMPLE % RA_CRC_RING;
+			if (ra_own_crc[i].valid && ra_own_crc[i].frame == ev->frame)
+				ra_compare_crc(ev->frame, ev->a, ra_own_crc[i].crc);
+		}
+		break;
+	case RAPROTO_EV_REQUEST_STATE:
+		if (host && ra_link_ready) {
+			ra_state_pending = 1;
+			shim_log("RetroArch client asked for a savestate\n");
+		}
+		break;
+	case RAPROTO_EV_PAUSE:
+		ra_peer_paused = 1;
+		break;
+	case RAPROTO_EV_RESUME:
+		ra_peer_paused = 0;
+		break;
+	case RAPROTO_EV_STALL:
+		ra_stall_ticks = ev->a > 60 ? 60 : ev->a; /* NETPLAY_MAX_REQ_STALL_TIME */
+		break;
+	case RAPROTO_EV_DISCONNECT:
+		ra_peer_paused = 0;
+		if (host && ra_timeline) {
+			if (ra_peer_playing) ra_peer_until = ev->frame;
+			ra_peer_playing = 0;
+			ra_link_ready = 0;
+			ra_need_sync = 0;
+			snprintf(ra_notice, sizeof(ra_notice), "RetroArch player left");
+			show_runtime_notice(ra_notice);
+			shim_log("RetroArch client left (%s); playing on alone\n", ev->text);
+		} else if (host) {
+			ra_link_ready = 0;
+			ra_need_sync = 0;
+			if (!strncmp(ev->text, "Cannot", 6)) recovery_fail(ev->text);
+		} else {
+			recovery_fail(ev->text[0] && strncmp(ev->text, "peer", 4)
+			              ? ev->text : "RetroArch host disconnected.");
+		}
+		break;
+	default:
+		break;
+	}
+	RaProto_freeEvent(ev);
+}
+
+static void ra_start(void) {
+	if (ra_started) return;
+	struct retro_system_info info;
+	memset(&info, 0, sizeof(info));
+	core.get_system_info(&info);
+	RaProtoConfig cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.role = NetLink_getRole() == NETLINK_ROLE_HOST ? RAPROTO_ROLE_HOST : RAPROTO_ROLE_CLIENT;
+	if (cfg.role == RAPROTO_ROLE_CLIENT) {
+		const char* session = getenv(SHIM_ENV_SESSION);
+		FILE* f = session ? fopen(session, "r") : NULL;
+		char line[256];
+		while (f && fgets(line, sizeof(line), f)) {
+			char* end = strpbrk(line, "\r\n");
+			if (end) *end = '\0';
+			if (!strncmp(line, "peer=", 5)) snprintf(cfg.peer, sizeof(cfg.peer), "%.63s", line + 5);
+		}
+		if (f) fclose(f);
+	}
+	cfg.port = ra_port;
+	snprintf(cfg.nick, sizeof(cfg.nick), "%s", ra_nick);
+	snprintf(cfg.core_name, sizeof(cfg.core_name), "%s", info.library_name ? info.library_name : "");
+	snprintf(cfg.core_version, sizeof(cfg.core_version), "%s",
+	         info.library_version ? info.library_version : "");
+	cfg.content_crc = ra_content_crc;
+	cfg.allow_pausing = true;
+	cfg.latency_min = cfg.latency_max = 0;
+	const char* maxp = getenv("NETPLAY_RA_MAX_PROTOCOL");
+	if (maxp) cfg.max_protocol = (uint32_t)atoi(maxp);
+	if (!RaProto_start(&cfg)) recovery_fail("Could not start RetroArch netplay.");
+	ra_started = 1;
+}
+
+static void ra_report(void) {
+	if (stat_frames < PACING_INTERVAL) return;
+	shim_log("ra: frame %u, %u run, %u stalled (max %u), peer horizon %u, sent to %u, "
+	         "crc %u bad of %u, states %u loaded %u sent, ping %dms%s\n",
+	         netplay_frame, stat_frames, stat_stalls, stat_stall_max, RaProto_remoteHorizon(),
+	         ra_next_send, ra_crc_mismatches, ra_crc_checks, ra_states_loaded, ra_states_sent,
+	         RaProto_pingMs(), ra_catching_up ? ", catching up" : "");
+	stat_frames = stat_stalls = stat_stall_max = 0;
+}
+
+/* One emulated frame if every input for it is here. present=false runs it
+ * with video and audio withheld (catch-up). Returns true if the core ran. */
+static bool ra_step(bool present) {
+	bool host = NetLink_getRole() == NETLINK_ROLE_HOST;
+	ra_release_held();
+	if (recovery_failed) return false;
+
+	if (host && ra_reset_pending && !ra_link_ready) {
+		core.reset(); /* nobody to tell */
+		ra_reset_pending = 0;
+	}
+	if (host && (ra_need_sync || ra_state_pending || ra_reset_pending) &&
+	    ra_host_at_stream_point()) {
+		if (ra_need_sync) ra_host_sync();
+		else {
+			ra_state_pending = 0;
+			ra_host_send_state();
+		}
+	}
+	ra_send_inputs();
+
+	uint32_t f = netplay_frame;
+	uint32_t mine = (ra_playing && f >= ra_player_from) ? local_inputs[f % 256] : 0;
+	uint32_t theirs = 0;
+	bool need_peer = host ? (f >= ra_peer_from && (ra_peer_playing || f < ra_peer_until))
+	                      : true; /* the host's INPUT or NOINPUT, every frame */
+	if (host && !ra_peer_playing && ra_peer_until == UINT32_MAX) need_peer = false;
+	if (need_peer && !RaProto_getRemoteInput(f, &theirs)) return false;
+
+	/* CRCs over the state before the frame runs (netplay_handle_frame_hash). */
+	unsigned pj = f % RA_CRC_RING;
+	bool peer_crc_here = !host && ra_peer_crc[pj].valid && ra_peer_crc[pj].frame == f;
+	if ((host && ra_link_ready && ra_peer_playing && f % RA_CRC_INTERVAL == 0 &&
+	     f != timeline_start_frame) ||
+	    (!host && (f % RA_CRC_SAMPLE == 0 || peer_crc_here))) {
+		size_t len = 0;
+		void* state = ra_capture(&len);
+		if (state) {
+			uint32_t crc = ra_state_crc(state, len);
+			free(state);
+			if (host) RaProto_sendCrc(f, crc);
+			else {
+				if (f % RA_CRC_SAMPLE == 0) ra_note_own_crc(f, crc);
+				if (peer_crc_here) {
+					ra_compare_crc(f, ra_peer_crc[pj].crc, crc);
+					ra_peer_crc[pj].valid = 0;
+				}
+			}
+		}
+	}
+
+	frame_buttons[0] = frame_buttons[1] = 0;
+	if (ra_local_port < 2) frame_buttons[ra_local_port] = mine;
+	if (ra_remote_port < 2) frame_buttons[ra_remote_port] = theirs;
+	netplay_synced = 1;
+
+	ra_suppress_av = !present;
+	NetLink_setCoreRunning(true);
+	core.run();
+	NetLink_setCoreRunning(false);
+	ra_suppress_av = 0;
+	netplay_frame++;
+	stat_frames++;
+	return true;
+}
+
+static void ra_tick(void) {
+	bool host = NetLink_getRole() == NETLINK_ROLE_HOST;
+	RaProto_markFrame();
+	if (!ra_started) ra_start();
+
+	RaProtoEvent ev;
+	while (RaProto_pollEvent(&ev)) ra_handle_event(&ev);
+
+	if (recovery_failed) {
+		if (fe_input_poll) fe_input_poll();
+		failure_input_tick();
+		char failure_message[224];
+		failure_overlay_message(failure_message, sizeof(failure_message));
+		present_paused_frame(stall_run++, failure_message);
+		present_paused_audio();
+		return;
+	}
+
+	/* The first client: nothing has run, so frame 0 is the stream point. */
+	if (host && ra_need_sync && !ra_timeline) ra_host_sync();
+	if (!ra_timeline) {
+		if (fe_input_poll) fe_input_poll();
+		static unsigned waiting;
+		present_paused_frame(waiting++, host ? "Waiting for a RetroArch player..."
+		                                     : "Joining RetroArch host...");
+		present_paused_audio();
+		return;
+	}
+
+	if (ra_peer_paused || ra_stall_ticks) {
+		if (ra_stall_ticks) ra_stall_ticks--;
+		if (fe_input_poll) fe_input_poll();
+		present_paused_frame(stall_run++, ra_peer_paused ? "Other player paused..." : NULL);
+		present_paused_audio();
+		return;
+	}
+
+	/* Host: a client running too far ahead of our input is asked to wait
+	 * (netplay_sync_input_post_frame's STALL). */
+	if (host && ra_peer_playing && ra_link_ready) {
+		uint32_t horizon = RaProto_remoteHorizon();
+		if (horizon > ra_next_send + RA_STALL_MARGIN &&
+		    netplay_frame >= ra_last_stall_frame + RA_STALL_EVERY) {
+			RaProto_sendStall(horizon - ra_next_send + 1);
+			ra_last_stall_frame = netplay_frame;
+		}
+	}
+
+	if (fe_input_poll) fe_input_poll();
+	if (!ra_step(true)) {
+		if (recovery_failed) return;
+		if (!input_stall_since.tv_sec) gettimeofday(&input_stall_since, NULL);
+		if (elapsed_ms(&input_stall_since) > peer_wait_timeout_ms()) {
+			recovery_fail("Other player stopped sending input.");
+			return;
+		}
+		stat_stalls++;
+		stall_run++;
+		if (stall_run > stat_stall_max) stat_stall_max = stall_run;
+		present_paused_frame(stall_run, (stall_run > STALL_OVERLAY_FRAMES || !have_last_frame())
+		                                    ? "Waiting for other player..." : NULL);
+		present_paused_audio();
+		return;
+	}
+	input_stall_since.tv_sec = input_stall_since.tv_usec = 0;
+	stall_run = 0;
+
+	/* Client: a host far ahead of us is caught up with one extra, unshown frame
+	 * per tick, as RetroArch itself catches up by running unthrottled. */
+	if (!host) {
+		uint32_t horizon = RaProto_remoteHorizon();
+		uint32_t ahead = horizon > netplay_frame ? horizon - netplay_frame : 0;
+		if (ahead > (uint32_t)input_delay + RA_CATCHUP_MARGIN) {
+			if (++ra_behind_ticks >= RA_CATCHUP_TICKS) ra_catching_up = 1;
+		} else {
+			ra_behind_ticks = 0;
+			if (ahead <= (uint32_t)input_delay + 1) ra_catching_up = 0;
+		}
+		if (ra_catching_up) ra_step(false);
+	}
+	ra_report();
+}
+
 void retro_run(void) {
 	if (!core.handle) return;
 
@@ -3876,6 +4515,10 @@ void retro_run(void) {
 
 	// Netpacket state and inbound packets are settled before the core runs, so
 	// a frame sees everything that arrived since the last one.
+	if (session_active && ra_mode && !solo_mode) {
+		ra_tick();
+		return;
+	}
 	pump_netpacket();
 	if (session_active && dual_link_mode) {
 		dual_link_tick();
@@ -4131,6 +4774,21 @@ static bool hash_game_content(const struct retro_game_info* game, uint8_t out[32
 
 bool retro_load_game(const struct retro_game_info* game) {
 	ensure_loaded();
+	/* RetroArch's content_get_crc(): the CRC-32 of the content's bytes - the
+	 * file, or the archive member, which minarch has already extracted. Only
+	 * a warning in RetroArch when it differs, so best effort. */
+	if (session_active && ra_mode && game) {
+		if (game->data && game->size) {
+			ra_content_crc = (uint32_t)crc32(0L, (const Bytef*)game->data, (uInt)game->size);
+		} else if (game->path) {
+			void* buf = NULL;
+			size_t len = 0;
+			if (read_whole_file(game->path, &buf, &len))
+				ra_content_crc = (uint32_t)crc32(0L, (const Bytef*)buf, (uInt)len);
+			free(buf);
+		}
+		shim_log("content CRC-32 %08x (RetroArch's content identity)\n", ra_content_crc);
+	}
 	if (session_active && (netplay_mode || dual_link_mode)) {
 		rom_hash_ready = hash_game_content(game, rom_sha256);
 		if (!rom_hash_ready) {

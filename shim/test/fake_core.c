@@ -260,6 +260,17 @@ void retro_run(void) {
 		input_sum ^= (unsigned)p0; input_sum *= 16777619u;
 		input_sum ^= (unsigned)p1; input_sum *= 16777619u;
 		if (++shown % 100 == 0) printf("core:inputsum frames=%d sum=%08x\n", shown, input_sum);
+		/* FAKE_STATE_INPUTS folds each frame's two inputs into the serialized
+		 * state (bytes 4..7, little-endian FNV-1a), so a state hash taken by
+		 * the peer proves which inputs ran on which frame. The RetroArch model
+		 * in testing/retroarch/ra_model.py computes the same fold. */
+		if (getenv("FAKE_STATE_INPUTS")) {
+			uint32_t h = (uint32_t)state_blob[4] | ((uint32_t)state_blob[5] << 8) |
+			             ((uint32_t)state_blob[6] << 16) | ((uint32_t)state_blob[7] << 24);
+			h ^= (uint32_t)(uint16_t)p0; h *= 16777619u;
+			h ^= (uint32_t)(uint16_t)p1; h *= 16777619u;
+			for (int i = 0; i < 4; i++) state_blob[4 + i] = (unsigned char)(h >> (8 * i));
+		}
 	}
 	if (core_runs <= 3)
 		printf("core:persistent sram=%u rtc=%u\n", save_ram[0], rtc_ram[0]);
@@ -290,6 +301,15 @@ bool retro_serialize(void* data, size_t size) {
 	if (size < sizeof(state_blob) + pad) return false;
 	memcpy(data, state_blob, sizeof(state_blob));
 	for (size_t i = 0; i < pad; i++) ((unsigned char*)data)[sizeof(state_blob) + i] = pad_byte(i);
+	/* Byte 8 of the saved state records the savestate context the frontend
+	 * reported, so a test can see the shim answer it as RetroArch's netplay
+	 * does (ROLLBACK_NETPLAY) around its own serialize calls. */
+	if (getenv("FAKE_STATE_INPUTS")) {
+		int context = RETRO_SAVESTATE_CONTEXT_NORMAL;
+		if (!cb_environment(RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT, &context))
+			context = RETRO_SAVESTATE_CONTEXT_NORMAL;
+		((unsigned char*)data)[8] = (unsigned char)context;
+	}
 	return true;
 }
 

@@ -12,7 +12,7 @@
 SUPPORTED_PLATFORMS = tg5040 tg5050 my282 my355 h700
 
 TARGET  = netplay_shim.so
-SOURCES = shim.c netlink.c overlay.c sha256.c romscan.c
+SOURCES = shim.c netlink.c raproto.c overlay.c sha256.c romscan.c
 INCDIR  = -Iinclude
 WARN    = -Wall -Wextra -Wno-unused-parameter
 

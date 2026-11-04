@@ -173,7 +173,7 @@ further.
 |---|---|
 | Product | [features.md](features.md), [upcoming.md](upcoming.md), [game-systems.md](game-systems.md) |
 | Analysis | [shim-architecture](analysis/shim-architecture.md), [state-sync](analysis/state-sync.md), [determinism](analysis/determinism.md), [adhoc](analysis/adhoc.md), [varnish](analysis/varnish.md) |
-| Plans | [usb-cable-plan](analysis/usb-cable-plan.md), [retroarch-plan](analysis/retroarch-plan.md) |
+| Plans | [usb-cable-plan](analysis/usb-cable-plan.md), [retroarch-plan](analysis/retroarch-plan.md), [retroarch-protocol](analysis/retroarch-protocol.md) |
 | Game Boy family | [multi-instance](gbs/multi-instance.md), [mgba-groundwork](gbs/mgba-groundwork.md) |
 | Nintendo DS | [dsperate](nintendo-ds/dsperate.md), [drastic](nintendo-ds/drastic.md), [ds-wifi-mp-protocol](nintendo-ds/ds-wifi-mp-protocol.md) |
 | Testing | [test-harness](testing/test-harness.md), [test-matrix](testing/test-matrix.md) |
