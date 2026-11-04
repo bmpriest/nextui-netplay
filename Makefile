@@ -662,6 +662,10 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		cp -R dist/compatibility/aarch64 "$$D/cores/compatibility/" && \
 		cp cores/compatibility-platforms.txt "$$D/cores/compatibility/PLATFORMS.txt"; \
 	fi && \
+	if [ -d dist/compatibility-spruce32/armv7 ]; then \
+		mkdir -p "$$D/cores/compatibility" && \
+		cp -R dist/compatibility-spruce32/armv7 "$$D/cores/compatibility/"; \
+	fi && \
 	chmod 755 "$$D/launch.sh" "$$D/launcher"/* "$$D"/bin/*/*
 	@cd "$(SPRUCE_STAGE)" && zip -q -r "../Netplay-spruce.zip" App -x '*/.*'
 	@du -h "$(SPRUCE_ARCHIVE)"
