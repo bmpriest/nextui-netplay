@@ -156,6 +156,40 @@ Supafaust at those revisions play and serialize identically to spruce's own
 binaries (corecmp, 2026-11-03). gambatte, gpsp and mgba keep Netplay's own
 patched builds.
 
+Those pins match spruce's 64-bit RetroArch (`RetroArch/.retroarch/cores64`).
+Its 32-bit RetroArch (`ra32.*`, which runs `RetroArch/.retroarch/cores`: the
+A30, the Miyoo Mini, and PS and other heavy systems on 64-bit devices set to
+raBuild 32-bit) ships different revisions of every one of them - built
+2025-10-08 (f033f8ee8) and restored 2026-01-02 (109ebc490). The spruce build
+ships a second armv7 set for those, `make compatibility-spruce32`
+(`*_REV_SPRUCE32`), as `App/Netplay/cores/compatibility/armv7`:
+
+| core | spruce `cores` (32-bit) | spruce `cores64` | Netplay's spruce32 armv7 build |
+|---|---|---|---|
+| fceumm | `(SVN) 5cd4a43` | `(SVN) 3544ff5` | `5cd4a43` |
+| picodrive | `2.05-975cdaf` | `2.04-7102a71` | `975cdaf` (libretro/picodrive) |
+| snes9x | `1.63 5a40cd5` | `1.63 49f48456` | Supafaust, as on aarch64 |
+| mednafen_supafaust | `1.29.0 75c658c` | `1.29.0 e25f667` | `75c658c` |
+| pcsx_rearmed | `r25 228c14e` | `r25 febf224` | `228c14e` |
+| gpsp | `v1.1.0-5819380` | `v1.1.0-5819380` | Netplay's gpsp (my282 build) |
+| gambatte | `v0.5.0-netlink 0092232` | `v0.5.0 a85fe7c` | Netplay's gambatte (my282 build) |
+| mgba | `0.10-dev ec5ecb26d` (OnionOS's) | `0.11-dev 88b2273` | - |
+
+Under qemu-arm, the spruce32 fceumm, picodrive and Supafaust builds play and
+serialize identically to spruce's 32-bit binaries over 3600 frames
+(2026-11-04; Bubble Bobble, Squatch Quest, Streets of Rage 2, Gunstar Heroes,
+Contra III, Super Mario Kart). Supafaust needed spruce's build, not ours: its
+DSP-1 is float HLE, and our classic_armv7_a7 build (-Ofast, NEON-VFPv4 fused
+multiply-add) rounded Super Mario Kart's DSP-1 state differently from spruce's
+generic VFPv3-D16 one. The spruce32 Supafaust is the plain unix build with
+`-ffp-contract=off`. pcsx_rearmed was not compared (no disc image on the host).
+
+Netplay.pak's own armv7 set keeps the shared pins, since negotiation needs the
+same compatibility version on both devices. Those builds also matched spruce's
+32-bit binaries for Bubble Bobble, Streets of Rage 2 and Contra III, despite the
+different revisions, and the shared-pin Supafaust computed the same Super Mario
+Kart on armv7 and aarch64 (qemu, 3600 frames).
+
 ### What "floats" means, and why it matters here
 
 From `workspace/all/cores/makefile`:
