@@ -174,6 +174,17 @@ An armed RetroArch session also selects every compatibility core the pak has
 RetroArch and the compatibility set is pinned to spruce's revisions. A
 RetroArch joiner skips the manifest exchange and the guest agent.
 
+That choice is only right against the RetroArch build the local set was
+pinned to. A device picks `cores/compatibility/<its arch>`: an AArch64
+Netplay device gets the set matching spruce's `ra64` cores, so it matches a
+spruce peer on `ra64` (RG35XXH, Brick). spruce's `ra32` (A30, Miyoo Mini)
+ships different revisions (fceumm 5cd4a43, picodrive 2.05-975cdaf, supafaust
+75c658c, pcsx 228c14e, snes9x 1.63 5a40cd5), which the armv7 set matches, so
+an AArch64 Netplay device against an `ra32` spruce peer runs different
+builds. INFO's core version string tells them apart (the shim logs a
+warning); choosing the set from the peer's INFO is part of the per-firmware
+work (retroarch-plan.md phase 9).
+
 **Detection at join time.** The joiner should not have to know:
 
 1. A host found by Netplay's announcement says which protocol it runs.
