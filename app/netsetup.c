@@ -2290,6 +2290,9 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		 * revisions spruce's RetroArch ships, which is the first firmware
 		 * this targets. A per-firmware set is retroarch-plan.md phase 9. */
 		fprintf(f, "protocol=retroarch\nra_port=55435\n");
+		/* The options the peer's RetroArch runs each core with; spruce's are
+		 * the only set so far (cores/retroarch-options/README.md). */
+		fprintf(f, "ra_options=%s/cores/retroarch-options/spruce\n", ns_pak);
 		NS_CoreInfo cores[NS_MAX_MANIFEST];
 		int n = NS_coreManifest(cores, NS_MAX_MANIFEST);
 		for (int i = 0; i < n; i++)

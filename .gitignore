@@ -22,6 +22,7 @@ cores/*
 !cores/tests/*.sh
 !cores/drastic-wifi/
 !cores/dsperate/
+!cores/retroarch-options/
 wrapped/
 dist/
 logs/

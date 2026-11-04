@@ -291,6 +291,7 @@ static int ra_suppress_av;
 static int ra_reset_pending;
 static uint32_t ra_content_crc;
 static void ra_read_session(const char* path);
+static void ra_apply_peer_options(void);
 
 static bool read_whole_file(const char* path, void** out, size_t* out_len) {
 	FILE* f = fopen(path, "rb");
@@ -590,7 +591,8 @@ static void show_runtime_notice(const char* message) {
 // merely generous - it has to hold a whole address plus mode and port.
 // does nothing on "auto" for a game it does not recognise, so a link session has
 // to be able to pin it - and both peers must agree.
-#define MAX_OPTION_OVERRIDES 24
+/* A RetroArch peer's .opt file sets every option a core has: fceumm has 31. */
+#define MAX_OPTION_OVERRIDES 96
 static struct { char key[64]; char value[64]; } option_override[MAX_OPTION_OVERRIDES];
 static int option_override_count = 0;
 static int option_update_pending = 0;
@@ -1149,6 +1151,7 @@ static void ensure_loaded(void) {
 			if (core_wants_link())
 				shim_log("WARNING: link cores are not supported with RetroArch peers yet\n");
 			netplay_mode = 1;
+			ra_apply_peer_options();
 		}
 
 		struct retro_system_info info;
@@ -3946,6 +3949,7 @@ static bool dual_link_tick(void) {
 static int ra_started;
 /* ra_special_state: answering GET_SAVESTATE_CONTEXT as RetroArch's netplay does */
 static char ra_nick[RAPROTO_NICK_LEN];
+static char ra_options_dir[256];
 static uint16_t ra_port;
 static int ra_timeline;          /* a shared frame timeline exists */
 static int ra_link_ready;        /* host: the current client has had its SYNC */
@@ -3990,9 +3994,59 @@ static void ra_read_session(const char* path) {
 			if (p > 0 && p < 65536) ra_port = (uint16_t)p;
 		} else if (!strncmp(line, "nick=", 5) && line[5]) {
 			snprintf(ra_nick, sizeof(ra_nick), "%.31s", line + 5);
+		} else if (!strncmp(line, "ra_options=", 11) && line[11]) {
+			snprintf(ra_options_dir, sizeof(ra_options_dir), "%.255s", line + 11);
 		}
 	}
 	fclose(f);
+}
+
+/* Lockstep needs both sides to run the core with the same options, and a
+ * RetroArch peer runs with its own <library_name>.opt. Some options are part
+ * of the serialized state as well as the emulation: fceumm's sound quality and
+ * volume change the state's CRC, and at "High" its unserialize also keeps
+ * filter state from before the load, so the result depends on history. With
+ * NextUI's FC.pak defaults (High, 10) against spruce's (Low, 7), River City
+ * Ransom asked for a savestate at every check (2026-11-04); replayed offline
+ * with the host's options and history, the host's CRCs reproduce exactly.
+ * Every key in the peer's file is forced, as RetroArch would read it; session
+ * option. lines already loaded keep precedence. */
+static void ra_apply_peer_options(void) {
+	if (!ra_options_dir[0]) return;
+	struct retro_system_info info;
+	memset(&info, 0, sizeof(info));
+	core.get_system_info(&info);
+	if (!info.library_name) return;
+	char path[512];
+	snprintf(path, sizeof(path), "%s/%s.opt", ra_options_dir, info.library_name);
+	FILE* f = fopen(path, "r");
+	if (!f) {
+		shim_log("no RetroArch options for %s at %s: the core runs with this device's\n",
+		         info.library_name, path);
+		return;
+	}
+	char line[256];
+	int applied = 0;
+	while (fgets(line, sizeof(line), f)) {
+		char key[64], value[64];
+		if (sscanf(line, " %63[^ =] = \"%63[^\"]\"", key, value) != 2) continue;
+		int have = 0;
+		for (int i = 0; i < option_override_count; i++)
+			if (!strcmp(option_override[i].key, key)) { have = 1; break; }
+		if (have) continue;
+		if (option_override_count >= MAX_OPTION_OVERRIDES) {
+			shim_log("WARNING: no room for RetroArch option %s - session may desync\n", key);
+			break;
+		}
+		snprintf(option_override[option_override_count].key, sizeof(option_override[0].key), "%s", key);
+		snprintf(option_override[option_override_count].value, sizeof(option_override[0].value), "%s", value);
+		option_override_count++;
+		applied++;
+	}
+	fclose(f);
+	if (applied) option_update_pending = 1;
+	shim_log("running %s with the RetroArch peer's %d options from %s\n",
+	         info.library_name, applied, path);
 }
 
 static size_t ra_state_size(void) {

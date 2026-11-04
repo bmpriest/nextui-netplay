@@ -639,6 +639,8 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 	mv "$$D/launcher/launch.sh" "$$D/launcher/config.json" "$$D/" && \
 	rm -f "$$D/launcher/session.conf.example" && \
 	cp launcher/common/session.conf.example pak_hints.json "$$D/" && \
+	mkdir -p "$$D/cores/retroarch-options" && \
+	cp -R cores/retroarch-options/spruce "$$D/cores/retroarch-options/" && \
 	cp res/spruce-netplay.png "$$D/netplay.png" && \
 	cp -R "$(NEXTUI_SYSTEM)/res" "$$D/nextui/.system/res" && \
 	for p in $(SPRUCE_PLATFORMS); do \
@@ -740,6 +742,8 @@ dist-base: $(BASE_DIST_CHECKS)
 	    "$(BASE_STAGE)/$(PAK)/res/"
 	@cp launcher/common/session.conf.example "$(BASE_STAGE)/$(PAK)/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override"
+	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/retroarch-options"
+	@cp -R cores/retroarch-options/spruce "$(BASE_STAGE)/$(PAK)/cores/retroarch-options/"
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override/$$p"; \
 		cp dist/cores/$$p/gambatte_libretro.so dist/cores/$$p/gpsp_libretro.so \

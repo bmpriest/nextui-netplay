@@ -32,6 +32,9 @@ echo "== building"
 (cd .. && make native >/dev/null)
 $CC fake_core.c -o "$OUT/fake_libretro.so" -shared -fPIC -I../include -O0 -std=gnu99
 $CC harness.c   -o "$OUT/harness"          -I../include -O0 -std=gnu99 -ldl
+# The RetroArch peer's options, as its <library_name>.opt.
+mkdir -p "$OUT/opts"
+printf 'gpsp_serial = "peer_value"\nfake_other = "x"\n' > "$OUT/opts/FakeCore.opt"
 $CC raproto_test.c ../raproto.c -I../include -o "$OUT/raproto_test" -lz -lpthread
 SHIM=../../bin/native/netplay_shim.so
 
@@ -46,8 +49,8 @@ count() { grep -c "$1" "$2" 2>/dev/null || true; }
 # shim_client <name> <port> <frames> [model args...]: RetroArch hosts.
 shim_client() {
 	name=$1 port=$2 frames=$3; shift 3
-	printf 'role=client\npeer=127.0.0.1\nprotocol=retroarch\nra_port=%s\ninput_delay=4\nnick=Brick\n' \
-		"$port" > "$OUT/$name.session"
+	printf 'role=client\npeer=127.0.0.1\nprotocol=retroarch\nra_port=%s\ninput_delay=4\nnick=Brick\nra_options=%s\n' \
+		"$port" "$OUT/opts" > "$OUT/$name.session"
 	python3 -I "$MODEL" host "$port" --frames "$frames" "$@" > "$OUT/$name.model" 2>&1 &
 	MODEL_PID=$!
 	sleep 0.3
@@ -108,6 +111,9 @@ grep -q "loaded the host's state for frame 1000" "$OUT/c7.shim"; say $? "loaded 
 [ "$(count 'RetroArch CRC agrees' "$OUT/c7.shim")" -ge 3 ]; say $? "the host's CRCs agree with our state"
 ! grep -q "CRC mismatch" "$OUT/c7.shim"; say $? "no CRC mismatches"
 grep -q "RESULT: ok" "$OUT/c7.shim"; say $? "harness assertions (guest hides SRAM from the frontend)"
+grep -q "running FakeCore with the RetroArch peer's 2 options" "$OUT/c7.shim" &&
+	grep -q "core:option gpsp_serial=peer_value" "$OUT/c7.shim"
+say $? "the core runs with the RetroArch peer's .opt values"
 
 echo
 echo "== the shim hosts, RetroArch joins (protocol 7)"

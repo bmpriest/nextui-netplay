@@ -137,6 +137,14 @@ host:
   before our next unsent input to STALL the difference, at most every 30
   frames.
 
+This was written for the River City Ransom resyncs, which turned out to be
+an option mismatch (Core options, below); it stays because prediction is
+still a rollback, and a rollback is a load, which is not exact for every core.
+Note that our `peer horizon` is the client's *input* frame, which catch-up
+keeps at our edge either way; the latency moves its emulated frame. RetroArch
+starts adjusting latency only after its first replay, so a client that never
+mispredicts may stay at latency 0, which is harmless.
+
 The model counts the frames its client would have run on a predicted host
 input. Against the previous shim (latency 0, STALL only beyond 3 frames ahead
 every 120 frames) a client 4% fast predicted 756 of 1205 frames; with this,
@@ -147,6 +155,45 @@ host's latency or tell it to stall, and RetroArch's host also runs at the edge
 of its client's input (spruce's host advertised latency 0..0). Cores with an
 inexact load will resync often under a RetroArch host. Prefer a Netplay host
 for fceumm and picodrive.
+
+### Core options
+
+Lockstep needs both sides to run each core with the same options, and a stock
+RetroArch peer runs with its own `<library_name>.opt`, which Netplay cannot
+read over the protocol. Some options are part of the serialized state as well
+as the emulation, so a difference shows as a CRC mismatch at every check.
+
+That, not rollback, was River City Ransom (fceumm) with the Brick hosting
+spruce on 2026-11-04: 24 savestate requests in 90 s, every check. Replaying
+the capture offline (`testing/retroarch/rcr_replay.md`): the state the host
+sent at frame 19 plus the captured inputs, through both our compat fceumm and
+spruce's own cores64 binary under qemu-aarch64:
+
+| Options | History before the load | CRC at 300 vs the host's |
+|---|---|---|
+| core defaults | 2 frames | differ (both cores give the same value) |
+| spruce's `FCEUmm.opt` (sound quality Low, volume 7) | any | differ |
+| NextUI FC.pak (`fceumm_sndquality = High`, `fceumm_sndvolume = 10`) | 2 or 50 frames | differ: 2-3 bytes at 5349-5365 |
+| NextUI FC.pak | the host's own: state 0, then the captured frames 0-18 | **match**, and the full state at 312 is byte-identical to the one the host sent next |
+
+So the two cores are the same, the inputs and ports are right, and the CRC
+timing is right. The host ran NextUI's FC.pak options and spruce its own:
+sound quality and volume change the state. At sound quality High, fceumm's
+unserialize also keeps filter state from before the load, so the loaded
+state depends on history. That is a second reason to match: with spruce's Low
+the result of a load does not depend on history (same CRCs after 0, 2 or 200
+frames before it).
+
+The pak therefore ships the option files of the firmware it targets,
+`cores/retroarch-options/spruce/<core>.opt`, copied from spruceOS at
+`0c410ba` (FCEUmm, PicoDrive, Snes9x, Supafaust, gpSP, Gambatte, PCSX-ReARMed,
+mGBA). A RetroArch session writes `ra_options=<dir>`, and the shim forces every
+key of `<dir>/<library_name>.opt` (`option.` lines in the session still win).
+The limit: a spruce user who changed an option in RetroArch differs from the
+shipped file. Netplay cannot detect that; the CRC checks then resync often.
+
+Supafaust passed because spruce's `Supafaust.opt` and NextUI's defaults agree
+on everything in its state.
 
 ### Pause and menus
 
