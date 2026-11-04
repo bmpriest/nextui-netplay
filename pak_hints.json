@@ -27,6 +27,7 @@
     },
     "GBA": {
       "ready": "Link: Wireless Adapter, Pokemon, Advance Wars.",
+    "paired": "gpSP link; games set to mgba play paired mGBA.",
       "present": "This GBA.pak uses a core Netplay does not drive.",
       "absent": "No GBA.pak on this device."
     },
@@ -107,6 +108,13 @@
       "on": "Both Game Boys on each device; inputs travel.",
       "off": "One Game Boy each; the cable crosses Wi-Fi.",
       "unavailable": "No dual-instance core for this device."
+    }
+  },
+  "gba": {
+    "paired": {
+      "on": "Games set to mgba in spruce: both GBAs on each device.",
+      "off": "Games set to mgba in spruce play without Netplay.",
+      "unavailable": "No paired mGBA core for this device."
     }
   },
   "mgba": {

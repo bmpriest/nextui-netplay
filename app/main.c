@@ -358,7 +358,7 @@ enum { CORES_BASE, CORES_EXTRAS };
  * but never implemented. The setting is still read and written. */
 enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE, SET_ADHOC_SWITCH };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
-enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE };
+enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE, OPT_PAIRED_MGBA };
 enum { REM_NETPLAY, REM_DEVICE, REM_BACKUP, REM_CANCEL };
 
 /* Creating our own network needs an AP-capable interface. Offering it on a
@@ -432,7 +432,8 @@ static const struct {
 // where Netplay installs or configures something (">" or a pak to add).
 //////////////////////////////////////////////////////////////////////////////
 
-typedef enum { CK_SHIM, CK_GAMBATTE, CK_DSP, CK_MGBA, CK_NDS } CoreKind;
+/* CK_GBA: spruce's GBA row, gpSP's link plus paired mGBA for games set to mgba. */
+typedef enum { CK_SHIM, CK_GAMBATTE, CK_GBA, CK_DSP, CK_MGBA, CK_NDS } CoreKind;
 
 typedef struct {
 	const char* tag;        /* the pak, and the key into pak_hints.json */
@@ -445,7 +446,11 @@ typedef struct {
 static const CoreDef BASE_CORES[] = {
 	{ "FC",  NULL,  NULL,     "fceumm",       CK_SHIM },
 	{ "GB",  "GBC", "GB/GBC", "gambatte",     CK_GAMBATTE },
+#ifdef NETPLAY_SPRUCE
+	{ "GBA", NULL,  NULL,     "gpsp",         CK_GBA },
+#else
 	{ "GBA", NULL,  NULL,     "gpsp",         CK_SHIM },
+#endif
 	{ "MD",  NULL,  NULL,     "picodrive",    CK_SHIM },
 	{ "PS",  NULL,  NULL,     "pcsx_rearmed", CK_SHIM },
 	{ "SFC", NULL,  NULL,     "snes9x",       CK_SHIM },
@@ -513,6 +518,11 @@ static bool mgba_instanced(void) {
 	return NS_settings()->inst_core[1];
 }
 
+/* spruce: no MGBA.pak, the paired core ships with Netplay. */
+static bool mgba_paired(void) {
+	return mgba_instanced() && NS_mgbaDualAvailable();
+}
+
 /* Store the instanced choices in the settings' existing shape. */
 static void set_instanced(int core, bool on) {
 	NS_Settings* c = NS_settings();
@@ -530,7 +540,8 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 	snprintf(st->core, sizeof(st->core), "%s", d->core);
 	switch (d->kind) {
 	case CK_SHIM:
-	case CK_GAMBATTE: {
+	case CK_GAMBATTE:
+	case CK_GBA: {
 		char core[32];
 		NS_SystemState sys = NS_systemStatus(d->tag, core, sizeof(core));
 		if (d->tag2 && sys != NS_SYS_READY) {
@@ -541,8 +552,9 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 		if (core[0]) snprintf(st->core, sizeof(st->core), "%s", core);
 		if (sys == NS_SYS_READY) {
 			bool dual = d->kind == CK_GAMBATTE && gambatte_dual();
-			st->mark = dual ? MARK_DOUBLE : MARK_CHECK;
-			st->state = dual ? "dual" : "ready";
+			bool paired = d->kind == CK_GBA && mgba_paired();
+			st->mark = dual || paired ? MARK_DOUBLE : MARK_CHECK;
+			st->state = dual ? "dual" : paired ? "paired" : "ready";
 		} else if (sys == NS_SYS_PRESENT) {
 			st->mark = MARK_CIRCLE;
 			st->state = "present";
@@ -551,7 +563,7 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 			st->dim = true;
 			st->state = "absent";
 		}
-		st->more = d->kind == CK_GAMBATTE && sys == NS_SYS_READY;
+		st->more = (d->kind == CK_GAMBATTE || d->kind == CK_GBA) && sys == NS_SYS_READY;
 		break;
 	}
 	case CK_DSP:
@@ -631,6 +643,13 @@ static void build_option_rows(void) {
 		bool on = gambatte_dual();
 		Row* r = add_row(ROW_VALUE, OPT_DUAL, "Dual instance",
 		                 HINT_get(!avail ? "gambatte.dual.unavailable" : on ? "gambatte.dual.on" : "gambatte.dual.off"));
+		snprintf(r->value, sizeof(r->value), "%s", !avail ? "Unavailable" : on ? "On" : "Off");
+		r->dim = !avail;
+	} else if (opt_core == CK_GBA) {
+		bool avail = NS_mgbaDualAvailable();
+		bool on = mgba_paired();
+		Row* r = add_row(ROW_VALUE, OPT_PAIRED_MGBA, "Paired mGBA",
+		                 HINT_get(!avail ? "gba.paired.unavailable" : on ? "gba.paired.on" : "gba.paired.off"));
 		snprintf(r->value, sizeof(r->value), "%s", !avail ? "Unavailable" : on ? "On" : "Off");
 		r->dim = !avail;
 	} else {
@@ -1121,7 +1140,7 @@ static void draw_progress(const char* stage, int step, int steps) {
 	y = draw_line(s, line, y, COLOR_WHITE, false);
 	y += SCALE1(6);
 	/* Used to name NS_ADHOC_SSID, which is the legacy fixed name and not what
-	 * a generated nextui-XXXX session is actually called. */
+	 * a generated netplay-XXXX session is actually called. */
 	snprintf(line, sizeof(line), "step %d of %d", step, steps);
 	y = draw_line(s, line, y, COLOR_GRAY, true);
 	draw_line(s, progress_note, y, COLOR_GRAY, true);
@@ -1626,6 +1645,13 @@ static void change_option(int id) {
 			return;
 		}
 		set_instanced(0, !gambatte_dual());
+		cores_fresh = false;
+	} else if (id == OPT_PAIRED_MGBA) {
+		if (!NS_mgbaDualAvailable()) {
+			snprintf(status, sizeof(status), "Paired mGBA is not built for this device.");
+			return;
+		}
+		set_instanced(1, !mgba_paired());
 		cores_fresh = false;
 	} else if (id == OPT_INSTANCED) {
 		bool ready = pak_status.managed && pak_status.installed && !pak_status.missing;
@@ -2156,7 +2182,8 @@ int main(int argc, char* argv[]) {
 				case CK_SHIM:
 					break;   /* status only */
 				case CK_GAMBATTE:
-					if (st->more) { opt_core = CK_GAMBATTE; opt_sel = 0; screen = SCREEN_CORE_OPTIONS; }
+				case CK_GBA:
+					if (st->more) { opt_core = d->kind; opt_sel = 0; screen = SCREEN_CORE_OPTIONS; }
 					break;
 				case CK_MGBA:
 					if (!strcmp(st->state, "unavailable")) break;

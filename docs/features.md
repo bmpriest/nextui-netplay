@@ -83,7 +83,7 @@ access point. Asphalt: Urban GT 2 also races. DS wants ad hoc.
 
 - **House WiFi**: both devices on the same network.
 - **Ad hoc** (Stable on Brick-class hosts): the host creates its own
-  `nextui-XXXX` network and the guest joins it. One hop instead of two, and
+  `netplay-XXXX` network and the guest joins it. One hop instead of two, and
   4 ms round trips instead of 26-43 ms. Hosts that can run an access point
   alongside their station keep their house connection; **Ad Hoc Network
   Switch** instead leaves it, for a quieter channel. Devices without an
@@ -93,7 +93,7 @@ A USB-C cable is planned as a third ([upcoming.md](upcoming.md)).
 
 ### Finding a host
 
-Join lists hosts heard on the house network and `nextui-` networks found by a
+Join lists hosts heard on the house network and `netplay-` networks found by a
 WiFi scan, merged into one list. A host that has already moved to its own
 network is still found.
 

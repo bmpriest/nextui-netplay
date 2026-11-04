@@ -48,7 +48,7 @@ touch "$ROOT/host-ran-client-rejoin"
 exit 1
 EOF
 chmod 755 "$ROOT/fake-bin/iw"
-printf 'role=host\nadhoc_ssid=nextui-TEST\nadhoc_psk=playwithme\n' > "$STATE/session"
+printf 'role=host\nadhoc_ssid=netplay-TEST\nadhoc_psk=playwithme\n' > "$STATE/session"
 PATH="$ROOT/fake-bin:$PATH" "$NP/launcher/adhoc-join.sh" "$STATE/session"
 [ ! -e "$ROOT/host-ran-client-rejoin" ] \
 	&& ok "host treats ad-hoc credentials as broker metadata" \

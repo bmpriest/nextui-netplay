@@ -381,7 +381,7 @@ np_spruce_cli() {
 
 # Netplay's networks in the running supplicant, by id.
 np_spruce_adhoc_ids() {
-	np_spruce_cli list_networks | awk -F'\t' 'NR > 1 && $2 ~ /^nextui-/ { print $1 }'
+	np_spruce_cli list_networks | awk -F'\t' 'NR > 1 && $2 ~ /^netplay-/ { print $1 }'
 }
 
 # np_spruce_join SSID PSK - both already checked to be [A-Za-z0-9].
