@@ -194,6 +194,13 @@ typedef struct {
 bool NetLink_sendSessionIdentity(const NetLinkSessionIdentity* identity);
 bool NetLink_takeSessionIdentity(NetLinkSessionIdentity* identity);
 
+/* The host's values for the core options that change emulated state, as
+ * "key=value\n" lines (possibly none). set keeps them and sends them now if
+ * connected; every later connection gets them first thing. take returns the
+ * latest received, NUL-terminated. */
+bool NetLink_setSessionOptions(const char* text, size_t len);
+bool NetLink_takeSessionOptions(char* out, size_t cap);
+
 /* The guest confirms the result of each periodic comparison. The host only
  * promotes the candidate snapshot after a matching acknowledgement. */
 bool NetLink_ackCheckpoint(uint32_t frame, uint32_t hash, bool matched);

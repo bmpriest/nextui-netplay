@@ -26,8 +26,10 @@
  *     measured round trip above the session's transport-specific floor.
  * 14: large CMD_STATE transfers may be deflated (STATE_DEFLATED in the kind).
  * 15: an authoritative state may cross as a delta against block hashes of the
- *     receiver's own state (STATE_KIND_BASIS, STATE_DELTA, CMD_STATE_NACK). */
-#define NETLINK_PROTOCOL 15
+ *     receiver's own state (STATE_KIND_BASIS, STATE_DELTA, CMD_STATE_NACK).
+ * 16: CMD_SESSION_OPTIONS: the host's values for the core options that change
+ *     emulated state, first thing on each connection. */
+#define NETLINK_PROTOCOL 16
 
 #define QUEUE_SIZE    512
 /* Inputs are indexed by frame; the ring only has to outlast the input delay
@@ -98,6 +100,7 @@ enum {
 	CMD_RTT_PROBE      = 0x0F, /* {token} - echoed straight back as CMD_RTT_ECHO */
 	CMD_RTT_ECHO       = 0x10, /* {token} */
 	CMD_STATE_NACK     = 0x11, /* {kind} - a delta did not rebuild; send it whole */
+	CMD_SESSION_OPTIONS = 0x12, /* "key=value\n"... - host-decided core options */
 };
 
 /* Round-trip probes, for sizing input delay from what the link actually does
@@ -209,6 +212,12 @@ static struct {
 
 	NetLinkSessionIdentity peer_session_identity;
 	bool peer_session_identity_ready;
+	char   peer_options[NETLINK_MAX_PACKET + 1];
+	size_t peer_options_len;
+	bool   peer_options_ready;
+	char   local_options[NETLINK_MAX_PACKET + 1];
+	size_t local_options_len;
+	bool   local_options_set;
 	uint32_t link_verdict_reason;
 	bool link_verdict_can_pair;
 	bool link_verdict_ready;
@@ -601,6 +610,7 @@ static void drop_connection(const char* reason) {
 		clear_states_locked();
 		clear_delta_locked();
 		nl.peer_session_identity_ready = false;
+		nl.peer_options_ready = false;
 		nl.link_verdict_ready = false;
 		nl.resync_request_ready = nl.resync_begin_ready = false;
 		nl.resync_ack_ready = nl.resync_commit_ready = false;
@@ -610,6 +620,8 @@ static void drop_connection(const char* reason) {
 	}
 	pthread_mutex_unlock(&nl.lock);
 }
+
+static bool send_command(uint8_t cmd, const void* data, size_t len);
 
 static void* worker(void* arg) {
 	(void)arg;
@@ -633,6 +645,7 @@ static void* worker(void* arg) {
 			pthread_mutex_lock(&nl.lock);
 			nl.fd = fd;
 			nl.peer_session_identity_ready = false;
+			nl.peer_options_ready = false;
 			nl.checkpoint_ack_ready = false;
 			nl.connected = true;
 			nl.rtt_skip_first = true;
@@ -646,6 +659,16 @@ static void* worker(void* arg) {
 			nl_log("connected as %s (client_id %u)\n",
 			       nl.role == NETLINK_ROLE_HOST ? "host" : "client",
 			       NetLink_localClientId());
+			/* From here rather than the emulator thread: a guest waits for these
+			 * before it loads its game, and our game may be stalled or not yet
+			 * running when the peer connects. */
+			pthread_mutex_lock(&nl.lock);
+			bool have_options = nl.local_options_set;
+			char options[NETLINK_MAX_PACKET + 1];
+			size_t options_len = nl.local_options_len;
+			if (have_options) memcpy(options, nl.local_options, options_len);
+			pthread_mutex_unlock(&nl.lock);
+			if (have_options) send_command(CMD_SESSION_OPTIONS, options, options_len);
 			continue;
 		}
 
@@ -987,6 +1010,15 @@ static void* worker(void* arg) {
 				ntohl(*(uint32_t*)(buf + 64));
 			nl.peer_session_identity.rom_crc32 = ntohl(*(uint32_t*)(buf + 68));
 			nl.peer_session_identity_ready = true;
+			pthread_mutex_unlock(&nl.lock);
+		}
+
+		if (hdr.cmd == CMD_SESSION_OPTIONS) {
+			pthread_mutex_lock(&nl.lock);
+			memcpy(nl.peer_options, buf, size);
+			nl.peer_options[size] = '\0';
+			nl.peer_options_len = size;
+			nl.peer_options_ready = true;
 			pthread_mutex_unlock(&nl.lock);
 		}
 
@@ -1520,6 +1552,29 @@ bool NetLink_takeSessionIdentity(NetLinkSessionIdentity* identity) {
 	pthread_mutex_lock(&nl.lock);
 	bool ok = nl.peer_session_identity_ready;
 	if (ok) { *identity = nl.peer_session_identity; nl.peer_session_identity_ready = false; }
+	pthread_mutex_unlock(&nl.lock);
+	return ok;
+}
+
+bool NetLink_setSessionOptions(const char* text, size_t len) {
+	if (len > NETLINK_MAX_PACKET) return false;
+	pthread_mutex_lock(&nl.lock);
+	memcpy(nl.local_options, text, len);
+	nl.local_options[len] = '\0';
+	nl.local_options_len = len;
+	nl.local_options_set = true;
+	bool connected = nl.connected;
+	pthread_mutex_unlock(&nl.lock);
+	return !connected || send_command(CMD_SESSION_OPTIONS, text, len);
+}
+
+bool NetLink_takeSessionOptions(char* out, size_t cap) {
+	pthread_mutex_lock(&nl.lock);
+	bool ok = nl.peer_options_ready && cap > nl.peer_options_len;
+	if (ok) {
+		memcpy(out, nl.peer_options, nl.peer_options_len + 1);
+		nl.peer_options_ready = false;
+	}
 	pthread_mutex_unlock(&nl.lock);
 	return ok;
 }

@@ -2,16 +2,17 @@
 #
 # Judge the netplay game log this test produced, on this device.
 #
-#   check.sh MODE ROM_PATTERN [MIN_FPS]
+#   check.sh MODE ROM_PATTERN [MIN_FPS [MAX_WAITS]]
 #     MODE         shared | instanced | link | dsp
 #     ROM_PATTERN  part of the log directory name, e.g. Streets_of_Rage_2
 #     MIN_FPS      fail if the session average falls below this
+#     MAX_WAITS    fail if "Waiting for other player" came up more often
 #
 # Only logs newer than the marker run.sh touches before each test count, so a
 # stale log from an earlier run can never pass for this one. Prints a summary;
 # exits non-zero on anything that means the two devices did not play together.
 
-MODE=$1 ROM=$2 MIN_FPS=${3:-0}
+MODE=$1 ROM=$2 MIN_FPS=${3:-0} MAX_WAITS=${4:-}
 MARK=/tmp/netplay-devbridge/started
 
 fail() { echo "FAIL: $*"; exit 1; }
@@ -81,6 +82,26 @@ grep "$pat" "$log" | sed -n 's/.* \([0-9]*\) \(paired \)\{0,1\}frames in \([0-9]
 	awk '
 		{ f += $1; s += $3; if ($4 > l) l = $4; w = $1 * 1000 / $2; if (!n++ || w < low) low = w }
 		END { if (n) printf "stalls: %d of %d frames (%.1f%%), longest %d frames, slowest window %.1f fps\n", s, f, s * 100 / f, l, low }'
+# How many times the player saw "Waiting for other player": waits are input
+# stalls long enough to put it up (STALL_OVERLAY_FRAMES), pauses are the other
+# device's menu or a frontend hold over 250 ms ("(menu open)"). Each counted
+# once. A low stall share can hide them, so they are their own numbers. The
+# session total includes the last partial window; the per-window counts are
+# the fallback for a log cut short.
+if grep "$pat" "$log" | grep -q ', waits [0-9]'; then
+	totals=$(grep 'session totals:' "$log" | tail -1)
+	count() { # <field>
+		if [ -n "$totals" ]; then
+			echo "$totals" | sed -n "s/.* $1 \([0-9]*\).*/\1/p"
+		else
+			grep "$pat" "$log" | sed -n "s/.*, $1 \([0-9]*\),.*/\1/p" | awk '{ s += $1 } END { print s + 0 }'
+		fi
+	}
+	waits=$(count waits) pauses=$(count pauses)
+	echo "waiting messages: $waits (input), ${pauses:-0} (other player paused)"
+	[ -n "$MAX_WAITS" ] && [ "$waits" -gt "$MAX_WAITS" ] &&
+		fail "\"Waiting for other player\" $waits times, more than $MAX_WAITS"
+fi
 hiccups=$(grep -c 'frontend stalled - told peer' "$log")
 [ "$hiccups" -gt 0 ] && echo "frontend stalls reported to peer: $hiccups"
 echo "PASS"

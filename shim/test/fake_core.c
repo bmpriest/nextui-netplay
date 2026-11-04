@@ -179,8 +179,31 @@ void retro_reset(void) {
 	memset(state_blob, 0xC3, sizeof(state_blob));
 }
 
+/* FAKE_CORE_REPORT_OPTIONS="key,key": print what the core is given for each,
+ * at load and whenever the frontend reports an update - the way a real core
+ * re-reads its options inside retro_run. */
+static void report_options(const char* tag) {
+	const char* keys = getenv("FAKE_CORE_REPORT_OPTIONS");
+	if (!keys) return;
+	char buf[512];
+	snprintf(buf, sizeof(buf), "%s", keys);
+	char* save = NULL;
+	for (char* k = strtok_r(buf, ",", &save); k; k = strtok_r(NULL, ",", &save)) {
+		struct retro_variable var = { k, NULL };
+		if (cb_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+			printf("core:%s %s=%s\n", tag, k, var.value);
+		else
+			printf("core:%s %s=<unset>\n", tag, k);
+	}
+}
+
 void retro_run(void) {
 	HIT("run");
+	{
+		bool updated = false;
+		if (cb_environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+			report_options("option-update");
+	}
 	state_blob[1]++;
 	const char* corrupt_at = getenv("FAKE_CORE_CORRUPT_AT");
 	if (corrupt_at && core_runs == (unsigned)atoi(corrupt_at)) {
@@ -332,7 +355,7 @@ bool retro_unserialize(const void* data, size_t size) {
 void retro_cheat_reset(void) { HIT("cheat_reset"); }
 void retro_cheat_set(unsigned index, bool enabled, const char* code) { HIT("cheat_set"); }
 
-bool retro_load_game(const struct retro_game_info* game) { HIT("load_game"); return true; }
+bool retro_load_game(const struct retro_game_info* game) { HIT("load_game"); report_options("option-load"); return true; }
 bool retro_load_game_special(unsigned t, const struct retro_game_info* i, size_t n) { HIT("load_game_special"); return false; }
 void retro_unload_game(void) { HIT("unload_game"); }
 

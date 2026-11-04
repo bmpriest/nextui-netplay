@@ -673,6 +673,8 @@ class Runner:
         if (x := re.search(r"stalls: (\d+) of (\d+) frames \(([\d.]+)%\), longest (\d+) frames, slowest window ([\d.]+)", out)):
             m.update(stall_frames=int(x.group(1)), frames=int(x.group(2)), stall_pct=float(x.group(3)),
                      longest_stall=int(x.group(4)), slowest_fps=float(x.group(5)))
+        if (x := re.search(r"waiting messages: (\d+) \(input\), (\d+)", out)):
+            m.update(waits=int(x.group(1)), pauses=int(x.group(2)))
         if (x := re.search(r"link packets: (\d+), dropped: (\d+)", out)):
             m.update(link_packets=int(x.group(1)), link_dropped=int(x.group(2)))
         m["pass"] = "PASS" in out and rc == 0
@@ -775,6 +777,7 @@ class Runner:
         bits = [f"{c['fps']:.1f} fps" if "fps" in c else "no fps"]
         if "timeouts" in c: bits.append(f"{c['timeouts']} MP timeouts")
         if "stall_pct" in c: bits.append(f"stalls {c['stall_pct']}%")
+        if "waits" in c: bits.append(f"{c['waits']} waits")
         return ", ".join(bits) + (" PASS" if c["pass"] else " FAIL")
 
     @staticmethod
@@ -858,8 +861,8 @@ def write_report(rows, path):
         if not sel:
             continue
         out += [f"## {title}", "",
-                "| Host -> guest | Emulators | Network | Power save | Result | Host fps | Guest fps | MP timeouts (h/g) | Stalls (h/g) | Arm s | Guest home s | Note |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+                "| Host -> guest | Emulators | Network | Power save | Result | Host fps | Guest fps | MP timeouts (h/g) | Stalls (h/g) | Waits (h/g) | Arm s | Guest home s | Note |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
         for r in sel:
             ch = r.get("checks", {})
             h, g = ch.get("host", {}), ch.get("guest", {})
@@ -869,6 +872,7 @@ def write_report(rows, path):
                 res += " (retry)"
             to = f"{h.get('timeouts', '-')}/{g.get('timeouts', '-')}" if "timeouts" in h or "timeouts" in g else "-"
             st = f"{h.get('stall_pct', '-')}/{g.get('stall_pct', '-')}%" if "stall_pct" in h or "stall_pct" in g else "-"
+            wt = f"{h.get('waits', '-')}/{g.get('waits', '-')}" if "waits" in h or "waits" in g else "-"
             note = r.get("error") or r.get("devbridge_error") or ""
             # "/long/tmpXXXX.test:107: guest: ..." -> "line 107: guest: ..."
             note = re.sub(r"^\S*?\.test:(\d+): ", r"line \1: ", note)
@@ -882,7 +886,7 @@ def write_report(rows, path):
             rp = r.get("radio_powersave") or {}
             ps = r["powersave"] + (f" ({rp.get('host')}/{rp.get('guest')})" if rp else "")
             out.append(f"| {r['host']} ({r['host_platform']}) -> {r['guest']} ({r['guest_platform']}) | {emus} | {r['net']} | {ps} "
-                       f"| {res} | {fmt_fps(h)} | {fmt_fps(g)} | {to} | {st} | {r.get('arm_s', '-')} | {r.get('guest_home_s', '-')} "
+                       f"| {res} | {fmt_fps(h)} | {fmt_fps(g)} | {to} | {st} | {wt} | {r.get('arm_s', '-')} | {r.get('guest_home_s', '-')} "
                        f"| {note.replace('|', '/')[:160]} |")
         out.append("")
     path.write_text("\n".join(out) + "\n")

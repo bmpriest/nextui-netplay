@@ -394,6 +394,29 @@ static uint32_t stat_frames;      // advanced since the last report
 static uint32_t stat_stalls;      // frames spent waiting for peer input
 static uint32_t stat_stall_max;   // longest single wait, in frames
 static uint32_t stall_run;        // current consecutive stall length
+/* Waits long enough to put up "Waiting for other player" (STALL_OVERLAY_FRAMES):
+ * what a player actually sees, which the stall share can hide - half a percent
+ * of frames stalled is ten messages if each stall is just over the threshold. */
+static uint32_t stat_waits;       // since the last report
+static uint32_t session_waits;    // since the game loaded
+static uint32_t session_frames, session_stalls;
+/* Times the peer paused - its menu, or its frontend held for longer than
+ * netlink's STALL_MS - which shows "Waiting for other player (menu open)". */
+static uint32_t stat_pauses, session_pauses;
+
+/* One frame held waiting for the peer's input. Returns true once the wait is
+ * long enough to explain on screen. */
+static bool note_input_stall(void) {
+	stat_stalls++;
+	session_stalls++;
+	stall_run++;
+	if (stall_run > stat_stall_max) stat_stall_max = stall_run;
+	if (stall_run == STALL_OVERLAY_FRAMES + 1) {
+		stat_waits++;
+		session_waits++;
+	}
+	return stall_run > STALL_OVERLAY_FRAMES;
+}
 static struct timeval stat_since;
 
 // No session file -> pure passthrough. Read once at load; the launcher decides
@@ -596,6 +619,91 @@ static void show_runtime_notice(const char* message) {
 static struct { char key[64]; char value[64]; } option_override[MAX_OPTION_OVERRIDES];
 static int option_override_count = 0;
 static int option_update_pending = 0;
+/* The guest's core changed options on a frame the host ran without that change:
+ * see request_options_resync. */
+static int options_resync_pending;
+
+/* Core options that change emulated state. Both devices run the same core
+ * build, but each firmware starts it with its own defaults (NextUI's paks set
+ * fceumm's sound quality High, spruce's .opt files Low) and players change
+ * them, so a session runs the host's value of each of these on both devices.
+ * This is a starting list: every difference measured between NextUI's and
+ * spruce's defaults (docs/analysis/core-options.md), plus options that plainly
+ * change emulation - region, clocks, hardware model, controller types, memory
+ * fill. Options left off (video, palettes, threading, frameskip) stay each
+ * device's own. Add to it as testing finds more. */
+static const char* const host_decided_options[] = {
+	"fceumm_region", "fceumm_ramstate", "fceumm_overclocking",
+	"fceumm_sndquality", "fceumm_sndvolume", "fceumm_sndlowpass",
+	"fceumm_sndstereodelay", "fceumm_swapduty",
+	"fceumm_apu_1", "fceumm_apu_2", "fceumm_apu_3", "fceumm_apu_4", "fceumm_apu_5",
+	"fceumm_turbo_enable", "fceumm_turbo_delay", "fceumm_zapper_mode",
+	"fceumm_arkanoid_mode", "fceumm_up_down_allowed",
+	"picodrive_region", "picodrive_smstype", "picodrive_smsmapper",
+	"picodrive_smsfm", "picodrive_ramcart", "picodrive_overclk68k",
+	"picodrive_input1", "picodrive_input2",
+	"snes9x_region", "snes9x_overclock_superfx", "snes9x_overclock_cycles",
+	"snes9x_randomize_memory", "snes9x_block_invalid_vram_access",
+	"snes9x_echo_buffer_hack", "snes9x_up_down_allowed",
+	"supafaust_region", "supafaust_frame_begin_vblank", "supafaust_run_ahead",
+	"supafaust_multitap", "supafaust_cx4_clock_rate",
+	"supafaust_superfx_clock_rate", "supafaust_superfx_icache",
+	"pcsx_rearmed_region", "pcsx_rearmed_psxclock", "pcsx_rearmed_drc",
+	"pcsx_rearmed_icache_emulation", "pcsx_rearmed_exception_emulation",
+	"pcsx_rearmed_nocompathacks", "pcsx_rearmed_nosmccheck",
+	"pcsx_rearmed_gteregsunneeded", "pcsx_rearmed_nogteflags",
+	"pcsx_rearmed_nostalls", "pcsx_rearmed_cd_readahead", "pcsx_rearmed_cd_turbo",
+	"pcsx_rearmed_memcard2", "pcsx_rearmed_multitap",
+	"pcsx_rearmed_analog_axis_modifier", "pcsx_rearmed_analog_combo",
+	"pcsx_rearmed_input_sensitivity",
+	"gambatte_gb_hwmode", "gambatte_up_down_allowed", "gambatte_turbo_period",
+	"gpsp_boot_mode", "gpsp_rtc", "gpsp_rtc_time_source", "gpsp_turbo_period",
+	"mgba_gb_model", "mgba_idle_optimization", "mgba_allow_opposing_directions",
+	"mgba_solar_sensor_level", "mgba_force_gbp",
+};
+
+static bool option_is_host_decided(const char* key) {
+	for (size_t i = 0; i < sizeof(host_decided_options) / sizeof(host_decided_options[0]); i++)
+		if (!strcmp(host_decided_options[i], key)) return true;
+	return false;
+}
+
+/* Options that make a core load a file one device may not have - a console
+ * BIOS, a boot ROM, the Game Genie ROM. Nothing guarantees both devices hold
+ * the same files, and a core that finds one runs different code from one that
+ * does not, so every Netplay session runs the built-in alternative on both
+ * sides. A RetroArch peer is the exception: it cannot be told, so those
+ * sessions keep running its values (ra_apply_peer_options). */
+static const struct { const char* key; const char* value; } builtin_firmware_options[] = {
+	{ "gpsp_bios",              "builtin"  },
+	{ "mgba_use_bios",          "OFF"      },
+	{ "gambatte_gb_bootloader", "disabled" },
+	{ "pcsx_rearmed_bios",      "HLE"      },
+	{ "fceumm_game_genie",      "disabled" },
+};
+
+/* Replaces an existing override rather than adding a second one, which
+ * find_option_override would never reach. */
+static bool set_option_override(const char* key, const char* value) {
+	int i;
+	for (i = 0; i < option_override_count; i++)
+		if (!strcmp(option_override[i].key, key)) break;
+	if (i == option_override_count) {
+		if (option_override_count >= MAX_OPTION_OVERRIDES) return false;
+		option_override_count++;
+	}
+	snprintf(option_override[i].key, sizeof(option_override[0].key), "%s", key);
+	snprintf(option_override[i].value, sizeof(option_override[0].value), "%s", value);
+	option_update_pending = 1;
+	return true;
+}
+
+static void force_builtin_firmware(void) {
+	for (size_t i = 0; i < sizeof(builtin_firmware_options) / sizeof(builtin_firmware_options[0]); i++)
+		set_option_override(builtin_firmware_options[i].key, builtin_firmware_options[i].value);
+	shim_log("session runs built-in firmware: gpSP BIOS, mGBA BIOS, Gambatte boot ROM, "
+	         "PCSX HLE BIOS, no Game Genie\n");
+}
 
 // The core's netpacket interface, if it registered one. This is the whole point
 // of the shim for link play: the frontend never sees the request, so GB/GBA
@@ -1152,6 +1260,8 @@ static void ensure_loaded(void) {
 				shim_log("WARNING: link cores are not supported with RetroArch peers yet\n");
 			netplay_mode = 1;
 			ra_apply_peer_options();
+		} else {
+			force_builtin_firmware();
 		}
 
 		struct retro_system_info info;
@@ -1985,6 +2095,141 @@ static void offer_state_basis(void) {
 /* Every TCP generation is a new synchronization barrier. This covers both a
  * guest relaunch (the live host donates its current state) and a host relaunch
  * (the new host first loads its last peer-confirmed checkpoint). */
+/* Host-decided options: see host_decided_options. Once its game is loaded the
+ * host publishes the values its core runs - netlink sends them first thing on
+ * every connection - and both sides then hold them for the whole session: the
+ * host forces its own, the guest the host's, so a change in either frontend's
+ * menu reaches neither core until the session is over. Changing one mid-game
+ * would part the two devices for good (see guest_options_before_load). A guest
+ * waits for them before loading its own game. */
+static int host_options_published;
+
+static const char* current_option_value(const char* key) {
+	const char* v = find_option_override(key);
+	if (v) return v;
+	struct retro_variable var = { key, NULL };
+	if (fe_environment && fe_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &var)) return var.value;
+	return NULL;
+}
+
+static void host_options_publish(void) {
+	if (NetLink_getRole() != NETLINK_ROLE_HOST || host_options_published) return;
+	char text[NETLINK_MAX_PACKET + 1];
+	size_t n = 0;
+	int count = 0;
+	text[0] = '\0';
+	for (size_t i = 0; i < sizeof(host_decided_options) / sizeof(host_decided_options[0]); i++) {
+		/* A key this core does not have comes back unset. */
+		const char* key = host_decided_options[i];
+		const char* v = current_option_value(key);
+		if (!v || !v[0]) continue;
+		int w = snprintf(text + n, sizeof(text) - n, "%s=%s\n", key, v);
+		if (w < 0 || (size_t)w >= sizeof(text) - n) {
+			text[n] = '\0';
+			shim_log("WARNING: host options do not fit one packet; sent the first %d\n", count);
+			break;
+		}
+		char value[64];
+		snprintf(value, sizeof(value), "%s", v);   /* v may point into the table */
+		set_option_override(key, value);
+		n += (size_t)w;
+		count++;
+	}
+	if (!NetLink_setSessionOptions(text, n)) return;
+	host_options_published = 1;
+	shim_log("publishing %d host-decided core options, held for the session\n", count);
+}
+
+/* How many values it changed, or -1 if nothing has arrived. */
+static int guest_options_service(void) {
+	if (NetLink_getRole() != NETLINK_ROLE_CLIENT) return -1;
+	char text[NETLINK_MAX_PACKET + 1];
+	if (!NetLink_takeSessionOptions(text, sizeof(text))) return -1;
+	int applied = 0, changed = 0;
+	char* save = NULL;
+	for (char* line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+		char* eq = strchr(line, '=');
+		if (!eq) continue;
+		*eq = '\0';
+		const char* key = line;
+		const char* value = eq + 1;
+		/* Only what this build agrees is host-decided: the host does not get to
+		 * set anything else on this device, a firmware option least of all. */
+		if (!option_is_host_decided(key)) {
+			shim_log("ignoring host option %s: not host-decided in this build\n", key);
+			continue;
+		}
+		/* Before the game loads a frontend may not have answered for the core
+		 * yet (RetroArch has not), so "ours" can be unknown. */
+		const char* ours = current_option_value(key);
+		if (!ours) {
+			shim_log("host decides %s=%s\n", key, value);
+			changed++;
+		} else if (strcmp(ours, value)) {
+			shim_log("host decides %s=%s (ours was %s)\n", key, value, ours);
+			changed++;
+		}
+		if (set_option_override(key, value)) applied++;
+		else shim_log("WARNING: no room for host option %s - session may desync\n", key);
+	}
+	shim_log("running the host's %d core options, %d changed or not known before\n", applied, changed);
+	return changed;
+}
+
+/* The host's options have to be in place before the core loads the game. A
+ * change once it is running cannot be fully undone by any state: fceumm keeps
+ * sound bookkeeping outside its savestate, and River City Ransom between a
+ * NextUI host and a spruce guest desynced at every check whether the guest took
+ * the host's sound quality on an extra frame before the host's state or on the
+ * first frame after it - and passed cleanly once both started with the same
+ * values. So a guest waits here, bounded: a host whose game is not running yet
+ * sends them on connection later, and they are applied then with a resync
+ * (request_options_resync), which is the best that case allows. */
+#define HOST_OPTIONS_WAIT_MS 10000
+static void guest_options_before_load(void) {
+	struct timeval since;
+	gettimeofday(&since, NULL);
+	while (elapsed_ms(&since) < HOST_OPTIONS_WAIT_MS) {
+		if (guest_options_service() >= 0) {
+			shim_log("loading the game with the host's core options (%ldms wait)\n",
+			         elapsed_ms(&since));
+			return;
+		}
+		usleep(20 * 1000);
+	}
+	shim_log("host's core options not here after %dms; loading with ours until they arrive\n",
+	         HOST_OPTIONS_WAIT_MS);
+}
+
+/* Fast forward cannot make a session faster - every frame waits for the other
+ * device's input - but a frontend fast-forwarding calls retro_run as fast as it
+ * can. In shared-screen play each extra call is a stall, enough of them in a
+ * row put up "Waiting for other player", and in link-cable play, where each
+ * device keeps its own clock, it runs this console ahead of its partner. So a
+ * session caps the call rate a little above the core's own frame rate: normal
+ * pacing never reaches the cap, and a short burst after a slow frame passes.
+ * Rewind needs nothing here: no frontend can capture a state while
+ * retro_serialize_size reports 0. */
+static void pace_session_frames(void) {
+	static uint64_t deadline_us;
+	static int told;
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	uint64_t now = (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+	double fps = av_fps > 1.0 ? av_fps : 60.0;
+	uint64_t interval = (uint64_t)(1e6 / (fps * 1.10));
+	uint64_t earliest = now - 3 * interval;
+	deadline_us += interval;
+	if (deadline_us < earliest) deadline_us = earliest;
+	if (deadline_us <= now) return;
+	if (!told) {
+		shim_log("frontend is running frames faster than the game: held to %.1f fps "
+		         "for the session (fast forward)\n", fps * 1.10);
+		told = 1;
+	}
+	usleep((useconds_t)(deadline_us - now));
+}
+
 static void netplay_handshake(void) {
 	if (!NetLink_isConnected() || !rom_hash_ready) return;
 	uint32_t generation = NetLink_connectionGeneration();
@@ -2112,7 +2357,7 @@ static void reset_netplay_timeline(uint32_t frame) {
 	input_scheduled = 0;
 	stall_run = 0;
 	input_stall_since.tv_sec = input_stall_since.tv_usec = 0;
-	stat_frames = stat_stalls = stat_stall_max = 0;
+	stat_frames = stat_stalls = stat_stall_max = stat_waits = stat_pauses = 0;
 	memset(&stat_since, 0, sizeof(stat_since));
 	memset(own_hashes, 0, sizeof(own_hashes));
 	memset(pending_peer_hashes, 0, sizeof(pending_peer_hashes));
@@ -2288,7 +2533,11 @@ static bool peer_pause_tick(unsigned frame) {
 	if (fe_input_poll) fe_input_poll();
 	/* Waiting on a paused peer is not an input stall. */
 	input_stall_since.tv_sec = input_stall_since.tv_usec = 0;
-	if (!peer_paused_since.tv_sec) gettimeofday(&peer_paused_since, NULL);
+	if (!peer_paused_since.tv_sec) {
+		gettimeofday(&peer_paused_since, NULL);
+		stat_pauses++;
+		session_pauses++;
+	}
 
 	if (!peer_pause_prompt && elapsed_ms(&peer_paused_since) > peer_wait_timeout_ms()) {
 		peer_pause_prompt = true;
@@ -2532,11 +2781,11 @@ static void netplay_reportPacing(void) {
 	unsigned stall_pct = total ? (unsigned)((stat_stalls * 100UL) / total) : 0;
 
 	shim_log("pacing: %u frames in %ldms (%u.%u fps), stalled %u frames (%u%%), "
-	         "longest %u, delay %d\n",
+	         "longest %u, waits %u, pauses %u, delay %d\n",
 	         stat_frames, ms, fps10 / 10, fps10 % 10,
-	         stat_stalls, stall_pct, stat_stall_max, input_delay);
+	         stat_stalls, stall_pct, stat_stall_max, stat_waits, stat_pauses, input_delay);
 
-	stat_frames = stat_stalls = stat_stall_max = 0;
+	stat_frames = stat_stalls = stat_stall_max = stat_waits = stat_pauses = 0;
 	stat_since = now;
 }
 
@@ -2610,6 +2859,27 @@ static void link_report_pacing(void) {
 // Cheap rolling checksum; we only need to notice divergence, not locate it.
 static bool capture_state(void** out, size_t* out_len, uint32_t* out_hash) {
 	return capture_authoritative_state(out, out_len, out_hash);
+}
+
+/* A core takes changed options inside retro_run, so a guest that received the
+ * host's options picks them up on its first frame after the host's state - a
+ * frame the host ran without that change. fceumm, for one, resets its sound
+ * accumulators when the quality changes. Running a frame early instead, before
+ * the state loads, is worse: what it leaves in buffers no state carries stays
+ * different through every later resync (River City Ransom, NextUI host and
+ * spruce guest, desynced at every check). So the core applies them in step
+ * with play, and the guest fetches the host's state again straight after,
+ * instead of finding out at the first checkpoint. Not counted against
+ * desync_recovery_allowed: nothing went wrong. */
+static void request_options_resync(void) {
+	if (NetLink_getRole() != NETLINK_ROLE_CLIENT || !netplay_synced ||
+	    recovery_phase != RECOVERY_IDLE) return;
+	options_resync_pending = 0;
+	offer_state_basis();   /* replaced by the host's state anyway */
+	if (!NetLink_requestResync(netplay_frame)) return;
+	recovery_phase = RECOVERY_CLIENT_WAIT_BEGIN;
+	recovery_clock_start();
+	shim_log("requested the host's state again now its core options are in effect\n");
 }
 
 static bool netplay_checkDivergence(void) {
@@ -3702,15 +3972,15 @@ static void dual_report_pacing(void) {
 	unsigned total = stat_frames + stat_stalls;
 	unsigned stall_pct = total ? (unsigned)((stat_stalls * 100UL) / total) : 0;
 	shim_log("instanced pacing: %u paired frames in %ldms (%u.%u fps), "
-	         "input stalls %u (%u%%), longest %u, delay %d\n",
+	         "input stalls %u (%u%%), longest %u, waits %u, pauses %u, delay %d\n",
 	         stat_frames, ms, fps10 / 10, fps10 % 10, stat_stalls,
-	         stall_pct, stat_stall_max, input_delay);
+	         stall_pct, stat_stall_max, stat_waits, stat_pauses, input_delay);
 	if (stat_frames) {
 		shim_log("instanced core time: paired call avg %lluus max %uus "
 		         "(both consoles and the local cable)\n",
 		         (unsigned long long)(dual_pair_run_us / stat_frames), dual_pair_run_max_us);
 	}
-	stat_frames = stat_stalls = stat_stall_max = 0;
+	stat_frames = stat_stalls = stat_stall_max = stat_waits = stat_pauses = 0;
 	dual_pair_run_us = 0;
 	dual_pair_run_max_us = 0;
 	stat_since = now;
@@ -3884,11 +4154,8 @@ static bool dual_link_tick(void) {
 			                      : "Peer disconnected.");
 			return true;
 		}
-		stat_stalls++;
-		stall_run++;
-		if (stall_run > stat_stall_max) stat_stall_max = stall_run;
-		present_paused_frame(stall_run,
-		                     stall_run > STALL_OVERLAY_FRAMES ? "Waiting for other player's input..." : NULL);
+		bool explain = note_input_stall();
+		present_paused_frame(stall_run, explain ? "Waiting for other player's input..." : NULL);
 		present_paused_audio();
 		return true;
 	}
@@ -3919,6 +4186,7 @@ static bool dual_link_tick(void) {
 	if (!run_dual_frame()) return true;
 	dual_frame++;
 	stat_frames++;
+	session_frames++;
 	dual_report_pacing();
 	return true;
 }
@@ -4399,12 +4667,13 @@ static void ra_start(void) {
 
 static void ra_report(void) {
 	if (stat_frames < PACING_INTERVAL) return;
-	shim_log("ra: frame %u, %u run, %u stalled (max %u), peer horizon %u, sent to %u, "
-	         "crc %u bad of %u, states %u loaded %u sent, ping %dms%s\n",
-	         netplay_frame, stat_frames, stat_stalls, stat_stall_max, RaProto_remoteHorizon(),
+	shim_log("ra: frame %u, %u run, %u stalled (max %u), waits %u, peer horizon %u, "
+	         "sent to %u, crc %u bad of %u, states %u loaded %u sent, ping %dms%s\n",
+	         netplay_frame, stat_frames, stat_stalls, stat_stall_max, stat_waits,
+	         RaProto_remoteHorizon(),
 	         ra_next_send, ra_crc_mismatches, ra_crc_checks, ra_states_loaded, ra_states_sent,
 	         RaProto_pingMs(), ra_catching_up ? ", catching up" : "");
-	stat_frames = stat_stalls = stat_stall_max = 0;
+	stat_frames = stat_stalls = stat_stall_max = stat_waits = stat_pauses = 0;
 }
 
 /* One emulated frame if every input for it is here. present=false runs it
@@ -4470,6 +4739,7 @@ static bool ra_step(bool present) {
 	ra_suppress_av = 0;
 	netplay_frame++;
 	stat_frames++;
+	session_frames++;
 	return true;
 }
 
@@ -4544,10 +4814,8 @@ static void ra_tick(void) {
 			recovery_fail("Other player stopped sending input.");
 			return;
 		}
-		stat_stalls++;
-		stall_run++;
-		if (stall_run > stat_stall_max) stat_stall_max = stall_run;
-		present_paused_frame(stall_run, (stall_run > STALL_OVERLAY_FRAMES || !have_last_frame())
+		bool explain = note_input_stall();
+		present_paused_frame(stall_run, (explain || !have_last_frame())
 		                                    ? "Waiting for other player..." : NULL);
 		present_paused_audio();
 		return;
@@ -4583,6 +4851,14 @@ void retro_run(void) {
 			cpu_pin_performance();
 			cpu_pin_countdown = PACING_INTERVAL;
 		}
+	}
+
+	if (session_active && !solo_mode) pace_session_frames();
+
+	/* Late only: a guest normally has them before it loads the game. */
+	if (session_active && !ra_mode && !solo_mode && (netplay_mode || dual_link_mode)) {
+		if (guest_options_service() > 0 && netplay_mode && !dual_link_mode)
+			options_resync_pending = 1;
 	}
 
 	// Netpacket state and inbound packets are settled before the core runs, so
@@ -4672,16 +4948,13 @@ void retro_run(void) {
 				return;
 			}
 
-			stat_stalls++;
-			stall_run++;
-			if (stall_run > stat_stall_max) stat_stall_max = stall_run;
+			bool explain = note_input_stall();
 
 			// Always present something - see present_paused_frame. Only say
 			// anything once the wait is long enough to be worth explaining: a
 			// held frame reads as a hitch, while a message that appears and
 			// vanishes every few frames reads as a fault.
-			present_paused_frame(stall_run,
-			                     (stall_run > STALL_OVERLAY_FRAMES || !have_last_frame())
+			present_paused_frame(stall_run, (explain || !have_last_frame())
 			                         ? "Waiting for other player..." : NULL);
 			present_paused_audio();
 			return;
@@ -4701,7 +4974,9 @@ void retro_run(void) {
 		}
 		netplay_frame++;
 		stat_frames++;
+		session_frames++;
 		netplay_reportPacing();
+		if (options_resync_pending) request_options_resync();
 	}
 	else if (session_active && !netplay_mode) {
 		NetLink_markFrame();
@@ -4906,7 +5181,11 @@ bool retro_load_game(const struct retro_game_info* game) {
 			shim_log("could not retain the local cartridge; linked cartridges "
 			         "will fall back to network serial\n");
 	}
-	return core.load_game(game);
+	bool host_decides = session_active && !ra_mode && (netplay_mode || dual_link_mode);
+	if (host_decides && NetLink_getRole() == NETLINK_ROLE_CLIENT) guest_options_before_load();
+	bool loaded = core.load_game(game);
+	if (loaded && host_decides) host_options_publish();
+	return loaded;
 }
 
 bool retro_load_game_special(unsigned game_type, const struct retro_game_info* info, size_t num_info) {
@@ -4920,6 +5199,11 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info* i
 
 void retro_unload_game(void) {
 	if (!core.handle) return;
+	/* The whole session in one line, its last partial window included: how
+	 * many times the player saw "Waiting for other player". */
+	if (session_active && (session_frames || session_stalls))
+		shim_log("session totals: %u frames, stalled %u, waits %u, pauses %u\n",
+		         session_frames, session_stalls, session_waits, session_pauses);
 	core.unload_game();
 }
 

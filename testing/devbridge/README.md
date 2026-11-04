@@ -23,7 +23,12 @@ Gameplay is random input from both devices (`device/gameplay.sh`). After play,
 a missing link agreement, dropped link packets or a session average under the
 test's minimum frame rate. It also prints the stall share, the longest stall
 and the slowest 10 s window: lockstep never drops input, so a poor link shows
-up as frames held waiting for the peer.
+up as frames held waiting for the peer. And it prints how many times each
+device showed "Waiting for other player": input waits (a stall of more than
+12 frames, counted once each) and pauses (the other device's menu, or its
+frontend holding a frame for over 250 ms). A low stall share can still be many
+of these. `check.sh MODE ROM MIN_FPS MAX_WAITS` fails above a count of input
+waits; no test sets one yet.
 
 ## Before running
 

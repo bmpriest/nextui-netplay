@@ -960,6 +960,168 @@ else
 fi
 
 echo
+echo "== the host decides state-affecting core options; firmware is built in"
+# The two frontends disagree on a host-decided option (fceumm sound quality,
+# the NextUI/spruce default split) and on one that is each device's own
+# (palette). Both have a real BIOS selected. The guest must run the host's
+# sound quality, keep its own palette, and neither may load a BIOS file.
+PORT45=$((PORT + 44))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT45" > "$OUT/h45.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT45" > "$OUT/c45.session"
+REPORT=fceumm_sndquality,fceumm_palette,gpsp_bios,pcsx_rearmed_bios
+HARNESS_OPTIONS='fceumm_sndquality=High;fceumm_palette=nes-classic;gpsp_bios=official;pcsx_rearmed_bios=auto' \
+	FAKE_CORE_REPORT_OPTIONS=$REPORT NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/h45.session" \
+	"$OUT/harness" "$SHIM" 900 5 > "$OUT/h45.log" 2>&1 &
+H45=$!
+sleep 0.3
+HARNESS_OPTIONS='fceumm_sndquality=Low;fceumm_palette=default;gpsp_bios=official;pcsx_rearmed_bios=auto' \
+	FAKE_CORE_REPORT_OPTIONS=$REPORT NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c45.session" \
+	"$OUT/harness" "$SHIM" 900 5 > "$OUT/c45.log" 2>&1 &
+C45=$!
+wait $H45 2>/dev/null || true
+wait $C45 2>/dev/null || true
+
+expect "$OUT/h45.log" "core:option-load gpsp_bios=builtin" "host loads with the built-in gpSP BIOS"
+expect "$OUT/c45.log" "core:option-load pcsx_rearmed_bios=HLE" "guest loads with the PCSX HLE BIOS"
+expect "$OUT/h45.log" "publishing [0-9]* host-decided core options" "host published its options"
+expect "$OUT/c45.log" "host decides fceumm_sndquality=High (ours was Low)" "guest took the host's sound quality"
+expect "$OUT/c45.log" "loading the game with the host's core options" "guest waited for them before loading"
+expect "$OUT/c45.log" "core:option-load fceumm_sndquality=High" "guest core loaded the game with the host's value"
+expect "$OUT/c45.log" "core:option-load fceumm_palette=default" "guest kept its own palette"
+if grep -q "core:option-[a-z]* fceumm_sndquality=Low" "$OUT/c45.log" ||
+   grep -q "host decides fceumm_palette" "$OUT/c45.log"; then
+	echo "  MISS guest ran its own sound quality, or took the host's palette"
+	fail=1
+else
+	echo "  ok   only host-decided options crossed"
+fi
+if grep -q "gpsp_bios=official\|pcsx_rearmed_bios=auto" "$OUT/h45.log" "$OUT/c45.log"; then
+	echo "  MISS a core was given a BIOS file setting"
+	fail=1
+else
+	echo "  ok   no core was given a BIOS file setting"
+fi
+expect "$OUT/c45.log" "authoritative .* adopted" "guest synchronized to the host"
+expect "$OUT/c45.log" "in sync at frame" "checkpoints agreed afterwards"
+if grep -q "DESYNC" "$OUT/h45.log" "$OUT/c45.log"; then
+	echo "  MISS options exchange led to a desync"
+	fail=1
+else
+	echo "  ok   no desync"
+fi
+
+echo
+echo "== host-decided options are held for the whole session"
+# The host's player changes sound quality in the menu mid-game. Neither core
+# may see it: a change mid-game parts the devices for good.
+PORT48=$((PORT + 47))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT48" > "$OUT/h48.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT48" > "$OUT/c48.session"
+HARNESS_OPTIONS='fceumm_sndquality=High' HARNESS_OPTIONS_LATER='fceumm_sndquality=Low' \
+	HARNESS_OPTIONS_LATER_AT=400 FAKE_CORE_REPORT_OPTIONS=fceumm_sndquality \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h48.session" \
+	"$OUT/harness" "$SHIM" 900 5 > "$OUT/h48.log" 2>&1 &
+H48=$!
+sleep 0.3
+HARNESS_OPTIONS='fceumm_sndquality=Low' FAKE_CORE_REPORT_OPTIONS=fceumm_sndquality \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c48.session" \
+	"$OUT/harness" "$SHIM" 900 5 > "$OUT/c48.log" 2>&1 &
+C48=$!
+wait $H48 2>/dev/null || true
+wait $C48 2>/dev/null || true
+expect "$OUT/h48.log" "fe:options_changed at=400" "host's player changed the option"
+expect "$OUT/h48.log" "core:option-update fceumm_sndquality=High" "host core re-read it and still got High"
+if grep -q "core:option-[a-z]* fceumm_sndquality=Low" "$OUT/h48.log" "$OUT/c48.log"; then
+	echo "  MISS a core ran the changed value mid-session"
+	fail=1
+else
+	echo "  ok   neither core ran the changed value"
+fi
+if grep -q "DESYNC" "$OUT/h48.log" "$OUT/c48.log"; then
+	echo "  MISS the menu change led to a desync"
+	fail=1
+else
+	echo "  ok   no desync"
+fi
+
+echo
+echo "== a host that starts late still decides, through a resync"
+# The guest gives up waiting for the host's options after 10 s and loads with
+# its own; when the host turns up they are applied and the guest refetches the
+# host's state at once.
+PORT47=$((PORT + 46))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT47" > "$OUT/h47.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT47" > "$OUT/c47.session"
+HARNESS_OPTIONS='fceumm_sndquality=Low' FAKE_CORE_REPORT_OPTIONS=fceumm_sndquality \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c47.session" \
+	"$OUT/harness" "$SHIM" 900 5 > "$OUT/c47.log" 2>&1 &
+C47=$!
+sleep 11
+HARNESS_OPTIONS='fceumm_sndquality=High' FAKE_CORE_REPORT_OPTIONS=fceumm_sndquality \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h47.session" \
+	"$OUT/harness" "$SHIM" 900 5 > "$OUT/h47.log" 2>&1 &
+H47=$!
+wait $H47 2>/dev/null || true
+wait $C47 2>/dev/null || true
+expect "$OUT/c47.log" "options not here after" "guest stopped waiting and loaded"
+expect "$OUT/c47.log" "core:option-load fceumm_sndquality=Low" "guest loaded with its own value"
+expect "$OUT/c47.log" "host decides fceumm_sndquality=High" "the host's value arrived later"
+expect "$OUT/c47.log" "core:option-update fceumm_sndquality=High" "guest core took it"
+expect "$OUT/c47.log" "requested the host's state again" "guest refetched the host's state"
+expect "$OUT/c47.log" "in sync at frame" "checkpoints agreed afterwards"
+
+echo
+echo "== waiting messages are counted"
+# The guest's frontend holds a frame for 230 ms - under netlink's 250 ms pause
+# notice - so the host waits on input past STALL_OVERLAY_FRAMES exactly once,
+# and nobody sees the "(menu open)" pause.
+PORT49=$((PORT + 48))
+printf 'role=host\nport=%s\nmode=netplay\ninput_delay=2\n'                    "$PORT49" > "$OUT/h49.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\ninput_delay=2\n' "$PORT49" > "$OUT/c49.session"
+NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h49.session" \
+	"$OUT/harness" "$SHIM" 700 16 > "$OUT/h49.log" 2>&1 &
+H49=$!
+sleep 0.3
+HARNESS_STALL_AT=450 HARNESS_STALL_MS=230 \
+	NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c49.session" \
+	"$OUT/harness" "$SHIM" 700 16 > "$OUT/c49.log" 2>&1 &
+C49=$!
+wait $H49 2>/dev/null || true
+wait $C49 2>/dev/null || true
+expect "$OUT/h49.log" "session totals: .* waits 1, pauses 0" "host counted one wait and no pause"
+# The guest then waits on the host catching up, so it may count one too.
+expect "$OUT/c49.log" "session totals: .* waits [01], pauses 0" "guest logged its totals"
+
+echo
+echo "== fast forward is held to the game's speed in a session"
+# The harness runs frames with no delay at all, as a fast-forwarding frontend
+# does; the shim must pace them to about the core's own rate.
+PORT46=$((PORT + 45))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT46" > "$OUT/h46.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT46" > "$OUT/c46.session"
+start46=$(date +%s.%N)
+NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h46.session" \
+	"$OUT/harness" "$SHIM" 240 0 > "$OUT/h46.log" 2>&1 &
+H46=$!
+sleep 0.3
+NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/c46.session" \
+	"$OUT/harness" "$SHIM" 240 0 > "$OUT/c46.log" 2>&1 &
+C46=$!
+wait $H46 2>/dev/null || true
+wait $C46 2>/dev/null || true
+elapsed46=$(echo "$(date +%s.%N) - $start46" | bc)
+expect "$OUT/h46.log" "held to .* fps for the session (fast forward)" "host noticed and paced fast frames"
+# 240 calls at no more than ~66/s take at least ~3.5 s.
+if [ "$(echo "$elapsed46 >= 3.3" | bc)" = 1 ]; then
+	echo "  ok   240 unthrottled calls took ${elapsed46}s"
+else
+	echo "  MISS 240 unthrottled calls took only ${elapsed46}s"
+	fail=1
+fi
+
+echo
 if [ "$fail" -eq 0 ]; then
 	echo "PASS"
 else

@@ -131,8 +131,17 @@ ends it.
 ### Saves and save states
 
 Frontend save states, auto-save and auto-resume are off during a session: a
-save state from one device means nothing to the other. In-game saves work as
+save state from one device means nothing to the other. Rewind is off with them,
+and fast forward is held to the game's own speed. In-game saves work as
 described per mode above.
+
+### Core options
+
+Core options that change the game (region, clocks, fceumm's sound quality and
+the like) run the host's values on both devices for the whole session, and
+every session uses the built-in BIOS, boot ROM and so on rather than files one
+device may not have. Changes made in either emulator's menu wait until the
+session ends. See [analysis/core-options.md](analysis/core-options.md).
 
 ## Cores
 
