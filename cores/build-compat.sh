@@ -39,6 +39,7 @@ cc="${CROSS_COMPILE}gcc"
 cxx="${CROSS_COMPILE}g++"
 ar="${CROSS_COMPILE}ar"
 strip="${CROSS_COMPILE}strip"
+extra_flags=
 
 build() {
 	name=$1 dir=$2 makefile=$3 platform_name=$4 output=$5
@@ -59,7 +60,7 @@ build() {
 	# breaks the link. Clear untracked build output, keeping the pin stamp.
 	git -C "$dir" clean -fdxq -e '.compat-pinned*'
 	git -C "$dir" submodule foreach -q --recursive git clean -fdxq
-	CFLAGS="$base_flags" CXXFLAGS="$base_flags" LDFLAGS="$base_ldflags" \
+	CFLAGS="$base_flags $extra_flags" CXXFLAGS="$base_flags $extra_flags" LDFLAGS="$base_ldflags" \
 		make -C "$dir" -f "$makefile" PWD="$dir_abs" platform="$platform_name" \
 		CC="$cc" CXX="$cxx" AR="$ar" -j"$jobs" "$@"
 	cp "$dir/$output" "$out/${name}_libretro.so"
@@ -81,8 +82,20 @@ build picodrive "$root/picodrive" Makefile.libretro "$pico_platform" picodrive_l
 # stream and is designed for lower-power ARM devices. Build it once and expose
 # that exact binary under both compatibility names. The canonical snes9x name
 # lets installed snes9x2005 and snes9x launchers negotiate the same fallback.
-build snes9x "$root/mednafen_supafaust" Makefile "$platform" \
+#
+# spruce's 32-bit Supafaust is the generic armhf build (VFPv3-D16, so no fused
+# multiply-add), not classic_armv7_a7's -Ofast NEON-VFPv4 one. Its DSP-1
+# (Super Mario Kart, Pilotwings) is float HLE, and -Ofast or FMA contraction
+# rounds it differently: same RAM for 3600 frames, but the DSP-1 state and
+# the odd frame differ. The plain unix build with contraction off matches.
+supa_platform=$platform
+if [ "$set_name" = spruce32 ]; then
+	supa_platform=unix
+	extra_flags=-ffp-contract=off
+fi
+build snes9x "$root/mednafen_supafaust" Makefile "$supa_platform" \
 	mednafen_supafaust_libretro.so
+extra_flags=
 cp "$out/snes9x_libretro.so" "$out/mednafen_supafaust_libretro.so"
 
 # PSX is intentionally included despite unproven ARMv7/AArch64 determinism.
