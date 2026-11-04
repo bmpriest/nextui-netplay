@@ -1,9 +1,20 @@
 #!/bin/sh
 set -eu
 
-arch=${1:?usage: build-compat.sh armv7|aarch64}
+# build-compat.sh <arch> [spruce32]
+#
+# With no set, the shared pins (Makefile *_REV) into dist/compatibility/<arch>.
+# spruce32 builds the pins matching spruce's 32-bit RetroArch cores (*_REV_SPRUCE32,
+# cloned under .cache/cores/spruce32) into dist/compatibility-spruce32/<arch>.
+arch=${1:?usage: build-compat.sh armv7|aarch64 [spruce32]}
+set_name=${2:-}
 root=${CORE_SRC_ROOT:-.cache/cores}
 out="dist/compatibility/$arch"
+case "$set_name" in
+	'') ;;
+	spruce32) root="$root/spruce32"; out="dist/compatibility-spruce32/$arch" ;;
+	*) echo "unknown compatibility set: $set_name" >&2; exit 2 ;;
+esac
 jobs=${JOBS:-4}
 start=${COMPAT_START:-}
 started=0
@@ -36,12 +47,12 @@ build() {
 		if [ "$name" = "$start" ]; then
 			started=1
 		else
-			echo "== compatibility $arch: $name (already built; resuming at $start)"
+			echo "== compatibility $arch${set_name:+ $set_name}: $name (already built; resuming at $start)"
 			return
 		fi
 	fi
 	dir_abs=$(cd "$dir" && pwd)
-	echo "== compatibility $arch: $name"
+	echo "== compatibility $arch${set_name:+ $set_name}: $name"
 	make -C "$dir" -f "$makefile" PWD="$dir_abs" platform="$platform_name" CC="$cc" CXX="$cxx" AR="$ar" clean >/dev/null 2>&1 || true
 	# Not every core's clean removes every object (picodrive keeps
 	# pico/sound/mix.o), and an object left from the other architecture
@@ -95,4 +106,4 @@ cp "dist/cores/$source_platform/gambatte_libretro.so" "$out/"
 cp "dist/cores/$source_platform/gpsp_libretro.so" "$out/"
 
 [ "$started" -eq 1 ] || { echo "unknown COMPAT_START core: $start" >&2; exit 2; }
-echo "built seven compatibility cores for $arch"
+echo "built seven compatibility cores for $arch${set_name:+ ($set_name)} in $out"
