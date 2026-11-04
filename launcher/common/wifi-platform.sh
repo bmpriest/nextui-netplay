@@ -357,6 +357,69 @@ np_dhcp_start() {
 }
 
 ###########################################################################
+# spruce: ad hoc through spruce's own supplicant
+#
+# spruce adopts any wpa_supplicant it finds on wlan0 running another config:
+# it copies that config's networks into the user's saved networks and starts
+# its own (enable_wifi, which runs on every game exit). Replacing the
+# supplicant with ours, as everywhere else, got the ad hoc network saved with
+# priority 99 - the guest went back to it after the session, and would again
+# whenever it was in range. So on spruce the guest never replaces anything:
+# the ad hoc network is added to spruce's supplicant at runtime, never saved,
+# and selected; leaving removes it and re-enables the saved networks. spruce's
+# own DHCP client stays and is told to start over.
+###########################################################################
+
+np_is_spruce() {
+	[ "${NETPLAY_FIRMWARE:-}" = spruce ] || [ -f "$SDCARD_PATH/spruce/scripts/wifi.sh" ]
+}
+
+np_spruce_cli() {
+	_sc_dir=$(np_ctrl_dir)
+	wpa_cli ${_sc_dir:+-p "$_sc_dir"} -i "$NP_WIFI_IF" "$@" 2>/dev/null
+}
+
+# Netplay's networks in the running supplicant, by id.
+np_spruce_adhoc_ids() {
+	np_spruce_cli list_networks | awk -F'\t' 'NR > 1 && $2 ~ /^nextui-/ { print $1 }'
+}
+
+# np_spruce_join SSID PSK - both already checked to be [A-Za-z0-9].
+np_spruce_join() {
+	for _id in $(np_spruce_adhoc_ids); do np_spruce_cli remove_network "$_id" >/dev/null; done
+	_id=$(np_spruce_cli add_network | tail -1)
+	case "$_id" in ''|*[!0-9]*) echo "[netplay-wifi] spruce's supplicant did not answer" >&2; return 1 ;; esac
+	np_spruce_cli set_network "$_id" ssid "\"$1\"" | grep -q OK &&
+	np_spruce_cli set_network "$_id" psk "\"$2\"" | grep -q OK &&
+	np_spruce_cli set_network "$_id" key_mgmt WPA-PSK | grep -q OK &&
+	np_spruce_cli select_network "$_id" | grep -q OK
+}
+
+# select_network disabled every other network; put them back.
+np_spruce_leave() {
+	for _id in $(np_spruce_adhoc_ids); do np_spruce_cli remove_network "$_id" >/dev/null; done
+	np_spruce_cli enable_network all >/dev/null
+	np_spruce_cli reassociate >/dev/null
+}
+
+# A lease for the network just joined or rejoined: release, then renew, so
+# spruce's client starts over instead of renewing the old address. One is
+# started if none is running.
+np_spruce_renew() {
+	_pids=$(pidof udhcpc)
+	if [ -z "$_pids" ]; then
+		np_dhcp_start persistent
+		return
+	fi
+	# shellcheck disable=SC2086
+	kill -USR2 $_pids 2>/dev/null
+	sleep 0.2
+	# shellcheck disable=SC2086
+	kill -USR1 $_pids 2>/dev/null
+	return 0
+}
+
+###########################################################################
 # platform bring-up script
 ###########################################################################
 
@@ -501,8 +564,7 @@ np_rtw_reload() {  # np_rtw_reload on|off
 	# is the one way to change the radio there; `apply` loads the driver only
 	# when it is not loaded, so the one loaded below keeps its power setting.
 	_spruce_wifi=
-	[ "${NETPLAY_FIRMWARE:-}" = spruce ] && [ -f "$SDCARD_PATH/spruce/scripts/wifi.sh" ] &&
-		_spruce_wifi="$SDCARD_PATH/spruce/scripts/wifi.sh"
+	np_is_spruce && _spruce_wifi="$SDCARD_PATH/spruce/scripts/wifi.sh"
 
 	np_rtw_log "reloading $NP_RTW_MODULE with rtw_power_mgnt=$_mgnt (radio off ${_hold}s)"
 	if [ -n "$_spruce_wifi" ]; then
@@ -602,6 +664,10 @@ wifi-platform.sh)
 	powersave-get)  np_powersave_get ;;
 	powersave-needs-reload) np_powersave_needs_reload ;;
 	powersave-reload) np_rtw_reload "${2:-off}" ;;
+	is-spruce)      np_is_spruce ;;
+	spruce-join)    np_spruce_join "${2:-}" "${3:-}" ;;
+	spruce-leave)   np_spruce_leave ;;
+	spruce-renew)   np_spruce_renew ;;
 	"")             : ;;
 	*)              echo "usage: wifi-platform.sh <assoc|has-ip|dhcp-start|...>" >&2; exit 2 ;;
 	esac

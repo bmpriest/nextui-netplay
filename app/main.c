@@ -717,12 +717,15 @@ static void build_settings_rows(void) {
 	            HINT_getf("settings.powersave.%s", c->disable_powersave ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->disable_powersave));
 
-	/* Only where this device can host an ad hoc network at all. */
+	/* Only where this device can host an ad hoc network at all, and not on
+	 * spruce (see NS_hotspotStart). */
+#ifndef NETPLAY_SPRUCE
 	if (NS_canHostAdhoc()) {
 		r = add_row(ROW_VALUE, SET_ADHOC_SWITCH, "Ad Hoc Network Switch",
 		            HINT_getf("settings.adhoc_switch.%s", c->adhoc_switch ? "on" : "off"));
 		snprintf(r->value, sizeof(r->value), "%s", on_off(c->adhoc_switch));
 	}
+#endif
 }
 
 static void build_debug_rows(void) {

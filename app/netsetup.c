@@ -3009,7 +3009,44 @@ static void wifi_restore_lock_release(void) {
  * Returns whether wlan0 ended up with an address. Callers used to get no signal
  * at all and reported success unconditionally, so the UI could claim it was
  * connected while the radio was still associating. */
+#ifdef NETPLAY_SPRUCE
+static bool on_own_adhoc(void);
+
+/* spruce's supplicant was never replaced (see wifi-platform.sh): take the ad hoc
+ * network back out of it and have spruce's DHCP client start over once the
+ * radio is on a network of the user's again. Until then wlan0 still holds the
+ * ad hoc address, so an address alone does not mean we are back. */
+static bool spruce_stack_up(void) {
+	if (!wifi_restore_lock_acquire()) return false;
+	wifi_plat("spruce-leave");
+	int renew_at = -1;
+	for (int i = 0; i < RESTORE_TOTAL_S; i++) {
+		if (ns_progress)
+			ns_progress(renew_at < 0 ? "Reconnecting to original WiFi"
+			                         : "Getting original WiFi address",
+			            i + 1, RESTORE_TOTAL_S);
+		sleep(1);
+		if (!wifi_link_up() || on_own_adhoc()) continue;
+		if (renew_at >= 0 && wifi_has_ip()) {
+			ns_log("restored wifi through spruce's supplicant after %ds\n", i + 1);
+			wifi_restore_lock_release();
+			return true;
+		}
+		if (renew_at < 0 || i - renew_at >= RESTORE_DHCP_RETRY_S) {
+			wifi_plat("spruce-renew");
+			renew_at = i;
+		}
+	}
+	ns_log("wifi not back through spruce's supplicant after %ds\n", RESTORE_TOTAL_S);
+	wifi_restore_lock_release();
+	return false;
+}
+#endif
+
 static bool wifi_client_stack_up(void) {
+#ifdef NETPLAY_SPRUCE
+	return spruce_stack_up();
+#endif
 	if (!wifi_restore_lock_acquire()) return false;
 
 	system("killall -q wpa_supplicant 2>/dev/null");
@@ -3331,15 +3368,23 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
+	/* Not on spruce: it restarts its own supplicant on every game exit, which
+	 * would put a switched host back on the house network mid-session, on a
+	 * channel the AP is not on. */
+#ifdef NETPLAY_SPRUCE
+	bool adhoc_switch = false;
+#else
+	bool adhoc_switch = ns_set.adhoc_switch;
+#endif
 	/* Only an H700's dual-band radio can be on 5 GHz; a Brick's is 2.4 only. */
-	if (!ns_set.adhoc_switch && supplicant_ap) station_steer_24();
+	if (!adhoc_switch && supplicant_ap) station_steer_24();
 	int ch = station_home_channel();
 	/* Ad Hoc Network Switch: leave the station network so the AP can take the
 	 * quietest channel instead of whatever the router is on. Surveyed now,
 	 * while still associated; the client stack comes down just before hostapd
 	 * starts, so a failure before then leaves WiFi as it was. */
 	bool switch_station = false;
-	if (ch && ns_set.adhoc_switch) {
+	if (ch && adhoc_switch) {
 		int quiet = quiet_channel();
 		if (quiet) {
 			ns_log("ad hoc switch: leaving the station network on channel %d for channel %d\n",
@@ -3513,14 +3558,30 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 		"\tpriority=99\n}\n", ctrl, ssid, psk);
 	fclose(f);
 
+#ifdef NETPLAY_SPRUCE
+	/* spruce's supplicant stays (see wifi-platform.sh). The record is what tells
+	 * the watchdog and a reopened app there is something to put back. */
+	{
+		char path[512];
+		snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+		FILE* w = fopen(path, "w");
+		if (w) { fprintf(w, "spruce\n"); fclose(w); }
+	}
+#else
 	/* Capture how the platform runs its supplicant before killing it - that is
 	 * what puts the existing network back afterwards. */
 	wifi_client_stack_down();
+#endif
 	joined_hotspot = true;   /* set before the first failure path can return */
 
 	for (int attempt = 1; attempt <= NS_JOIN_ATTEMPTS; attempt++) {
+#ifdef NETPLAY_SPRUCE
+		if (wifi_plat("spruce-join '%s' '%s'", ssid, psk) != 0)
+			ns_log("spruce's supplicant did not take %s (attempt %d)\n", ssid, attempt);
+#else
 		system("ip link set wlan0 up 2>/dev/null");
 		system("wpa_supplicant -B -D nl80211 -i wlan0 -c /tmp/netplay_wpa.conf >/dev/null 2>&1");
+#endif
 
 		/* Bounded per attempt: five unbounded tries is minutes of black screen. */
 		bool assoc = false;
@@ -3541,7 +3602,14 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 			 * has no exit status to read, and a client that is simply not
 			 * installed returns 127, which is not "no lease". */
 			for (int j = 0; j < 2; j++) {
+#ifdef NETPLAY_SPRUCE
+				/* wlan0 still holds the house address until spruce's client
+				 * releases it, so an address only counts after the renew. */
+				wifi_plat("spruce-renew");
+				usleep(500 * 1000);
+#else
 				wifi_plat("dhcp-start");
+#endif
 				bool leased = false;
 				for (int w = 0; w < NS_JOIN_DHCP_S && !leased; w++) {
 					if (ns_progress)
@@ -3575,7 +3643,9 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 			snprintf(err, errlen, "could not find %s (attempt %d)", ssid, attempt);
 		}
 
+#ifndef NETPLAY_SPRUCE
 		system("killall -q wpa_supplicant 2>/dev/null");
+#endif
 		if (attempt < NS_JOIN_ATTEMPTS) {
 			for (int i = 0; i < NS_JOIN_GAP_S; i++) {
 				if (ns_progress) ns_progress("Retrying", attempt + 1, NS_JOIN_ATTEMPTS);

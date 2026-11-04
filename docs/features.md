@@ -178,3 +178,7 @@ install (see [analysis/varnish.md](analysis/varnish.md)). Not on the A30.
 | my282 | Miyoo A30 | Shared screen and link; no ad hoc hosting, no instanced mGBA, no Varnish |
 | tg5050 | TrimUI Smart Pro S | Untested |
 | my355 | Miyoo Flip | Untested |
+
+On spruce (App/Netplay, Brick and RG35XXH) everything above works except DS
+local wireless and NextUI's own integration; see
+[analysis/spruce-parity.md](analysis/spruce-parity.md).
