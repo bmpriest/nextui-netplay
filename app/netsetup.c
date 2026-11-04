@@ -36,6 +36,19 @@ typedef struct __attribute__((packed)) {
 	char     psk[NS_PSK_LEN];
 } NS_Announce;
 
+/* Version 2 adds the session protocol and the host's nickname. It is sent
+ * after a version 1 packet each time, because older builds accept only a
+ * packet of exactly sizeof(NS_Announce). */
+typedef struct __attribute__((packed)) {
+	NS_Announce v1;
+	uint32_t protocol;
+	char     nick[NS_NICK_LEN];
+} NS_Announce2;
+
+static NS_Protocol arm_protocol = NS_PROTO_PAKLINK;
+static NS_Protocol announce_protocol = NS_PROTO_PAKLINK;
+static char announce_nick[NS_NICK_LEN];
+
 static char ns_platform[16] = "tg5040";
 static char ns_pak[256];
 static char ns_state[256];
@@ -589,6 +602,11 @@ void NS_settingsLoad(void) {
 			snprintf(ns_set.quick_label, sizeof(ns_set.quick_label), "%s", eq + 1);
 			continue;
 		}
+		if (!strcmp(k, "nickname")) {
+			snprintf(ns_set.nickname, sizeof(ns_set.nickname), "%.31s", eq + 1);
+			NS_sanitizeNickname(ns_set.nickname);
+			continue;
+		}
 
 		if      (!strcmp(k, "share_cores"))   ns_set.share_cores = v != 0;
 		else if (!strcmp(k, "compatibility_cores")) ns_set.compatibility_cores = v != 0;
@@ -603,6 +621,8 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "status_icon"))
 			ns_set.status_icon = (v < 0 || v > NS_ICON_PERSISTENT) ? NS_ICON_OFF : (NS_IconMode)v;
 		else if (!strcmp(k, "quick_menu")) ns_set.quick_menu = v != 0;
+		else if (!strcmp(k, "host_protocol"))
+			ns_set.host_protocol = v == NS_PROTO_RETROARCH ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -644,6 +664,8 @@ void NS_settingsSave(void) {
 	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
 	fprintf(f, "quick_menu_keys=%s\n", ns_set.quick_keys);
 	fprintf(f, "quick_menu_label=%s\n", ns_set.quick_label);
+	fprintf(f, "nickname=%s\n", ns_set.nickname);
+	fprintf(f, "host_protocol=%d\n", (int)ns_set.host_protocol);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
@@ -2048,8 +2070,73 @@ int NS_guestAgentRun(void) {
 	return 0;
 }
 
+void NS_setArmProtocol(NS_Protocol protocol) { arm_protocol = protocol; }
+NS_Protocol NS_armProtocol(void) { return arm_protocol; }
+
+void NS_sanitizeNickname(char* nick) {
+	char* w = nick;
+	for (const char* r = nick; *r && w - nick < NS_NICK_LEN - 1; r++)
+		if (*r >= 0x20 && *r < 0x7f && *r != '=') *w++ = *r;
+	*w = '\0';
+	while (w > nick && w[-1] == ' ') *--w = '\0';
+}
+
+/* The setting, else the board's model name (an H700 is about twelve devices,
+ * so the platform alone would not tell two of them apart), else the platform. */
+void NS_nickname(char* out, int len) {
+	if (len <= 0) return;
+	out[0] = '\0';
+	if (NS_settings()->nickname[0]) {
+		snprintf(out, len, "%s", NS_settings()->nickname);
+		return;
+	}
+	FILE* f = fopen("/proc/device-tree/model", "r");
+	if (f) {
+		char model[64] = "";
+		size_t n = fread(model, 1, sizeof(model) - 1, f);
+		fclose(f);
+		model[n] = '\0';
+		snprintf(out, len, "%.31s", model);
+		NS_sanitizeNickname(out);
+	}
+	if (!out[0]) snprintf(out, len, "%s", ns_platform);
+}
+
+bool NS_probeRetroArch(const char* ip, int timeout_ms) {
+	struct sockaddr_in a;
+	memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_port = htons(55435);
+	if (!ip || inet_pton(AF_INET, ip, &a.sin_addr) != 1) return false;
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0) return false;
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	bool ok = false;
+	if (connect(fd, (struct sockaddr*)&a, sizeof(a)) == 0 || errno == EINPROGRESS) {
+		struct pollfd p = { fd, POLLOUT, 0 };
+		int soerr = 0;
+		socklen_t sl = sizeof(soerr);
+		if (poll(&p, 1, timeout_ms) == 1 &&
+		    getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && !soerr) {
+			uint32_t poke = htonl(0x504F4B45u); /* POKE */
+			if (send(fd, &poke, sizeof(poke), MSG_NOSIGNAL) == (ssize_t)sizeof(poke)) {
+				uint32_t magic = 0;
+				struct pollfd r = { fd, POLLIN, 0 };
+				if (poll(&r, 1, timeout_ms) == 1 &&
+				    recv(fd, &magic, sizeof(magic), MSG_WAITALL) == (ssize_t)sizeof(magic))
+					ok = ntohl(magic) == 0x52414E50u; /* RANP */
+			}
+		}
+	}
+	close(fd);
+	ns_log("RetroArch probe of %s: %s\n", ip, ok ? "a RetroArch host answered" : "no answer");
+	return ok;
+}
+
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	char path[512];
+	NS_Protocol protocol = arm_protocol;
+	arm_protocol = NS_PROTO_PAKLINK;
 
 	snprintf(path, sizeof(path), "%s/session.conf", ns_state);
 	FILE* f = fopen(path, "w");
@@ -2127,6 +2214,22 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	} else if (joined_hotspot && NS_validAdhocSsid(joined_ssid) &&
 	           NS_validAdhocPsk(joined_psk)) {
 		fprintf(f, "adhoc_ssid=%s\nadhoc_psk=%s\n", joined_ssid, joined_psk);
+	}
+
+	char nick[NS_NICK_LEN];
+	NS_nickname(nick, sizeof(nick));
+	if (nick[0]) fprintf(f, "nick=%s\n", nick);
+	if (protocol == NS_PROTO_RETROARCH) {
+		/* The shim speaks RetroArch's protocol on RetroArch's port. There is
+		 * no manifest exchange with a stock RetroArch, so the builds are
+		 * chosen here: Netplay's compatibility cores are pinned to the
+		 * revisions spruce's RetroArch ships, which is the first firmware
+		 * this targets. A per-firmware set is retroarch-plan.md phase 9. */
+		fprintf(f, "protocol=retroarch\nra_port=55435\n");
+		NS_CoreInfo cores[NS_MAX_MANIFEST];
+		int n = NS_coreManifest(cores, NS_MAX_MANIFEST);
+		for (int i = 0; i < n; i++)
+			if (cores[i].compat_available) fprintf(f, "compat_core.%s=1\n", cores[i].core);
 	}
 
 	if (role == NS_ROLE_HOST) {
@@ -2321,6 +2424,23 @@ static long ms_since(const struct timeval* t) {
 
 void NS_announceStart(NS_Mode mode) {
 	announce_mode = mode;
+	/* The broker announces for an armed session, so the session says which
+	 * protocol and nickname to announce. */
+	announce_protocol = NS_PROTO_PAKLINK;
+	NS_nickname(announce_nick, sizeof(announce_nick));
+	char spath[512], line[160];
+	snprintf(spath, sizeof(spath), "%s/session", ns_state);
+	FILE* sf = fopen(spath, "r");
+	while (sf && fgets(line, sizeof(line), sf)) {
+		char* end = strpbrk(line, "\r\n");
+		if (end) *end = '\0';
+		if (!strcmp(line, "protocol=retroarch")) announce_protocol = NS_PROTO_RETROARCH;
+		else if (!strncmp(line, "nick=", 5)) {
+			snprintf(announce_nick, sizeof(announce_nick), "%.31s", line + 5);
+			NS_sanitizeNickname(announce_nick);
+		}
+	}
+	if (sf) fclose(sf);
 	if (announce_fd >= 0) return;
 	announce_fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (announce_fd < 0) return;
@@ -2337,6 +2457,8 @@ void NS_announceTick(void) {
 	memset(&a, 0, sizeof(a));
 	a.magic = htonl(DISCOVERY_MAGIC);
 	a.version = htonl(1);
+	NS_Announce2 a2;
+	memset(&a2, 0, sizeof(a2));
 	a.mode = htonl((uint32_t)announce_mode);
 	a.hotspot = htonl(announce_ssid[0] ? 1u : 0u);
 	snprintf(a.ssid, sizeof(a.ssid), "%s", announce_ssid);
@@ -2349,6 +2471,11 @@ void NS_announceTick(void) {
 	to.sin_port = htons(DISCOVERY_PORT);
 	to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 	sendto(announce_fd, &a, sizeof(a), 0, (struct sockaddr*)&to, sizeof(to));
+	a2.v1 = a;
+	a2.v1.version = htonl(2);
+	a2.protocol = htonl((uint32_t)announce_protocol);
+	snprintf(a2.nick, sizeof(a2.nick), "%s", announce_nick);
+	sendto(announce_fd, &a2, sizeof(a2), 0, (struct sockaddr*)&to, sizeof(to));
 
 	gettimeofday(&last_announce, NULL);
 }
@@ -2443,20 +2570,41 @@ int NS_discoverTick(NS_Peer* peers, int max) {
 	if (discover_fd < 0) return count;
 	if (peers == NULL) { count = 0; return 0; }
 
+	NS_Announce2 a2;
 	NS_Announce a;
 	struct sockaddr_in from;
 	socklen_t flen = sizeof(from);
+	ssize_t got;
 
-	while (recvfrom(discover_fd, &a, sizeof(a), 0, (struct sockaddr*)&from, &flen) == (ssize_t)sizeof(a)) {
+	while ((got = recvfrom(discover_fd, &a2, sizeof(a2), 0, (struct sockaddr*)&from, &flen)) > 0) {
+		if (got != (ssize_t)sizeof(NS_Announce) && got != (ssize_t)sizeof(NS_Announce2)) continue;
+		a = a2.v1;
 		if (ntohl(a.magic) != DISCOVERY_MAGIC) continue;
+		bool v2 = got == (ssize_t)sizeof(NS_Announce2) && ntohl(a.version) >= 2;
 
 		char ip[NS_IP_LEN];
 		inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
 
-		bool known = false;
+		int known = -1;
 		for (int i = 0; i < count; i++)
-			if (!strcmp(peers[i].ip, ip)) { known = true; break; }
-		if (known || count >= max) continue;
+			if (!strcmp(peers[i].ip, ip)) { known = i; break; }
+		/* A version 2 packet completes the entry its version 1 twin made. */
+		if (known >= 0 && v2) {
+			peers[known].protocol = ntohl(a2.protocol) == NS_PROTO_RETROARCH
+			                      ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			a2.nick[sizeof(a2.nick) - 1] = '\0';
+			snprintf(peers[known].nick, sizeof(peers[known].nick), "%s", a2.nick);
+			NS_sanitizeNickname(peers[known].nick);
+		}
+		if (known >= 0 || count >= max) continue;
+		memset(&peers[count], 0, sizeof(peers[count]));
+		if (v2) {
+			peers[count].protocol = ntohl(a2.protocol) == NS_PROTO_RETROARCH
+			                      ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			a2.nick[sizeof(a2.nick) - 1] = '\0';
+			snprintf(peers[count].nick, sizeof(peers[count].nick), "%s", a2.nick);
+			NS_sanitizeNickname(peers[count].nick);
+		}
 
 		snprintf(peers[count].ip, NS_IP_LEN, "%s", ip);
 		a.platform[sizeof(a.platform) - 1] = '\0';

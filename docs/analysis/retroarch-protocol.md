@@ -150,8 +150,8 @@ them (first free device) and as Netplay already does.
 | Gap | Note |
 |---|---|
 | Discovery | answer `RANQ` (UDP 55435) from the broker so a Netplay host appears in RetroArch's list; send `RANQ` in Join to list RetroArch hosts |
-| Protocol choice in the app | Host offers Netplay.pak or RetroArch; Join detects (below) |
-| Nicknames in the app | the shim already reads `nick=` (below) |
+| Protocol choice in the app | done as below, except that the broker does not answer `RANQ` yet and Join does not send it |
+| Nickname entry on the device | the setting exists (`--ctl set nickname`, settings file); there is no on-screen keyboard row yet |
 | Link cores | `NETPACKET` for gambatte and gpSP; currently refused with a warning |
 | Passwords | a host that sets one is refused with a log line; the hash is `sha256("%08X" salt + password)` in hex |
 | Analog and other devices | only joypad bits cross; analog words are sent as zero |
@@ -161,10 +161,18 @@ them (first free device) and as Netplay already does.
 
 ## Protocol choice, detection and names
 
-**Choice at host time.** The Host screen gets a protocol choice: Netplay.pak
-(today's) or RetroArch. The broker's announcement carries it, and in RetroArch
-mode the broker also answers `RANQ`, so stock RetroArch devices list the host
-too. The armed session records `protocol=retroarch` for the shim.
+**Choice at host time.** Configuration > Host protocol (Paklink or
+RetroArch; `--ctl set host_protocol`, or `--ctl host wifi --protocol
+retroarch` for one session). The armed session records `protocol=retroarch`
+for the shim, and the broker's announcement carries it: a version 2 packet
+(protocol and nickname) follows each version 1 packet, which older builds
+still accept on its own. Still to do: in RetroArch mode the broker should
+also answer `RANQ`, so stock RetroArch devices list the host.
+
+An armed RetroArch session also selects every compatibility core the pak has
+(`compat_core.<core>=1`), because there is no manifest exchange with a stock
+RetroArch and the compatibility set is pinned to spruce's revisions. A
+RetroArch joiner skips the manifest exchange and the guest agent.
 
 **Detection at join time.** The joiner should not have to know:
 
@@ -175,7 +183,12 @@ too. The armed session records `protocol=retroarch` for the shim.
    RetroArch host answers a `POKE` on 55435 with its header and closes,
    without taking a player slot. Whichever answers decides.
 
-The joiner then writes the matching `protocol=` into its own session.
+The joiner then writes the matching `protocol=` into its own session. As
+built: an explicit `--protocol` wins, then a version 2 announcement, then the
+POKE probe (`NS_probeRetroArch`, 700 ms); step 3's broker probe is implicit,
+since a Paklink join that finds no broker fails at the manifest exchange as
+before. The probe only finds a RetroArch host whose game is already running,
+since that is when RetroArch listens.
 
 **A name for Netplay.pak's protocol.** "Netplay" is RetroArch's name for its
 own protocol too, so the UI and docs need a distinct one. Options:
@@ -186,16 +199,19 @@ own protocol too, so the UI and docs need a distinct one. Options:
 | Lockstep | describes the difference from RetroArch's rollback | RetroArch master's protocol 8 adds a "lockstep" host mode |
 | Netplay.pak protocol | unambiguous | long for a menu |
 
-Recommendation: **Paklink** on screen ("Protocol: Paklink / RetroArch") and in
-new docs; the code keeps `netlink`. Not applied anywhere yet: it is the
-user's call.
+Recommendation: **Paklink** on screen ("Host protocol: Paklink / RetroArch")
+and in new docs; the code keeps `netlink`. Used provisionally for the new
+setting (`NS_PROTO_PAKLINK`, the hint text); renaming is one string if
+another name wins.
 
 **Nicknames.** RetroArch shows a nick for every player (`NICK`, `MODE`, the
-lobby). Netplay should have one setting, Configuration > Nickname, defaulting
-to the device's model name (a short probe, since an H700 is about twelve
-devices), written into the session as `nick=`. The shim already sends it as
-the RetroArch nick. The same name belongs in Netplay's own announcements and
-Join list, so two Bricks on one network can be told apart.
+lobby). Netplay now has one setting, `nickname`, defaulting to
+`/proc/device-tree/model` (an H700 is about twelve devices, so the platform
+name would not tell them apart), else the platform. Every armed session
+carries it as `nick=`; the shim sends it as the RetroArch nick and the
+broker's version 2 announcement carries it, and the Join list shows it
+("Ben's Brick (192.168.0.143)", "WiFi, RetroArch"). Not yet done: a row to
+edit it on the device.
 
 ## spruce launches
 

@@ -619,7 +619,9 @@ static bool host_handshake(int fd) {
 	if (!read_all(fd, h, 4)) return false;
 	uint32_t magic = ntohl(h[0]);
 	if (magic == RA_POKE_MAGIC) {
+		/* send_info_and_disconnect: a probe, not a player */
 		send_header(0, max_protocol());
+		ra_log("answered a POKE probe\n");
 		return false;
 	}
 	if (magic != RA_MAGIC) { ra_log("not a RetroArch client (magic %08x)\n", magic); return false; }

@@ -25,9 +25,18 @@ typedef enum { NS_MODE_NETPLAY, NS_MODE_LINK } NS_Mode;
 #define NS_SSID_LEN 24
 #define NS_PSK_LEN  24
 
+/* Which wire protocol a session speaks. Paklink is Netplay.pak's own (the
+ * shim's netlink.c); RetroArch is stock RetroArch netplay, protocols 5-7
+ * (the shim's raproto.c). See docs/analysis/retroarch-protocol.md. */
+typedef enum { NS_PROTO_PAKLINK = 0, NS_PROTO_RETROARCH = 1 } NS_Protocol;
+
+#define NS_NICK_LEN 32
+
 typedef struct {
 	char    ip[NS_IP_LEN];
 	char    platform[16];
+	NS_Protocol protocol;           /* from a version 2 announcement */
+	char    nick[NS_NICK_LEN];      /* "" from an older host */
 	NS_Mode mode;
 	bool    hotspot;                /* host will move to its own network */
 	bool    scanned;                /* found by SSID scan, not by announcement */
@@ -75,6 +84,18 @@ typedef enum { NS_ROLE_HOST, NS_ROLE_CLIENT } NS_Role;
 /* Write session.conf + shared Netplay/session, and install launch stubs.
  * Writes no mode= line - the shim picks the mode from the core. */
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen);
+/* The protocol the next NS_arm writes into the session. Reset to Paklink by
+ * each NS_arm. */
+void NS_setArmProtocol(NS_Protocol protocol);
+NS_Protocol NS_armProtocol(void);
+/* True when a RetroArch netplay host answers at ip:55435. Uses RetroArch's
+ * own POKE probe, which a host answers with its header and then closes,
+ * without taking a player slot. */
+bool NS_probeRetroArch(const char* ip, int timeout_ms);
+/* The nickname setting, or the device's model name when it is empty. */
+void NS_nickname(char* out, int len);
+/* Keeps printable ASCII without '=', trims to NS_NICK_LEN - 1. */
+void NS_sanitizeNickname(char* nick);
 
 /* Remove session, force flag and stubs. */
 void NS_disarm(void);
@@ -199,6 +220,10 @@ typedef struct {
 	char        quick_label[32];
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
+	/* Shown to the other player: RetroArch's NICK, Netplay's announcement.
+	 * Empty means the device's model name. Printable ASCII, no '='. */
+	char        nickname[NS_NICK_LEN];
+	NS_Protocol host_protocol;  /* what Host offers */
 } NS_Settings;
 
 NS_Settings* NS_settings(void);   /* live, mutable; call NS_settingsSave after */
