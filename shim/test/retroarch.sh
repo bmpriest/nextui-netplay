@@ -133,6 +133,22 @@ SHIM_ENV="HARNESS_STALL_AT=120 HARNESS_STALL_MS=600" shim_client cn $((BASE + 7)
 model_ok cn && [ "$(model_field cn pauses)" -eq 0 ]; say $? "joining side stalls without PAUSE too"
 
 echo
+echo "== a RetroArch client is kept running on the host's real input"
+# A client that predicts the host's input rolls back by loading its own
+# state, which diverges for cores whose load is not exact (fceumm, picodrive).
+# The host asks for input latency and STALLs a client that gets too close to
+# its input edge; RetroArch's catch-up pulls a slow one back up. Clocks 4%
+# fast and 4% slow, against the harness's ~60 fps.
+for spec in fast:62.5 slow:57.5; do
+	case_name=p${spec%%:*}; fps=${spec#*:}   # shim_host sets $name
+	SHIM_ENV= shim_host "$case_name" $((BASE + 8)) 1200 --fps "$fps"
+	BASE=$((BASE + 1))
+	pred=$(model_field "$case_name" predicted); run=$(model_field "$case_name" run)
+	model_ok "$case_name" && [ "$run" -gt 0 ] && [ $((pred * 100)) -le $((run * 2)) ]
+	say $? "client at $fps fps predicted $pred of $run frames (at most 2%)"
+done
+
+echo
 echo "== older RetroArch protocols"
 SHIM_ENV= shim_client c5 $((BASE + 2)) 600 --max-proto 5
 model_ok c5 && grep -q "host header: protocol 5" "$OUT/c5.shim"

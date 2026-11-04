@@ -188,6 +188,8 @@ class Stats:
         self.pings = 0
         self.stalls = 0
         self.pauses = 0
+        self.predicted = 0
+        self.run_frames = 0
 
 
 # --------------------------------------------------------------------------
@@ -356,7 +358,7 @@ def run_host(port, frames, request_at, max_proto):
 # RetroArch as client (the shim hosts)
 # --------------------------------------------------------------------------
 
-def run_client(host, port, frames, request_at, max_proto, no_predict=False):
+def run_client(host, port, frames, request_at, max_proto, no_predict=False, fps=FPS):
     st = Stats()
     end = time.time() + 20
     while True:
@@ -404,6 +406,7 @@ def run_client(host, port, frames, request_at, max_proto, no_predict=False):
     requests = list(request_at)
     outstanding = False
     t0 = None
+    latency = 0
     next_tick = time.time()
     peer_paused = False
     stall = 0
@@ -487,8 +490,12 @@ def run_client(host, port, frames, request_at, max_proto, no_predict=False):
                         check_crc(f, crc)
                 else:
                     crcs[f] = crc
-            elif n == "SETTING_ALLOW_PAUSING" or n == "SETTING_INPUT_LATENCY_FRAMES":
+            elif n == "SETTING_ALLOW_PAUSING":
                 pass
+            elif n == "SETTING_INPUT_LATENCY_FRAMES":
+                # The client honours the host's minimum: its emulated frame
+                # runs that far behind the input frame it samples and sends.
+                latency = max(0, struct.unpack(">ii", b)[0])
             elif n == "PING_REQUEST":
                 c.send(CMD["PING_RESPONSE"])
             elif n == "PING_RESPONSE":
@@ -533,7 +540,7 @@ def run_client(host, port, frames, request_at, max_proto, no_predict=False):
             steps = 0
             while next_tick <= now:
                 steps += 1
-                next_tick += 1.0 / FPS
+                next_tick += 1.0 / fps
             steps = min(steps, 2)
             if server_frame > self_frame + 3:
                 steps = max(steps, 2)          # netplay catch-up
@@ -547,8 +554,13 @@ def run_client(host, port, frames, request_at, max_proto, no_predict=False):
                 # it is here: the strictest pacing a host can meet, and the one
                 # that exposes a host waiting on the client before it has sent
                 # input up to the client's MODE frame.
-                steps = min(steps, max(0, server_frame - self_frame))
+                steps = min(steps, max(0, server_frame - (self_frame - latency)))
             for _ in range(steps):
+                # RetroArch runs frame self_frame - latency now; without the
+                # host's input for it, it predicts (and later rolls back).
+                if self_frame - latency >= server_frame:
+                    st.predicted += 1
+                st.run_frames += 1
                 if next_send is not None and self_frame >= next_send:
                     mine[self_frame] = client_input(self_frame)
                     c.send(CMD["INPUT"], struct.pack(">III", self_frame, 1, mine[self_frame]))
@@ -577,19 +589,21 @@ def main():
     ap.add_argument("--request-at", type=int, action="append", default=[])
     ap.add_argument("--max-proto", type=int, default=7)
     ap.add_argument("--no-predict", action="store_true")
+    ap.add_argument("--fps", type=float, default=FPS, help="client clock, frames per second")
     a = ap.parse_args()
     try:
         if a.role == "host":
             st = run_host(int(a.args[0]), a.frames, a.request_at, a.max_proto)
         else:
             st = run_client(a.args[0], int(a.args[1]), a.frames, a.request_at, a.max_proto,
-                            a.no_predict)
+                            a.no_predict, a.fps)
     except Violation as e:
         print("model: VIOLATION: %s" % e, flush=True)
         return 1
     print("model: ok confirmed=%d crc_ok=%d crc_bad=%d loads=%d requests=%d pings=%d stalls=%d pauses=%d"
-          % (st.confirmed, st.crc_ok, st.crc_bad, st.loads, st.requests, st.pings, st.stalls, st.pauses),
-          flush=True)
+          " predicted=%d run=%d"
+          % (st.confirmed, st.crc_ok, st.crc_bad, st.loads, st.requests, st.pings, st.stalls, st.pauses,
+             st.predicted, st.run_frames), flush=True)
     return 0
 
 

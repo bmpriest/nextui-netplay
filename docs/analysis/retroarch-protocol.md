@@ -102,22 +102,51 @@ good RetroArch partners in either direction. snes9x and Supafaust are fine.
 RetroArch keeps itself near its peers with three rules, and the shim fits
 them:
 
-- **Catch-up** (`netplay_sync_input_post_frame`): a RetroArch that sees its
-  peer's input more than 3 frames ahead of its own runs unthrottled until it
-  is level. A Netplay peer sends `input_delay` frames ahead, so RetroArch
-  settles running about that far ahead of the Netplay device: it then holds
-  our input before it needs it (no rollback) and we hold its input before we
-  need it (no stall).
+- **Catch-up** (`netplay_sync_input_post_frame`): a RetroArch whose input
+  frame is more than 3 behind its peer's input runs unthrottled until it is
+  level. A Netplay peer sends `input_delay` frames ahead, so RetroArch settles
+  with its input frame at the edge of ours, and we hold its input before we
+  need it (no stall on our side).
 - **STALL**: a RetroArch host tells a client more than 3 frames ahead of it
-  to wait. A Netplay host does the same, at most every 120 frames; a Netplay
-  client honours one by holding frames.
-- **Running ahead**: nothing stops a RetroArch that is faster than its peer
-  except its 60-frame limit. So a Netplay client whose host's input runs more
-  than `input_delay + 4` frames ahead for 30 ticks runs one extra frame per
-  tick, video and audio withheld, until it is within `input_delay + 1`.
+  to wait; a Netplay client honours one by holding frames.
+- **Running ahead**: nothing else stops a RetroArch that is faster than its
+  peer before its 60-frame limit. A Netplay client whose host's input runs
+  more than `input_delay + 4` frames ahead for 30 ticks runs one extra frame
+  per tick, video and audio withheld, until it is within `input_delay + 1`.
 
-A Netplay host advertises input latency 0..0: RetroArch then applies its own
-player's input immediately, and the Netplay player carries the delay.
+**A RetroArch client must not predict the host's input.** Catch-up leaves a
+RetroArch client's emulated frame at the edge of our input, so it often runs
+a frame before our input for it arrives, predicts, and on a wrong guess loads
+its own state from a few frames back and replays. A Netplay host never loads,
+so for a core whose load is not exact the two drift: fceumm zeroes MMC1's
+`lreset` on load (rtconv, 2026-11-02), picodrive changes live state on load.
+On 2026-11-04, River City Ransom (fceumm, MMC3) with the Brick hosting spruce
+asked for a savestate at every CRC check (27 in 130 s), while Supafaust,
+whose load is exact, asked once. The shim's log shows the client at the edge
+throughout (peer horizon 608 against our input sent to 610). So a Netplay
+host:
+
+- asks the client for `RA_CLIENT_LATENCY` = 3 frames of input latency
+  (`SETTING_INPUT_LATENCY_FRAMES 3..3`). RetroArch then emulates 3 frames
+  behind the input frame that catch-up holds at our edge, inside our input.
+  The RetroArch player's own input is delayed 3 frames (50 ms) by this. Note
+  RetroArch only adjusts its latency after its first replay
+  (`frame_run_time_avg` is computed there), so the first seconds still run at
+  latency 0.
+- tells a client whose emulated frame (`horizon - 1 - 3`) reaches the frame
+  before our next unsent input to STALL the difference, at most every 30
+  frames.
+
+The model counts the frames its client would have run on a predicted host
+input. Against the previous shim (latency 0, STALL only beyond 3 frames ahead
+every 120 frames) a client 4% fast predicted 756 of 1205 frames; with this,
+0, at 4% fast and 4% slow.
+
+When RetroArch hosts, nothing equivalent is possible: a client cannot set the
+host's latency or tell it to stall, and RetroArch's host also runs at the edge
+of its client's input (spruce's host advertised latency 0..0). Cores with an
+inexact load will resync often under a RetroArch host. Prefer a Netplay host
+for fceumm and picodrive.
 
 ### Pause and menus
 

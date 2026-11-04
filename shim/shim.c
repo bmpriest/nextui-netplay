@@ -3935,8 +3935,11 @@ static bool dual_link_tick(void) {
 #define RA_CRC_RING          32
 #define RA_CATCHUP_MARGIN    4   /* client: frames beyond the delay before catching up */
 #define RA_CATCHUP_TICKS     30
-#define RA_STALL_MARGIN      3   /* host: RetroArch's own threshold for STALL */
-#define RA_STALL_EVERY       120 /* NETPLAY_MAX_REQ_STALL_FREQUENCY */
+/* Host: the input latency asked of a RetroArch client, and how often it may
+ * be told to STALL. See ra_tick: together they keep the client running on our
+ * real input instead of predicting it. */
+#define RA_CLIENT_LATENCY    3
+#define RA_STALL_EVERY       30
 #define RA_HELD_EVENTS       8
 
 /* ra_mode: session protocol=retroarch (declared above) */
@@ -4333,7 +4336,7 @@ static void ra_start(void) {
 	         info.library_version ? info.library_version : "");
 	cfg.content_crc = ra_content_crc;
 	cfg.allow_pausing = true;
-	cfg.latency_min = cfg.latency_max = 0;
+	cfg.latency_min = cfg.latency_max = RA_CLIENT_LATENCY;
 	const char* maxp = getenv("NETPLAY_RA_MAX_PROTOCOL");
 	if (maxp) cfg.max_protocol = (uint32_t)atoi(maxp);
 	if (!RaProto_start(&cfg)) recovery_fail("Could not start RetroArch netplay.");
@@ -4453,13 +4456,28 @@ static void ra_tick(void) {
 		return;
 	}
 
-	/* Host: a client running too far ahead of our input is asked to wait
-	 * (netplay_sync_input_post_frame's STALL). */
+	/* Host: keep the client from predicting our input.
+	 *
+	 * A RetroArch client that runs a frame before our input for it arrives
+	 * predicts, and when the prediction is wrong it loads its own state from
+	 * a few frames back and replays. For a core whose load is not exact
+	 * (fceumm's mappers, picodrive) every such load moves the client away
+	 * from a host that never loads, and the next CRC disagrees: on 2026-11-04
+	 * River City Ransom asked for a savestate at every check, while Supafaust,
+	 * whose load is exact, asked once. RetroArch's own catch-up holds the
+	 * client's input frame (horizon - 1) at most 3 behind ours, so on its own
+	 * it runs right at the edge of our input.
+	 *
+	 * Two things move it back. The client is asked for RA_CLIENT_LATENCY
+	 * frames of input latency (SETTING_INPUT_LATENCY_FRAMES), which puts its
+	 * emulated frame that far behind its input frame, inside our input. And a
+	 * client whose emulated frame (horizon - 1 - latency) still reaches the
+	 * frame before our next unsent one is told to STALL the difference. */
 	if (host && ra_peer_playing && ra_link_ready) {
 		uint32_t horizon = RaProto_remoteHorizon();
-		if (horizon > ra_next_send + RA_STALL_MARGIN &&
-		    netplay_frame >= ra_last_stall_frame + RA_STALL_EVERY) {
-			RaProto_sendStall(horizon - ra_next_send + 1);
+		uint32_t limit = ra_next_send + RA_CLIENT_LATENCY - 1;
+		if (horizon > limit && netplay_frame >= ra_last_stall_frame + RA_STALL_EVERY) {
+			RaProto_sendStall(horizon - limit);
 			ra_last_stall_frame = netplay_frame;
 		}
 	}
