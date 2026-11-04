@@ -1,4 +1,4 @@
-.PHONY: corecmp app-spruce dist-spruce udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
+.PHONY: corecmp app-spruce dist-spruce udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 compatibility-spruce32 compatibility-spruce32-sources check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -34,6 +34,7 @@ help:
 	@echo "make nds-pak   build a standalone DraStic NDS pak for my282 (Miyoo A30)"
 	@echo "make nds-wifi-paks  build trace-hook NDS paks for A30 and TrimUI Brick"
 	@echo "make compatibility  build seven pinned cores for ARMv7 + AArch64"
+	@echo "make compatibility-spruce32  build the ARMv7 set matching spruce's 32-bit RetroArch cores"
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
 	@echo "make app-spruce  build the app for spruce ($(SPRUCE_PLATFORMS))"
@@ -95,13 +96,30 @@ SNES9X_SRC := $(CORE_SRC_ROOT)/snes9x
 SUPAFAUST_SRC := $(CORE_SRC_ROOT)/mednafen_supafaust
 PCSX_SRC := $(CORE_SRC_ROOT)/pcsx_rearmed
 # Compatibility cores we do not patch are pinned to the revisions spruce ships
-# (prebuilt in the spruceOS repo since 2025-05-31, updated only on demand), so a
-# compatibility session plays the same game spruce's own RetroArch would.
+# (prebuilt in the spruceOS repo, updated only on demand), so a compatibility
+# session plays the same game spruce's own RetroArch would.
+#
+# Two pin sets, named for the spruce core directory each one matches:
+#
+#   (none)     RetroArch/.retroarch/cores64, as of bd606af63 (2025-05-31). The
+#              aarch64 set, and also the armv7 set the NextUI A30 ships: the two
+#              must share revisions, or an A30 and a Brick have no common
+#              fallback to negotiate.
+#   _SPRUCE32  RetroArch/.retroarch/cores, the 32-bit RetroArch's (ra32.*):
+#              A30, Miyoo Mini, and any 64-bit device set to raBuild=32-bit.
+#              As of f033f8ee8/109ebc490 (2025-10-08, restored 2026-01-02) every
+#              core here is a different revision from cores64. Built for armv7
+#              only, into dist/compatibility-spruce32/armv7.
 FCEUMM_REV := 3544ff567ecc417c170641587083b976739ef9db
 PICODRIVE_REV := 7102a71ba632915563529d504469094792f777a8
 SNES9X_REV := 49f484569ff2aec7ff08e7598a97d6c9e6eae72d
 SUPAFAUST_REV := e25f66765938d33f9ad5850e8d6cd597e55b7299
 PCSX_REV := febf2246848efb8937ab24c562bba20107bb46f0
+FCEUMM_REV_SPRUCE32 := 5cd4a43e16a7f3cd35628d481c347a0a98cfdfa2
+PICODRIVE_REV_SPRUCE32 := 975cdafb613e84e305f87b43e70d1e19df7e60e0
+SUPAFAUST_REV_SPRUCE32 := 75c658cce454e58ae04ea252f53a31c60d61548e
+PCSX_REV_SPRUCE32 := 228c14e10e9a8fae0ead8adf30daad2cdd8655b9
+SPRUCE32_SRC := $(CORE_SRC_ROOT)/spruce32
 # The cores put `git describe`/`rev-parse --short` into library_version (and
 # pcsx into its state header). spruce's come from libretro's buildbot: a clone
 # with no tags and 7-digit hashes. Match it, since RetroArch netplay compares
@@ -115,39 +133,41 @@ compatibility-sources: core-sources $(FCEUMM_SRC)/.compat-pinned-$(FCEUMM_REV) \
 	$(PICODRIVE_SRC)/.compat-pinned-$(PICODRIVE_REV) $(SNES9X_SRC)/.compat-pinned-$(SNES9X_REV) \
 	$(SUPAFAUST_SRC)/.compat-pinned-$(SUPAFAUST_REV) $(PCSX_SRC)/.compat-pinned-$(PCSX_REV)
 
+compatibility-spruce32-sources: core-sources \
+	$(SPRUCE32_SRC)/fceumm/.compat-pinned-$(FCEUMM_REV_SPRUCE32) \
+	$(SPRUCE32_SRC)/picodrive/.compat-pinned-$(PICODRIVE_REV_SPRUCE32) \
+	$(SPRUCE32_SRC)/mednafen_supafaust/.compat-pinned-$(SUPAFAUST_REV_SPRUCE32) \
+	$(SPRUCE32_SRC)/pcsx_rearmed/.compat-pinned-$(PCSX_REV_SPRUCE32)
+
+# compat_source <dir>,<repo>,<rev>[,<patch>,<submodule update args>]
 define compat_source
-$(1)/.compat-pinned-$(3):
+$(1)/.compat-pinned-$(3): $(4)
 	@rm -rf "$(1)"
-	@mkdir -p "$(CORE_SRC_ROOT)"
+	@mkdir -p "$(dir $(1))"
 	@git clone -q $(2) "$(1)"
 	@git -C "$(1)" checkout -q $(3)
 	@$(call COMPAT_GIT_LIKE_BUILDBOT,$(1))
+	$(if $(5),@git -C "$(1)" submodule update --init $(5))
+	$(if $(4),@patch -d "$(1)" -p1 < $(4))
 	@touch "$$@"
 endef
 
-$(eval $(call compat_source,$(FCEUMM_SRC),https://github.com/libretro/libretro-fceumm.git,$(FCEUMM_REV)))
+FCEUMM_REPO := https://github.com/libretro/libretro-fceumm.git
+SUPAFAUST_REPO := https://github.com/libretro/supafaust.git
+PCSX_REPO := https://github.com/libretro/pcsx_rearmed.git
+PCSX_PATCH := cores/patches/pcsx-rearmed-old-arm-hwcap.patch
+PICODRIVE_PATCH := cores/patches/picodrive-old-arm-hwcap.patch
+
+$(eval $(call compat_source,$(FCEUMM_SRC),$(FCEUMM_REPO),$(FCEUMM_REV)))
 $(eval $(call compat_source,$(SNES9X_SRC),https://github.com/libretro/snes9x.git,$(SNES9X_REV)))
-$(eval $(call compat_source,$(SUPAFAUST_SRC),https://github.com/libretro/supafaust.git,$(SUPAFAUST_REV)))
-
-$(PICODRIVE_SRC)/.compat-pinned-$(PICODRIVE_REV): cores/patches/picodrive-old-arm-hwcap.patch
-	@rm -rf "$(PICODRIVE_SRC)"
-	@mkdir -p "$(CORE_SRC_ROOT)"
-	@git clone -q https://github.com/irixxxx/picodrive.git "$(PICODRIVE_SRC)"
-	@git -C "$(PICODRIVE_SRC)" checkout -q "$(PICODRIVE_REV)"
-	@$(call COMPAT_GIT_LIKE_BUILDBOT,$(PICODRIVE_SRC))
-	@git -C "$(PICODRIVE_SRC)" submodule update --init --recursive
-	@patch -d "$(PICODRIVE_SRC)" -p1 < cores/patches/picodrive-old-arm-hwcap.patch
-	@touch "$@"
-
-$(PCSX_SRC)/.compat-pinned-$(PCSX_REV): cores/patches/pcsx-rearmed-old-arm-hwcap.patch
-	@rm -rf "$(PCSX_SRC)"
-	@mkdir -p "$(CORE_SRC_ROOT)"
-	@git clone -q https://github.com/libretro/pcsx_rearmed.git "$(PCSX_SRC)"
-	@git -C "$(PCSX_SRC)" checkout -q "$(PCSX_REV)"
-	@$(call COMPAT_GIT_LIKE_BUILDBOT,$(PCSX_SRC))
-	@git -C "$(PCSX_SRC)" submodule update --init frontend/libpicofe
-	@patch -d "$(PCSX_SRC)" -p1 < cores/patches/pcsx-rearmed-old-arm-hwcap.patch
-	@touch "$@"
+$(eval $(call compat_source,$(SUPAFAUST_SRC),$(SUPAFAUST_REPO),$(SUPAFAUST_REV)))
+$(eval $(call compat_source,$(PICODRIVE_SRC),https://github.com/irixxxx/picodrive.git,$(PICODRIVE_REV),$(PICODRIVE_PATCH),--recursive))
+$(eval $(call compat_source,$(PCSX_SRC),$(PCSX_REPO),$(PCSX_REV),$(PCSX_PATCH),frontend/libpicofe))
+# 975cdaf is a merge of irixxxx's tree into libretro's fork, so it exists only there.
+$(eval $(call compat_source,$(SPRUCE32_SRC)/fceumm,$(FCEUMM_REPO),$(FCEUMM_REV_SPRUCE32)))
+$(eval $(call compat_source,$(SPRUCE32_SRC)/mednafen_supafaust,$(SUPAFAUST_REPO),$(SUPAFAUST_REV_SPRUCE32)))
+$(eval $(call compat_source,$(SPRUCE32_SRC)/picodrive,https://github.com/libretro/picodrive.git,$(PICODRIVE_REV_SPRUCE32),$(PICODRIVE_PATCH),--recursive))
+$(eval $(call compat_source,$(SPRUCE32_SRC)/pcsx_rearmed,$(PCSX_REPO),$(PCSX_REV_SPRUCE32),$(PCSX_PATCH),frontend/libpicofe))
 
 $(GAMBATTE_STAMP):
 	@rm -rf "$(GAMBATTE_SRC)"
@@ -465,6 +485,12 @@ compatibility-aarch64:
 	@$(MAKE) -s -C "$(BUILDER)" build PLATFORM=tg5040 PROJECT="$$PWD" \
 		CMD='COMPAT_START=$(COMPAT_START) sh cores/build-compat.sh aarch64'
 
+# The armv7 set matching spruce's 32-bit RetroArch (RetroArch/.retroarch/cores),
+# shipped by dist-spruce. Needs dist/cores/my282 (make cores) for gambatte/gpsp.
+compatibility-spruce32: compatibility-spruce32-sources
+	@$(MAKE) -s -C "$(BUILDER)" build PLATFORM=my282 PROJECT="$$PWD" \
+		CMD='COMPAT_START=$(COMPAT_START) sh cores/build-compat.sh armv7 spruce32'
+
 check-compatibility:
 	@for arch in armv7 aarch64; do for c in $(COMPAT_CORES); do \
 		test -f dist/compatibility/$$arch/$${c}_libretro.so || { \
@@ -635,6 +661,10 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		mkdir -p "$$D/cores/compatibility" && \
 		cp -R dist/compatibility/aarch64 "$$D/cores/compatibility/" && \
 		cp cores/compatibility-platforms.txt "$$D/cores/compatibility/PLATFORMS.txt"; \
+	fi && \
+	if [ -d dist/compatibility-spruce32/armv7 ]; then \
+		mkdir -p "$$D/cores/compatibility" && \
+		cp -R dist/compatibility-spruce32/armv7 "$$D/cores/compatibility/"; \
 	fi && \
 	chmod 755 "$$D/launch.sh" "$$D/launcher"/* "$$D"/bin/*/*
 	@cd "$(SPRUCE_STAGE)" && zip -q -r "../Netplay-spruce.zip" App -x '*/.*'
