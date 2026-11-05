@@ -373,6 +373,18 @@ else
 	fail=1
 fi
 
+# The resync renumbers both sides 512 frames ahead (300 -> 812). Checks fall on
+# multiples of 300, so without a quiet period the next one came 88 frames
+# later; a core with a spurious mismatch then resynced back to back.
+resume=$(sed -n '/DESYNC at frame/,$ s/.*authoritative resync [0-9]* beginning; resume frame \([0-9]*\).*/\1/p' "$OUT/c11.log" | head -1)
+next=$(sed -n 's/.*in sync at frame \([0-9]*\).*/\1/p' "$OUT/c11.log" | awk -v r="${resume:-0}" '$1 > r { print; exit }')
+if [ -n "$resume" ] && [ -n "$next" ] && [ "$next" -ge $((resume + 300)) ]; then
+	echo "  ok   first check after the resync is a full interval later ($resume -> $next)"
+else
+	echo "  MISS first check after the resync came too soon (resume ${resume:-?}, next ${next:-none})"
+	fail=1
+fi
+
 echo
 echo "== shared-screen reset is host-authoritative"
 PORT16=$((PORT + 15))

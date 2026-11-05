@@ -340,6 +340,11 @@ typedef enum {
 static RecoveryPhase recovery_phase;
 static uint32_t recovery_epoch;
 static uint32_t recovery_resume_frame;
+/* A resync renumbers both sides RECOVERY_FRAME_JUMP ahead, which can land just
+ * before a multiple of HASH_INTERVAL: Crash Team Racing on spruce was checked
+ * again after 84 frames, failed, resynced, and spent half its time doing that.
+ * Both sides skip checks until a full interval after the resume frame. */
+static uint32_t hash_quiet_until;
 static unsigned recovery_count;
 static int recovery_failed;
 static char recovery_error[96];
@@ -1886,6 +1891,27 @@ static bool parse_authoritative_state(const void* data, size_t len,
 	return true;
 }
 
+/* PCSX-ReARMed before upstream 3960ac04 mallocs its GPU freeze block, and gpulib
+ * fills only ulControl[0..15] and [0xe0..0xe7]: the rest of the table is heap
+ * garbage. Two devices in identical emulated state then serialize differently,
+ * so every check reported a desync (Crash Team Racing on spruce, whose core is
+ * febf224, 2026-11-05; load reads none of those words). Zero them, wherever the
+ * core came from. The layout is checked, not assumed: header, save version and
+ * the freeze version gpulib's block starts with. */
+#define PCSX_SAVE_VERSION 0x8b410006u
+#define PCSX_GPU_FREEZE   (32 + 4 + 1 + 128 * 96 * 3 + 0x200000 + 0x80000 + 0x10000 + 792)
+
+static void scrub_core_state(uint8_t* state, size_t size) {
+	if (size < PCSX_GPU_FREEZE + 8 + 256 * 4 || memcmp(state, "STv4 PCSX", 9)) return;
+	uint32_t version, freeze_version;
+	memcpy(&version, state + 32, 4);
+	memcpy(&freeze_version, state + PCSX_GPU_FREEZE, 4);
+	if (version != PCSX_SAVE_VERSION || freeze_version != 1) return;
+	uint8_t* control = state + PCSX_GPU_FREEZE + 8;
+	memset(control + 16 * 4, 0, (0xe0 - 16) * 4);
+	memset(control + 0xe8 * 4, 0, (0x100 - 0xe8) * 4);
+}
+
 /* Package the core state together with the raw persistent-memory regions. The
  * files that minarch used to populate those regions (.sav, .srm, compressed or
  * otherwise) never enter the protocol. */
@@ -1916,6 +1942,7 @@ static bool capture_core_state(Core* target, void** out, size_t* out_len, uint32
 	uint8_t* state = buf + sizeof(wire);
 	memset(state, 0, state_size);
 	if (!target->serialize(state, state_size)) { free(buf); return false; }
+	scrub_core_state(state, state_size);
 	if (sram_size) memcpy(state + state_size, sram, sram_size);
 	if (rtc_size) memcpy(state + state_size + sram_size, rtc, rtc_size);
 
@@ -2351,6 +2378,7 @@ static void netplay_handshake(void) {
 static void reset_netplay_timeline(uint32_t frame) {
 	netplay_frame = frame;
 	timeline_start_frame = frame;
+	hash_quiet_until = frame ? frame + HASH_INTERVAL : 0;
 	memset(local_inputs, 0, sizeof(local_inputs));
 	memset(frame_buttons, 0, sizeof(frame_buttons));
 	last_scheduled = 0;
@@ -2907,7 +2935,7 @@ static bool netplay_checkDivergence(void) {
 	//
 	// So hashing is unconditional and identically timed on both sides, and the
 	// comparison is done separately, whenever the peer's hash turns up.
-	if (netplay_frame % HASH_INTERVAL == 0) {
+	if (netplay_frame % HASH_INTERVAL == 0 && netplay_frame >= hash_quiet_until) {
 		void* snapshot = NULL;
 		size_t snapshot_len = 0;
 		uint32_t mine = 0;
@@ -4333,6 +4361,7 @@ static void* ra_capture(size_t* len) {
 	bool ok = core.serialize(buf, n);
 	ra_special_state = 0;
 	if (!ok) { free(buf); return NULL; }
+	scrub_core_state(buf, n);
 	*len = n;
 	return buf;
 }

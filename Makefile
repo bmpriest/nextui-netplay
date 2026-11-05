@@ -148,14 +148,15 @@ $(1)/.compat-pinned-$(3): $(4)
 	@git -C "$(1)" checkout -q $(3)
 	@$(call COMPAT_GIT_LIKE_BUILDBOT,$(1))
 	$(if $(5),@git -C "$(1)" submodule update --init $(5))
-	$(if $(4),@patch -d "$(1)" -p1 < $(4))
+	$(if $(4),@for p in $(4); do patch -s -d "$(1)" -p1 < "$$$$p" || exit 1; done)
 	@touch "$$@"
 endef
 
 FCEUMM_REPO := https://github.com/libretro/libretro-fceumm.git
 SUPAFAUST_REPO := https://github.com/libretro/supafaust.git
 PCSX_REPO := https://github.com/libretro/pcsx_rearmed.git
-PCSX_PATCH := cores/patches/pcsx-rearmed-old-arm-hwcap.patch
+PCSX_PATCH := cores/patches/pcsx-rearmed-old-arm-hwcap.patch \
+              cores/patches/pcsx-rearmed-savestate-heap-garbage.patch
 PICODRIVE_PATCH := cores/patches/picodrive-old-arm-hwcap.patch
 
 $(eval $(call compat_source,$(FCEUMM_SRC),$(FCEUMM_REPO),$(FCEUMM_REV)))
