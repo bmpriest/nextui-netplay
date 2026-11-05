@@ -70,23 +70,24 @@ first; a PC is a bonus. Plan:
 
 ## Play features
 
-### Open-game invitation
+### Open-game invitation: what is left
 
-Either paired device chooses a shared-screen game and offers it to the other:
+Invitations work between spruce devices ([features.md](features.md#game-invitations-spruce)).
+Still open:
 
-> Host wants to play
-> Streets of Rage 2 - MD
-> B Cancel · A Play
-
-The offer carries a display title, system, canonical content SHA-256, a nonce
-and the mode: never a path, command, ROM or executable. The receiver finds a
-verified local match and launches its own copy. Replies cover accepted,
-declined, missing, busy, expired and failed; simultaneous offers resolve
-deterministically, and a device already in a game gets a notice rather than
-being switched. It needs a persistent local ROM index keyed by system and
-content hash, consistent with the runtime identity check across raw ROMs, ZIPs,
-CUE/BIN and M3U. Offering from NextUI's own menus needs a frontend hook; the
-quick menu (Varnish) may be enough to receive one.
+- **Matching by content, not file name.** The offer names the ROM by its path
+  under `Roms/`, so a differently named copy of the same game reads as "not on
+  this device". A persistent local ROM index keyed by system and content hash,
+  consistent with the runtime identity check across raw ROMs, ZIPs, CUE/BIN and
+  M3U, would let the receiver find its own copy.
+- **NextUI.** NextUI devices neither send nor receive yet. Sending is the same
+  call from the MinArch shadow; receiving needs a way to pause and resume
+  nextui.elf's menu, or the quick menu (Varnish).
+- **Replies.** The sender only learns that the offer arrived, not whether it
+  was accepted, declined or the game is missing.
+- **Browse speed.** Opening spruce's menu on the game takes about 6 s, nearly
+  all of it spruce's loop and PyUI starting again; PyUI has no command to jump
+  to a game while it runs.
 
 ### Guest mode (simple client)
 

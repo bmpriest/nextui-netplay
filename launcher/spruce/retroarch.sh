@@ -97,6 +97,10 @@ if [ -f "$SESSION_CFG" ]; then
 	[ "$appended" = 1 ] || set -- --appendconfig "$SESSION_CFG" "$@"
 fi
 
+# Offer the game to the other device; its menu asks the player (invite.sh).
+# Detached: the launch does not wait on the network.
+sh "$NP/launcher/invite.sh" send "$ROM" "$CORE"
+
 # spruce stops a game by signalling RetroArch by name (this shell carries the
 # same name), so pass a stop on rather than dying before RetroArch has saved and
 # the shim has put the CPU back.

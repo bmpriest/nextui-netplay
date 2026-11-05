@@ -2028,6 +2028,7 @@ int NS_guestAgentRun(void) {
 	host_addr.sin_family = AF_INET;
 	host_addr.sin_port = htons(SESSION_END_PORT);
 	host_addr.sin_addr = host;
+	int invites = NS_inviteListen();
 	for (;;) {
 		/* Ask as well as listen: in power save we are awake just after we
 		 * send, so the host's answer arrives where its pushed notice, sent
@@ -2035,10 +2036,11 @@ int NS_guestAgentRun(void) {
 		 * the host is ending the session. */
 		sendto(fd, session_end_poll, sizeof(session_end_poll) - 1, 0,
 		       (struct sockaddr*)&host_addr, sizeof(host_addr));
-		struct pollfd p = { .fd = fd, .events = POLLIN };
-		int ready = poll(&p, 1, 1000);
+		struct pollfd p[2] = { { .fd = fd, .events = POLLIN }, { .fd = invites, .events = POLLIN } };
+		int ready = poll(p, invites >= 0 ? 2 : 1, 1000);
 		if (!NS_isArmed()) { ns_log("guest agent: session ended here - exiting\n"); break; }
-		if (ready <= 0) continue;
+		if (invites >= 0 && (p[1].revents & POLLIN)) NS_inviteTick();
+		if (ready <= 0 || !(p[0].revents & POLLIN)) continue;
 
 		char buf[64];
 		struct sockaddr_in from;
@@ -2068,6 +2070,167 @@ int NS_guestAgentRun(void) {
 	}
 	if (fd >= 0) close(fd);
 	return 0;
+}
+
+/* Game invitations. Launching a game during a session offers it to the other
+ * device: the launcher hook runs netplay-broker.elf --invite, which sends one
+ * UDP datagram until it is acknowledged, and the receiving side - the host's
+ * broker or the guest's agent - hands it to launcher/invite.sh, which asks the
+ * player over spruce's menu. Either side can invite the other.
+ *
+ * NETPLAY-INVITE 1\n<nonce>\n<system folder>\n<rom path under Roms/>\n<core>\n<nick>
+ *
+ * Only the session peer is listened to: a guest takes invitations from its
+ * host's address alone, and a host from the guests it knows or any address on
+ * its own ad hoc subnet. The same nonce is acted on once, however often it is
+ * repeated. */
+#define INVITE_PORT 55441
+static const char invite_magic[] = "NETPLAY-INVITE 1";
+static const char invite_ack[] = "NETPLAY-INVITE-ACK 1";
+static int invite_fd = -1;
+static char invite_seen[8][24];
+static int invite_seen_next;
+
+int NS_inviteListen(void) {
+	if (invite_fd >= 0) return invite_fd;
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return -1;
+	int on = 1;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+	struct sockaddr_in me;
+	memset(&me, 0, sizeof(me));
+	me.sin_family = AF_INET;
+	me.sin_port = htons(INVITE_PORT);
+	me.sin_addr.s_addr = htonl(INADDR_ANY);
+	if (bind(fd, (struct sockaddr*)&me, sizeof(me)) != 0) {
+		ns_log("invitations: cannot listen on %d (%s)\n", INVITE_PORT, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	invite_fd = fd;
+	return fd;
+}
+
+static bool invite_from_peer(const NS_SessionInfo* s, const struct in_addr* from) {
+	char ip[NS_IP_LEN];
+	inet_ntop(AF_INET, from, ip, sizeof(ip));
+	if (s->role == NS_ROLE_CLIENT) return !strcmp(ip, s->host);
+	for (int i = 0; i < s->guest_count && i < 4; i++)
+		if (!strcmp(ip, s->guest[i].ip)) return true;
+	/* The host's table can be empty (over plain WiFi it only fills from the
+	 * AP's station list), so a host also takes its own subnet: its ad hoc
+	 * network, or the LAN both devices share. */
+	char mine[NS_IP_LEN];
+	if (!NS_localIP(mine, sizeof(mine))) return false;
+	const char* dot = strrchr(mine, '.');
+	/* Not our own broadcast coming back. */
+	return dot && strcmp(ip, mine) && !strncmp(ip, mine, (size_t)(dot - mine) + 1);
+}
+
+static void invite_run_handler(char* const fields[4]) {
+	char script[512];
+	snprintf(script, sizeof(script), "%s/launcher/invite.sh", ns_pak);
+	if (access(script, R_OK) != 0) { ns_log("invitations: no %s on this firmware\n", script); return; }
+	pid_t pid = fork();
+	if (pid != 0) { if (pid > 0) waitpid(pid, NULL, WNOHANG); return; }
+	setsid();
+	if (fork() != 0) _exit(0);   /* orphaned, so nobody has to reap it */
+	long max_fd = sysconf(_SC_OPEN_MAX);
+	if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
+	for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) close(fd);
+	setenv("SDCARD_PATH", ns_sd, 1);
+	setenv("PLATFORM", ns_platform, 1);
+	execl("/bin/sh", "sh", script, "receive", fields[0], fields[1], fields[2], fields[3], (char*)NULL);
+	_exit(127);
+}
+
+void NS_inviteTick(void) {
+	if (invite_fd < 0) return;
+	for (;;) {
+		char buf[1024];
+		struct sockaddr_in from;
+		socklen_t fromlen = sizeof(from);
+		ssize_t n = recvfrom(invite_fd, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&from, &fromlen);
+		if (n <= 0) return;
+		buf[n] = '\0';
+		char* field[7];
+		int count = 0;
+		for (char *p = buf, *nl; count < 7; p = nl + 1) {
+			field[count++] = p;
+			if (!(nl = strchr(p, '\n'))) break;
+			*nl = '\0';
+		}
+		if (count != 6 || strcmp(field[0], invite_magic) || strlen(field[1]) >= sizeof(invite_seen[0]) ||
+		    strstr(field[3], "..")) continue;
+		NS_SessionInfo s;
+		if (!NS_sessionInfo(&s) || !invite_from_peer(&s, &from.sin_addr)) continue;
+
+		char ack[64];
+		int len = snprintf(ack, sizeof(ack), "%s\n%s", invite_ack, field[1]);
+		sendto(invite_fd, ack, (size_t)len, 0, (struct sockaddr*)&from, fromlen);
+		bool seen = false;
+		for (int i = 0; i < 8; i++) if (!strcmp(invite_seen[i], field[1])) seen = true;
+		if (seen) continue;
+		snprintf(invite_seen[invite_seen_next], sizeof(invite_seen[0]), "%s", field[1]);
+		invite_seen_next = (invite_seen_next + 1) % 8;
+		ns_log("invitation from %s: %s with %s\n", field[5], field[3], field[4]);
+		invite_run_handler((char* const[]){ field[2], field[3], field[4], field[5] });
+	}
+}
+
+static void invite_send_to(int fd, const char* ip, const char* msg, size_t len) {
+	struct sockaddr_in to;
+	memset(&to, 0, sizeof(to));
+	to.sin_family = AF_INET;
+	to.sin_port = htons(INVITE_PORT);
+	if (inet_pton(AF_INET, ip, &to.sin_addr) != 1) return;
+	sendto(fd, msg, len, 0, (struct sockaddr*)&to, sizeof(to));
+}
+
+bool NS_inviteSend(const char* system, const char* rom, const char* core) {
+	NS_SessionInfo s;
+	if (!NS_sessionInfo(&s)) return false;
+	char nick[NS_NICK_LEN];
+	NS_nickname(nick, sizeof(nick));
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	char msg[1024];
+	int len = snprintf(msg, sizeof(msg), "%s\n%lx%05lx%x\n%s\n%s\n%s\n%s", invite_magic,
+	                   (unsigned long)now.tv_sec, (unsigned long)now.tv_usec, (unsigned)getpid() & 0xfff,
+	                   system, rom, core, nick);
+	if (len <= 0 || len >= (int)sizeof(msg)) return false;
+	const char* nonce_start = strchr(msg, '\n') + 1;
+	char nonce[24];
+	snprintf(nonce, sizeof(nonce), "%.*s", (int)(strchr(nonce_start, '\n') - nonce_start), nonce_start);
+
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return false;
+	int on = 1;
+	setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+	struct timeval tv = { .tv_sec = 0, .tv_usec = 250 * 1000 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	bool acked = false;
+	/* Every 250 ms for up to 4 s, like the session end: a receiver in power
+	 * save hears a repeat it missed the first time. */
+	for (int round = 0; round < 16 && !acked; round++) {
+		if (s.role == NS_ROLE_CLIENT) invite_send_to(fd, s.host, msg, (size_t)len);
+		else {
+			for (int i = 0; i < s.guest_count && i < 4; i++) invite_send_to(fd, s.guest[i].ip, msg, (size_t)len);
+			if (s.network[0]) invite_send_to(fd, "10.0.0.255", msg, (size_t)len);
+			invite_send_to(fd, "255.255.255.255", msg, (size_t)len);
+		}
+		char buf[64];
+		ssize_t n;
+		while ((n = recv(fd, buf, sizeof(buf) - 1, 0)) > 0) {
+			buf[n] = '\0';
+			char* nl = strchr(buf, '\n');
+			if (nl && !strncmp(buf, invite_ack, (size_t)(nl - buf)) && !strcmp(nl + 1, nonce)) acked = true;
+		}
+	}
+	close(fd);
+	ns_log("invitation for %s %s: %s\n", system, rom, acked ? "acknowledged" : "no answer");
+	return acked;
 }
 
 void NS_setArmProtocol(NS_Protocol protocol) { arm_protocol = protocol; }

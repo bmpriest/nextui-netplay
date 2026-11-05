@@ -135,6 +135,23 @@ save state from one device means nothing to the other. Rewind is off with them,
 and fast forward is held to the game's own speed. In-game saves work as
 described per mode above.
 
+### Game invitations (spruce)
+
+Starting a game during a session offers it to the other device, whichever of
+the two starts it. If that device is in spruce's game menu, its menu pauses and
+Netplay asks over it, with the game's box art (QOI or PNG, from the system's
+`Imgs` folder):
+
+- **A Play** starts the same game there, through spruce's own launcher.
+- **B Not now** puts the menu back exactly as it was.
+- **X Browse <system>** (Browse GB, Browse Genesis) reopens spruce's menu on that game in its system's list,
+  or on the nearest game this device has (Pokémon Red beside an invited Blue),
+  for picking a different one. This takes several seconds: spruce restarts its
+  menu to get there.
+
+A device that is in a game, or in an app's own menu, does not see the
+invitation. The prompt is up in about 0.7 s on an RG35XXH and 1.4 s on a Brick.
+
 ### Core options
 
 Core options that change the game (region, clocks, fceumm's sound quality and

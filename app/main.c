@@ -14,6 +14,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <strings.h>
+#include <time.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+#include <stdint.h>
 
 #include <msettings.h>
 #include "defines.h"
@@ -24,6 +31,7 @@
 #include "hints.h"
 #include "netsetup.h"
 #include "onboarding.h"
+#include "qoi.h"
 
 typedef enum {
 	SCREEN_MENU,
@@ -1827,6 +1835,199 @@ static void join_peer(SDL_Surface* s, int i) {
 	}
 }
 
+/* Box art for a prompt: spruce keeps almost all of it as QOI, which SDL_image
+ * does not read; anything else goes through IMG_Load. */
+static SDL_Surface* load_art(const char* path) {
+	size_t n = strlen(path);
+	if (n > 4 && !strcasecmp(path + n - 4, ".qoi")) {
+		int w, h;
+		uint8_t* px = QOI_read(path, &w, &h);
+		if (!px) return NULL;
+		SDL_Surface* wrap = SDL_CreateRGBSurfaceFrom(px, w, h, 32, w * 4,
+			0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+		SDL_Surface* art = wrap ? SDL_ConvertSurface(wrap, wrap->format, 0) : NULL;
+		if (wrap) SDL_FreeSurface(wrap);
+		free(px);
+		return art;
+	}
+	return IMG_Load(path);
+}
+
+static long elapsed_since_ms(const struct timespec* t0) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (now.tv_sec - t0->tv_sec) * 1000L + (now.tv_nsec - t0->tv_nsec) / 1000000L;
+}
+
+/* The built-in pad as spruce's menu reads it, found by name like DevBridge's
+ * spruce-input: ANBERNIC-keys on the H700s, TRIMUI Player1 (trimui_inputd's
+ * pad) on the Brick. The two disagree on which code is A. */
+typedef struct {
+	int fd[4];
+	int count;
+	int a, b, x;
+} MenuPad;
+
+/* The evdev definitions we need; linux/input.h's names collide with NextUI's
+ * BTN_* button masks. */
+struct evdev_event {
+	struct timeval time;
+	uint16_t type, code;
+	int32_t value;
+};
+#define EVDEV_SYN 0x00
+#define EVDEV_KEY 0x01
+#define EVDEV_ABS 0x03
+#define EVDEV_SYN_REPORT 0
+#define EVDEV_ABS_HAT0Y 0x11
+#define EVDEV_GRAB _IOW('E', 0x90, int)
+
+static bool menu_pad_open(MenuPad* pad, bool grab) {
+	memset(pad, 0, sizeof(*pad));
+	for (int i = 0; i < 32 && pad->count < 4; i++) {
+		char path[64], name[64] = "";
+		snprintf(path, sizeof(path), "/sys/class/input/event%d/device/name", i);
+		FILE* f = fopen(path, "r");
+		if (!f) continue;
+		if (!fgets(name, sizeof(name), f)) name[0] = '\0';
+		fclose(f);
+		name[strcspn(name, "\n")] = '\0';
+		if (!strcmp(name, "ANBERNIC-keys")) { pad->a = 304; pad->b = 305; pad->x = 307; }
+		else if (!strcmp(name, "TRIMUI Player1")) { pad->a = 305; pad->b = 304; pad->x = 308; }
+		else continue;
+		snprintf(path, sizeof(path), "/dev/input/event%d", i);
+		int fd = open(path, (grab ? O_RDONLY : O_WRONLY) | O_NONBLOCK);
+		if (fd < 0) continue;
+		/* Held exclusively while we ask: the paused menu would otherwise find
+		 * our presses queued when it resumes, and act on them. */
+		if (grab) ioctl(fd, EVDEV_GRAB, 1);
+		pad->fd[pad->count++] = fd;
+	}
+	return pad->count > 0;
+}
+
+static void menu_pad_close(MenuPad* pad) {
+	for (int i = 0; i < pad->count; i++) close(pad->fd[i]);
+	pad->count = 0;
+}
+
+/* The pressed button's role on the menu pad: 'a', 'b', 'x' or 0. */
+static int menu_pad_read(MenuPad* pad, int timeout_ms) {
+	struct pollfd p[4];
+	for (int i = 0; i < pad->count; i++) p[i] = (struct pollfd){ .fd = pad->fd[i], .events = POLLIN };
+	if (poll(p, (nfds_t)pad->count, timeout_ms) <= 0) return 0;
+	for (int i = 0; i < pad->count; i++) {
+		struct evdev_event ev;
+		while (read(pad->fd[i], &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+			if (ev.type != EVDEV_KEY || ev.value != 1) continue;
+			if (ev.code == pad->a) return 'a';
+			if (ev.code == pad->b) return 'b';
+			if (ev.code == pad->x) return 'x';
+		}
+	}
+	return 0;
+}
+
+/* A question asked over another frontend's menu, for game invitations:
+ *
+ *   --prompt --title T [--text TEXT] [--art PATH] [--accept LABEL]
+ *            [--decline LABEL] [--browse LABEL] [--timeout SECONDS]
+ *
+ * Draws only what it is given - no network, no settings, no session state - so
+ * it is on screen as soon as the display is up. An empty --accept hides A (the
+ * game is not on this device); --browse adds X. Prints accept, decline, browse
+ * or timeout; exits 0, 1, 3 or 2. The caller owns whatever frontend it
+ * covered, and pauses it first: the menu pad is grabbed while we ask. */
+static int prompt_main(int argc, char* argv[]) {
+	struct timespec t0;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	const char *title = "", *text = "", *art_path = NULL;
+	const char *accept = "PLAY", *decline = "DECLINE", *browse = "";
+	int timeout_s = 60;
+	for (int i = 0; i + 1 < argc; i += 2) {
+		if (!strcmp(argv[i], "--title")) title = argv[i + 1];
+		else if (!strcmp(argv[i], "--text")) text = argv[i + 1];
+		else if (!strcmp(argv[i], "--art")) art_path = argv[i + 1];
+		else if (!strcmp(argv[i], "--accept")) accept = argv[i + 1];
+		else if (!strcmp(argv[i], "--decline")) decline = argv[i + 1];
+		else if (!strcmp(argv[i], "--browse")) browse = argv[i + 1];
+		else if (!strcmp(argv[i], "--timeout")) timeout_s = atoi(argv[i + 1]);
+	}
+
+	SDL_Surface* s = GFX_init(MODE_MAIN);
+	MenuPad pad;
+	bool own_pad = menu_pad_open(&pad, true);
+	if (!own_pad) PAD_init();   /* not spruce: NextUI's pad layer */
+	long display_ms = elapsed_since_ms(&t0);
+	SDL_Surface* art = art_path ? load_art(art_path) : NULL;
+	long art_ms = elapsed_since_ms(&t0) - display_ms;
+
+	GFX_clear(s);
+	draw_title(s, title);
+	int y = SCALE1(PADDING + 44);
+	if (art) {
+		int maxw = s->w - SCALE1(PADDING * 2 + BUTTON_PADDING * 2);
+		int maxh = s->h - y - SCALE1(PADDING + PILL_SIZE * 2 + 40);
+		int w = art->w, h = art->h;
+		if (w > maxw) { h = h * maxw / w; w = maxw; }
+		if (h > maxh) { w = w * maxh / h; h = maxh; }
+		SDL_Rect dst = {(s->w - w) / 2, y, w, h};
+#ifdef USE_SDL2
+		SDL_BlitScaled(art, NULL, s, &dst);
+#else
+		SDL_SoftStretch(art, NULL, s, &dst);
+#endif
+		y += h + SCALE1(6);
+	}
+	if (text[0]) draw_wrapped(s, text, y, COLOR_WHITE, 2);
+	if (browse[0]) GFX_blitButtonGroup((char*[]){"X", (char*)browse, NULL}, 0, s, 0);
+	if (accept[0]) GFX_blitButtonGroup((char*[]){"B", (char*)decline, "A", (char*)accept, NULL}, 1, s, 1);
+	else GFX_blitButtonGroup((char*[]){"B", (char*)decline, NULL}, 0, s, 1);
+	GFX_flip(s);
+	fprintf(stderr, "prompt: display up after %ld ms, art %ld ms, first frame after %ld ms\n",
+	        display_ms, art_ms, elapsed_since_ms(&t0));
+
+	int result = 2;
+	while (elapsed_since_ms(&t0) < timeout_s * 1000L) {
+		int button = 0;
+		if (own_pad) button = menu_pad_read(&pad, 50);
+		else {
+			PAD_poll();
+			button = PAD_justPressed(BTN_A) ? 'a' : PAD_justPressed(BTN_B) ? 'b' : PAD_justPressed(BTN_X) ? 'x' : 0;
+			GFX_sync();
+		}
+		if (button == 'a' && accept[0]) { result = 0; break; }
+		if (button == 'b') { result = 1; break; }
+		if (button == 'x' && browse[0]) { result = 3; break; }
+	}
+	printf("%s\n", result == 0 ? "accept" : result == 1 ? "decline" : result == 3 ? "browse" : "timeout");
+	if (art) SDL_FreeSurface(art);
+	if (own_pad) menu_pad_close(&pad);
+	else PAD_quit();
+	GFX_quit();
+	return result;
+}
+
+/* A resumed menu repaints only what changes, so whatever covered it stays on
+ * screen until the player moves. Down then Up, written into the menu pad's
+ * own node like DevBridge's spruce-input does, repaints it and leaves the
+ * selection where it was. */
+static int nudge_main(void) {
+	MenuPad pad;
+	if (!menu_pad_open(&pad, false)) return 1;
+	const int steps[] = { 1, 0, -1, 0 };
+	for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+		struct evdev_event ev[2];
+		memset(ev, 0, sizeof(ev));
+		ev[0].type = EVDEV_ABS; ev[0].code = EVDEV_ABS_HAT0Y; ev[0].value = steps[i];
+		ev[1].type = EVDEV_SYN; ev[1].code = EVDEV_SYN_REPORT;
+		if (write(pad.fd[0], ev, sizeof(ev)) != (ssize_t)sizeof(ev)) break;
+		usleep(80 * 1000);
+	}
+	menu_pad_close(&pad);
+	return 0;
+}
+
 /* Headless control for unattended tests: the steps the menus take, with no
  * screen and no pad, so a test runner can set a session up and tear it down
  * between cases. Prints one "ok ..." or "error ..." line; exits 0 on ok.
@@ -2103,6 +2304,11 @@ int main(int argc, char* argv[]) {
 			setvbuf(stdout, NULL, _IOLBF, 0);
 			return ctl_main(argc - i - 1, argv + i + 1);
 		}
+		if (!strcmp(argv[i], "--prompt")) {
+			setvbuf(stdout, NULL, _IOLBF, 0);
+			return prompt_main(argc - i - 1, argv + i + 1);
+		}
+		if (!strcmp(argv[i], "--nudge")) return nudge_main();
 	}
 
 	SDL_Surface* s = GFX_init(MODE_MAIN);

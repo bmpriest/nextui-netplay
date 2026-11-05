@@ -172,6 +172,15 @@ void NS_brokerStop(void);
 bool NS_guestAgentStart(void);
 int  NS_guestAgentRun(void);
 
+/* Game invitations between the two devices of a session (netsetup.c).
+ * Listen opens the port and returns its descriptor (-1 on failure); Tick
+ * reads what has arrived and hands each new invitation from the session peer
+ * to launcher/invite.sh; Send offers a game to the peer and returns once it
+ * is acknowledged or after 4 s. rom is the path under the Roms folder. */
+int  NS_inviteListen(void);
+void NS_inviteTick(void);
+bool NS_inviteSend(const char* system, const char* rom, const char* core);
+
 /* --- settings -----------------------------------------------------------
  *
  * Persisted to .userdata/shared/Netplay/settings as key=value. Read once at startup; written on

@@ -66,6 +66,9 @@ static void publish_status(const char* status_path, const NS_SessionInfo* sessio
 int main(int argc, char* argv[]) {
 	NS_init();
 	if (argc > 1 && !strcmp(argv[1], "--guest")) return NS_guestAgentRun();
+	/* --invite SYSTEM ROM CORE: offer a game to the session peer (the
+	 * launcher hook runs this, detached, as a game starts). */
+	if (argc == 5 && !strcmp(argv[1], "--invite")) return NS_inviteSend(argv[2], argv[3], argv[4]) ? 0 : 1;
 
 	char pid_path[512], status_path[512];
 	snprintf(pid_path, sizeof(pid_path), "%s/broker.pid", NS_statePath());
@@ -95,11 +98,13 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
+	NS_inviteListen();
 	int status_tick = 0;
 	while (!stopping) {
 		if (!NS_isArmed()) break;
 		NS_announceTick();
 		NS_compatServeTick();
+		NS_inviteTick();
 		/* Read only when someone opens Netplay.pak mid-session, so a few
 		 * seconds stale is fine; each refresh shells out to iw/pidof. */
 		if (status_tick++ % 50 == 0) publish_status(status_path, &session);
