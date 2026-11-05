@@ -46,7 +46,7 @@ ifeq (,$(filter $(FIRMWARE),nextui spruce))
 $(error invalid FIRMWARE '$(FIRMWARE)'. Supported: nextui spruce)
 endif
 
-SOURCE   = main.c netsetup.c hints.c nextui/chordcap.c \
+SOURCE   = main.c netsetup.c hints.c onboarding.c nextui/chordcap.c \
            $(COMMON)/api.c $(COMMON)/utils.c $(COMMON)/config.c $(COMMON)/scaler.c \
            $(PLATDIR)/platform.c
 

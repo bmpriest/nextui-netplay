@@ -8,6 +8,7 @@
  */
 
 #include <signal.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,9 +23,11 @@
 #include "chordcap.h"
 #include "hints.h"
 #include "netsetup.h"
+#include "onboarding.h"
 
 typedef enum {
 	SCREEN_MENU,
+	SCREEN_ONBOARDING,
 	SCREEN_HOST_MENU,
 	SCREEN_CONFIG,
 	SCREEN_CORES,
@@ -52,6 +55,35 @@ static void on_signal(int s) { (void)s; quit = 1; }
 static Screen screen = SCREEN_MENU;
 static int    menu_sel = 0;
 static int    sub_sel = 0;
+static int onboarding_page, onboarding_choice[OB_MAX_PAGES];
+static SDL_Surface* onboarding_image;
+static int onboarding_image_page = -1;
+static char onboarding_marker[512];
+
+static bool onboarding_image_path(const char* name, char* path, size_t cap) {
+	if (!name[0] || name[0] == '/' || strstr(name, "..") || strchr(name, '\\')) return false;
+	for (const char* p = name; *p; p++)
+		if (!(isalnum((unsigned char)*p) || *p == '/' || *p == '_' || *p == '-' || *p == '.')) return false;
+	return snprintf(path, cap, "%s/%s", NS_pakPath(), name) < (int)cap;
+}
+
+static void onboarding_finish(void) {
+	NS_Settings* settings = NS_settings();
+	for (int i = 0; i < OB_count(); i++) {
+		const OB_Page* page = OB_page(i);
+		if (page->setting[0]) OB_apply(page->setting, page->options[onboarding_choice[i]].value, settings);
+	}
+	NS_settingsSave();
+	char marker_tmp[sizeof(onboarding_marker) + 8];
+	snprintf(marker_tmp, sizeof(marker_tmp), "%s.tmp", onboarding_marker);
+	FILE* f = fopen(marker_tmp, "w");
+	if (f) {
+		fputs("1\n", f);
+		if (fclose(f) == 0) rename(marker_tmp, onboarding_marker);
+		else remove(marker_tmp);
+	}
+	screen = SCREEN_MENU;
+}
 static char   status[128] = "";
 /* Appended to the armed line: whether local compatibility cores were selected
  * is exactly the kind of thing that is otherwise invisible until a desync. */
@@ -1172,6 +1204,55 @@ static void render(SDL_Surface* s) {
 	build_rows();
 
 	switch (screen) {
+	case SCREEN_ONBOARDING: {
+		const OB_Page* page = OB_page(onboarding_page);
+		if (!page) break;
+		draw_title(s, page->title);
+		int y = SCALE1(PADDING + 44);
+		if (onboarding_image_page != onboarding_page) {
+			if (onboarding_image) SDL_FreeSurface(onboarding_image);
+			onboarding_image = NULL;
+			onboarding_image_page = onboarding_page;
+			char path[512];
+			if (onboarding_image_path(page->image, path, sizeof(path))) onboarding_image = IMG_Load(path);
+		}
+		if (onboarding_image) {
+			int maxw = s->w - SCALE1(PADDING * 2 + BUTTON_PADDING * 2);
+			int maxh = page->setting[0] ? s->h / 4 : s->h / 3;
+			int w = onboarding_image->w, h = onboarding_image->h;
+			if (w > maxw) { h = h * maxw / w; w = maxw; }
+			if (h > maxh) { w = w * maxh / h; h = maxh; }
+			SDL_Rect dst = {(s->w - w) / 2, y, w, h};
+#ifdef USE_SDL2
+			SDL_BlitScaled(onboarding_image, NULL, s, &dst);
+#else
+			SDL_SoftStretch(onboarding_image, NULL, s, &dst);
+#endif
+			y += h + SCALE1(6);
+		}
+		if (page->description[0]) y = draw_wrapped(s, page->description, y, COLOR_WHITE,
+			page->setting[0] ? 3 : 6);
+		if (page->setting[0]) {
+			y += SCALE1(3);
+			int bottom = s->h - SCALE1(PADDING + PILL_SIZE * 2 + 4);
+			int visible = (bottom - y) / SCALE1(PILL_SIZE);
+			if (visible < 1) visible = 1;
+			int first = onboarding_choice[onboarding_page] - visible + 1;
+			if (first < 0) first = 0;
+			if (first > page->option_count - visible) first = page->option_count - visible;
+			if (first < 0) first = 0;
+			for (int i = first; i < page->option_count && i < first + visible; i++) {
+				Row row = {.kind = ROW_ACTION};
+				snprintf(row.label, sizeof(row.label), "%s", page->options[i].label);
+				y = draw_two_col(s, &row, y, onboarding_choice[onboarding_page] == i);
+			}
+		}
+		char progress[40];
+		snprintf(progress, sizeof(progress), "%d / %d", onboarding_page + 1, OB_count());
+		draw_line(s, progress, s->h - SCALE1(PADDING + PILL_SIZE * 2), COLOR_GRAY, true);
+		GFX_blitButtonGroup((char*[]){"B", "BACK", "A", onboarding_page == OB_count()-1 ? "FINISH" : "NEXT", NULL}, 1, s, 1);
+		break;
+	}
 	case SCREEN_MENU: {
 		NS_SessionInfo session;
 		bool armed = NS_sessionInfo(&session);
@@ -2038,6 +2119,20 @@ int main(int argc, char* argv[]) {
 	signal(SIGTERM, on_signal);
 
 	NS_init();
+	snprintf(onboarding_marker, sizeof(onboarding_marker), "%s/onboarding-complete", NS_statePath());
+	if (!quick_mode && access(onboarding_marker, F_OK) != 0) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/pak_onboarding.json", NS_pakPath());
+		if (OB_load(path)) {
+			for (int i = 0; i < OB_count(); i++) {
+				const OB_Page* page = OB_page(i);
+				int current = OB_settingValue(page->setting, NS_settings());
+				for (int j = 0; j < page->option_count; j++)
+					if (page->options[j].value == current) onboarding_choice[i] = j;
+			}
+			screen = SCREEN_ONBOARDING;
+		}
+	}
 	{
 		char hints_path[512];
 		snprintf(hints_path, sizeof(hints_path), "%s/pak_hints.json", NS_pakPath());
@@ -2086,18 +2181,18 @@ int main(int argc, char* argv[]) {
 	 * enabled. Check once per setup-app launch; an ignored verdict is keyed to
 	 * both hashes, so it stays quiet only until either binary changes. */
 	NS_Settings* startup_settings = NS_settings();
-	if (mgba_instanced() && NS_pakStatus(NS_PAK_MGBA, &pak_status) &&
+	if (screen != SCREEN_ONBOARDING && mgba_instanced() && NS_pakStatus(NS_PAK_MGBA, &pak_status) &&
 	    pak_status.mismatch && !pak_status.mismatch_ignored) {
 		pak_kind = NS_PAK_MGBA;
 		prompt_sel = 0;
 		screen = SCREEN_PAK_MISMATCH;
-	} else if (startup_settings->dsperate && NS_pakAvailable(NS_PAK_DSP) &&
+	} else if (screen != SCREEN_ONBOARDING && startup_settings->dsperate && NS_pakAvailable(NS_PAK_DSP) &&
 	           NS_pakStatus(NS_PAK_DSP, &pak_status) &&
 	           pak_status.mismatch && !pak_status.mismatch_ignored) {
 		pak_kind = NS_PAK_DSP;
 		prompt_sel = 0;
 		screen = SCREEN_PAK_MISMATCH;
-	} else if (startup_settings->drastic && NS_pakAvailable(NS_PAK_NDS) &&
+	} else if (screen != SCREEN_ONBOARDING && startup_settings->drastic && NS_pakAvailable(NS_PAK_NDS) &&
 	           NS_pakStatus(NS_PAK_NDS, &pak_status) &&
 	           pak_status.mismatch && !pak_status.mismatch_ignored) {
 		pak_kind = NS_PAK_NDS;
@@ -2151,6 +2246,24 @@ int main(int argc, char* argv[]) {
 		build_rows();
 
 		switch (screen) {
+		case SCREEN_ONBOARDING: {
+			const OB_Page* page = OB_page(onboarding_page);
+			if (page && page->option_count) {
+				if (PAD_justPressed(BTN_UP)) { onboarding_choice[onboarding_page] = (onboarding_choice[onboarding_page] + page->option_count - 1) % page->option_count; dirty = 1; }
+				if (PAD_justPressed(BTN_DOWN)) { onboarding_choice[onboarding_page] = (onboarding_choice[onboarding_page] + 1) % page->option_count; dirty = 1; }
+			}
+			if (PAD_justPressed(BTN_B)) {
+				if (onboarding_page) onboarding_page--;
+				else quit = 1;
+				dirty = 1;
+			}
+			if (PAD_justPressed(BTN_A)) {
+				if (onboarding_page + 1 < OB_count()) onboarding_page++;
+				else onboarding_finish();
+				dirty = 1;
+			}
+			break;
+		}
 		case SCREEN_MENU:
 			if (NS_isArmed()) {
 				/* Session status replaces Host/Join while armed. Configuration
@@ -2644,6 +2757,7 @@ int main(int argc, char* argv[]) {
 	NS_discoverStop();
 
 	QuitSettings();
+	if (onboarding_image) SDL_FreeSurface(onboarding_image);
 	PWR_quit();
 	PAD_quit();
 	GFX_quit();

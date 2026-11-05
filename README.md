@@ -127,6 +127,10 @@ Delete previous Netplay.pak folder. Extract new one.
 
 ## Usage
 
+The first normal launch opens a short onboarding wizard. Its pages, optional
+images, and setting questions are defined in `pak_onboarding.json`. See
+[onboarding.md](docs/onboarding.md) to customize it.
+
 The app's top level is Host, Join and Configuration. Configuration holds:
 
 - **Cores**: Base (NextUI's base install) and Extras list each system with a

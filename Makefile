@@ -638,7 +638,8 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 	launcher/flatten.sh spruce "$$D/launcher" && \
 	mv "$$D/launcher/launch.sh" "$$D/launcher/config.json" "$$D/" && \
 	rm -f "$$D/launcher/session.conf.example" && \
-	cp launcher/common/session.conf.example pak_hints.json "$$D/" && \
+	cp launcher/common/session.conf.example pak_hints.json pak_onboarding.json "$$D/" && \
+	if [ -d res/onboarding ]; then mkdir -p "$$D/res" && cp -R res/onboarding "$$D/res/"; fi && \
 	mkdir -p "$$D/cores/retroarch-options" && \
 	cp -R cores/retroarch-options/spruce "$$D/cores/retroarch-options/" && \
 	cp res/spruce-netplay.png "$$D/netplay.png" && \
@@ -729,7 +730,7 @@ dist-base: $(BASE_DIST_CHECKS)
 	@rm -rf "$(BASE_STAGE)" "$(BASE_ARCHIVE)"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" dist
 
-	@cp pak.json pak_hints.json "$(BASE_STAGE)/$(PAK)/"
+	@cp pak.json pak_hints.json pak_onboarding.json "$(BASE_STAGE)/$(PAK)/"
 	@cp launcher/nextui/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
 	@launcher/flatten.sh nextui "$(BASE_STAGE)/$(PAK)/launcher"
 	@rm -f "$(BASE_STAGE)/$(PAK)/launcher/pak-launch.sh" "$(BASE_STAGE)/$(PAK)/launcher/session.conf.example"
@@ -740,6 +741,7 @@ dist-base: $(BASE_DIST_CHECKS)
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/res"
 	@cp res/status@1x.png res/status@2x.png res/status@3x.png res/status@4x.png \
 	    "$(BASE_STAGE)/$(PAK)/res/"
+	@if [ -d res/onboarding ]; then cp -R res/onboarding "$(BASE_STAGE)/$(PAK)/res/"; fi
 	@cp launcher/common/session.conf.example "$(BASE_STAGE)/$(PAK)/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/retroarch-options"
