@@ -1,0 +1,21 @@
+{
+  "pages": [
+    {
+      "title": "Welcome to Netplay",
+      "description": "Host on one device, then choose Join on the other. Both devices should have the same game. Press A to continue."
+    },
+    {
+      "title": "Compatibility cores",
+      "description": "Use Netplay's matched cores when the installed cores differ between devices?",
+      "setting": "compatibility_cores",
+      "options": [
+        { "label": "Yes", "value": 1 },
+        { "label": "No", "value": 0 }
+      ]
+    },
+    {
+      "title": "Ready to play",
+      "description": "Choose Host or Join in the main menu. You can change this answer later in Configuration > Settings. Press A to finish."
+    }
+  ]
+}
