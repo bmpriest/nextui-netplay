@@ -125,6 +125,12 @@ fi
 np_route_core "$CORE"
 np_stage_shim || exec "$REAL_MINARCH" "$CORE" "$@"
 
+# The receiving device has already accepted this game. Sending it back would
+# create a second invitation on the original player's menu.
+if [ "$NETPLAY_INVITED" != 1 ] && [ -n "$NETPLAY_SESSION" ]; then
+	sh "$NP/launcher/invite.sh" send "$1" "$CORE"
+fi
+
 np_frontend() { "$REAL_MINARCH" "$SHIM_AS" "$@"; }
 
 np_run_session "$1" "$@"

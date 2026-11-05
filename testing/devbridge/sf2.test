@@ -1,0 +1,46 @@
+# Street Fighter II - shared-screen lockstep (Snes9x / Supafaust), two players.
+#
+# VS BATTLE -> host picks E. Honda, guest keeps Ken -> both confirm the
+# handicap and stage screens -> 90 seconds of random fighting from both ->
+# both logs must show agreement.
+#
+# Built from the 2026-11-05 protocol comparison on spruce (Brick hosting the
+# RG35XXH); no references recorded yet, so the screens are captures to look
+# at, not checks. Run with run.sh, or play.sh on games started another way.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME SFC "Super Nintendo Entertainment System (SFC)/Street Fighter II (USA).zip"
+WAIT 3000
+guest:OPEN_GAME SFC "Super Nintendo Entertainment System (SFC)/Street Fighter II (USA).zip"
+all:WAIT_FOR game 30000
+WAIT 12000
+
+# START on the title, then DOWN and START in one call: separate calls let the
+# mode menu time out back to the title. If sf2-select shows the title or its
+# demo instead of the character grid, START once more and repeat the line.
+host:TRM sh {helpers}/keys.sh start:0.3:2.5
+host:TRM sh {helpers}/keys.sh down:0.3:0.6 start:0.3:2.5
+all:SCREEN sf2-select
+
+# Player 1 moves right to E. Honda; both confirm with B at the same moment.
+host:TRM sh {helpers}/keys.sh --bg right:0.3:0.6 b:0.3:0
+guest:TRM sh {helpers}/keys.sh --bg sleep:0.9 b:0.3:0
+WAIT 4000
+all:SCREEN sf2-picked
+
+# Handicap, then stage: both confirm twice, then START.
+host:TRM sh {helpers}/keys.sh --bg b:0.3:1.5 b:0.3:1.5 start:0.3:0
+guest:TRM sh {helpers}/keys.sh --bg b:0.3:1.5 b:0.3:1.5 start:0.3:0
+WAIT 9000
+all:SCREEN sf2-fight
+
+host:TRM sh {helpers}/gameplay.sh --bg 90 right left right right+y right+b left+b y b a x up down down+right l r
+guest:TRM sh {helpers}/gameplay.sh --bg 90 right left right right+y right+b left+b y b a x up down down+right l r
+WAIT 93000
+all:SCREEN sf2-after-play
+
+host:TRM sh {helpers}/check.sh shared Street_Fighter_II 50
+guest:TRM sh {helpers}/check.sh shared Street_Fighter_II 50
+
+all:TRM sh {helpers}/quit.sh minarch
+all:WAIT_FOR devbridge 30000

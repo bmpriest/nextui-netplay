@@ -45,6 +45,7 @@
 
 #define CLIENT        "netplay-menu"
 #define NOTICE        "netplay-note"
+#define INVITE        "netplay-invite"
 #define MAX_DEVICES   12
 #define IDLE_CLOSE_S  60     /* an untouched menu closes itself */
 #define NOTICE_S      4
@@ -475,6 +476,35 @@ static void run_menu(void) {
 	if (result[0]) notice(result);
 }
 
+/* Invocations come from the broker's invitation handler. Keep this separate
+ * from the optional START menu: invitations work even when it is disabled. */
+static int run_invite(const char* nick, const char* game, bool available) {
+	char title[128], item[128];
+	const char* items[] = { item };
+	snprintf(title, sizeof(title), "%s wants to play:", nick);
+	snprintf(item, sizeof(item), "%s%s", game, available ? "" : " (not here)");
+	open_devices();
+	if (varnish_grab_input() != 0) { close_devices(); return 2; }
+	if (varnish_menu(INVITE, -1, available ? "A=ACCEPT,B=DECLINE" : "B=DECLINE",
+	                 title, items, 1) != 0) {
+		varnish_release_input();
+		close_devices();
+		return 2;
+	}
+	double until = now_s() + 60;
+	int answer = 1;
+	while (!stopping && now_s() < until) {
+		wait_input(250);
+		Button b = read_press();
+		if (b == QB_A && available) { answer = 0; break; }
+		if (b == QB_B) break;
+	}
+	varnish_hide(INVITE);
+	varnish_release_input();
+	close_devices();
+	return answer;
+}
+
 /* ── main ──────────────────────────────────────────────────────────── */
 
 static bool write_pid(const char* path) {
@@ -488,7 +518,7 @@ static bool write_pid(const char* path) {
 	return rename(tmp, path) == 0;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
 	char pid_path[512];
 
 	signal(SIGTERM, on_signal);
@@ -499,6 +529,8 @@ int main(void) {
 	NS_init();
 	layout = !strcmp(NS_platform(), "my355") ? LAYOUT_KEYBOARD
 	       : !strcmp(NS_platform(), "h700") ? LAYOUT_H700 : LAYOUT_GAMEPAD;
+	if (argc == 5 && !strcmp(argv[1], "--invite"))
+		return run_invite(argv[2], argv[3], !strcmp(argv[4], "1"));
 	snprintf(pid_path, sizeof(pid_path), "%s/quick-menu.pid", NS_statePath());
 	snprintf(open_path, sizeof(open_path), "%s/quick-menu.open", NS_statePath());
 	setting_enabled();

@@ -6,6 +6,7 @@
     "config": "Cores, settings, debugging, turning Netplay off."
   },
   "config": {
+    "nickname": "Name other players see when joining or receiving invites.",
     "cores": "Which systems play over Netplay on this device.",
     "settings": "Quick menu, the NextUI icon, Wi-Fi and more.",
     "debug": "Logs, checks and recovery.",
@@ -191,6 +192,10 @@
     "verbose_logs": {
       "on": "A complete log for each game launch.",
       "off": "Turn on for a complete log per game launch."
+    },
+    "save_backups": {
+      "on": "Keep original saves from the last three game sessions in Netplay/backup.",
+      "off": "Do not snapshot saves before a session starts."
     },
     "checks": "Check bindings, paths, cores and networking.",
     "restore_wifi": "Reconnect to your usual Wi-Fi network."

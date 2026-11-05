@@ -29,8 +29,37 @@ cp "$FLAT/launch-stub.sh" "$FLAT/install-stubs.sh" "$FLAT/minarch.elf" "$FLAT/wr
 	   "$FLAT/bind-mount.sh" "$FLAT/mount-common.sh" "$FLAT/pre-launch.sh" \
 	   "$FLAT/adhoc-join.sh" "$FLAT/session-cleanup.sh" "$FLAT/wifi-platform.sh" \
 	   "$FLAT/state-path.sh" "$FLAT/gameswitcher.sh" "$FLAT/gameswitcher-launch.sh" "$FLAT/core-route.sh" "$NP/launcher/"
+cp "$FLAT/save-backup.sh" "$NP/launcher/"
+cp "$FLAT/invite.sh" "$NP/launcher/"
 chmod 755 "$NP/launcher"/*
 : > "$NP/bin/$PLATFORM/netplay_shim.so"
+
+echo "== session save backups"
+mkdir -p "$ROOT/Roms/GBA" "$ROOT/Saves/GBA"
+rom="$ROOT/Roms/GBA/Pokemon Blue.zip"
+: > "$rom"
+printf 'role=host\n' > "$STATE/session"
+printf 'session_save_backups=1\n' > "$STATE/settings"
+for generation in one two three four; do
+	printf '%s\n' "$generation" > "$ROOT/Saves/GBA/Pokemon Blue.srm"
+	NETPLAY_SESSION="$STATE/session" NETPLAY_STATE="$STATE" NETPLAY_PAK="$NP" \
+		sh "$NP/launcher/save-backup.sh" "$rom"
+done
+check "latest has original save" "$(cat "$NP/backup/latest/GBA/Pokemon Blue.srm")" four
+check "previous-1 has prior save" "$(cat "$NP/backup/previous-1/GBA/Pokemon Blue.srm")" three
+check "previous-2 has oldest retained save" "$(cat "$NP/backup/previous-2/GBA/Pokemon Blue.srm")" two
+printf 'session_save_backups=0\n' > "$STATE/settings"
+NETPLAY_SESSION="$STATE/session" NETPLAY_STATE="$STATE" NETPLAY_PAK="$NP" \
+	sh "$NP/launcher/save-backup.sh" "$rom"
+check "disabled setting leaves backup alone" "$(cat "$NP/backup/latest/GBA/Pokemon Blue.srm")" four
+mkdir -p "$ROOT/Saves/saves/gambatte"
+printf 'spruce\n' > "$ROOT/Saves/saves/gambatte/Pokemon Blue.srm"
+printf 'session_save_backups=1\n' > "$STATE/settings"
+NETPLAY_SESSION="$STATE/session" NETPLAY_STATE="$STATE" NETPLAY_PAK="$NP" \
+	sh "$NP/launcher/save-backup.sh" "$rom"
+check "spruce RetroArch core save is backed up" \
+	"$(cat "$NP/backup/latest/saves/gambatte/Pokemon Blue.srm")" spruce
+rm -f "$STATE/session"
 
 echo "== shared state migration"
 mkdir -p "$NP/state"

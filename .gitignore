@@ -41,3 +41,4 @@ build/
 !cores/build-udhcpd.sh
 testing/devbridge/rig.json
 __pycache__/
+testing/spruce/rig.conf

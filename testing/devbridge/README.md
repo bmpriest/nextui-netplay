@@ -9,8 +9,10 @@ the netplay logs afterwards say the devices did not play together.
 | `sor2.test` | shared screen (PicoDrive) | Streets of Rage 2: 2 PLAYERS, each device picks its own fighter, 90 s of brawling |
 | `rcr.test` | shared screen (FCEUmm) | River City Ransom: 2P PLAY, 90 s of brawling from both |
 | `contra3.test` | shared screen (Snes9x) | Contra III: 2 PLAYERS A, 90 s of running and shooting |
+| `sf2.test` | shared screen (Snes9x / Supafaust) | Street Fighter II: VS BATTLE, Honda vs Ken, 90 s of fighting; screenshots only, no references yet |
 | `ctr.test` | shared screen (PCSX ReARMed) | Crash Team Racing: VS. single race, each device picks its racer, 90 s on Crash Cove; the 4.4MB state makes it the large-sync test |
 | `tetris.test` | instanced GB link (paired Gambatte) | Tetris: 2PLAYER, Mario vs Luigi at different heights, 60 s of play |
+| `mariodx.test` | instanced GBC link (paired Gambatte) | Super Mario Bros. Deluxe: VS, 90 s of play; screenshots only, no references yet |
 | `mkart.test` | instanced GBA link (paired mGBA) | Mario Kart: Super Circuit: Multi-Pak VS, 100cc, Mario vs Yoshi, 2 min on Peach Circuit |
 | `aw2.test` | networked GBA link cable (gpSP) | Advance Wars 2: Multi-Pak battle, a full turn each way (the guest builds a tank) |
 | `dsp-mkds.test` | DS local wireless (DSP.pak on both) | Mario Kart DS: group, lobby, VS race on Figure-8 Circuit |
@@ -45,7 +47,12 @@ waits; no test sets one yet.
     testing/devbridge/run.sh HOST_ADDR GUEST_ADDR testing/devbridge/*.test
 
 Options: `--port N` (both devices), `--identity KEY`, `--user USER`,
-`--keep-going`, `--record`.
+`--keep-going`, `--record`, `--play-only` (the game is already running on
+both, started some other way: skip the test's launch, log checks and quit).
+
+The spruce protocol comparison (pure RetroArch, RetroArch over Netplay,
+Linkplay), the invitation tests and the rig they run on are in
+[../spruce](../spruce/README.md); they play these tests with `--play-only`.
 
 On spruce (App/Netplay), log in as spruce with its password:
 

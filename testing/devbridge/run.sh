@@ -10,6 +10,9 @@
 #   --user USER     SSH user for both devices (default root; spruce: spruce).
 #                   With $DEVBRIDGE_PASSWORD set, log in with that password.
 #   --keep-going    run every line even after a failure
+#   --play-only     the game is already running on both (another way of
+#                   starting it, such as pure RetroArch's menus): skip the
+#                   test's launch, its log checks and its quit
 #
 # HOST_ADDR is the device that hosts the armed session (Player 1), GUEST_ADDR
 # the one that joined. Either may be adb:SERIAL for a device on USB ADB, which
@@ -30,7 +33,7 @@ DEVBRIDGE=${DEVBRIDGE:-$ROOT/../DevBridge.pak}
 HELPERS=/tmp/netplay-devbridge
 OUT=$ROOT/testing/results/devbridge
 
-record=0 port=22 identity=$HOME/.ssh/id_ed25519 keep= user=root
+record=0 port=22 identity=$HOME/.ssh/id_ed25519 keep= user=root play_only=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--record) record=1 ;;
@@ -38,12 +41,13 @@ while [ $# -gt 0 ]; do
 	--identity) identity=$2; shift ;;
 	--user) user=$2; shift ;;
 	--keep-going) keep=--keep-going ;;
+	--play-only) play_only=1 ;;
 	-*) echo "unknown option $1" >&2; exit 2 ;;
 	*) break ;;
 	esac
 	shift
 done
-[ $# -ge 3 ] || { sed -n '3,20p' "$0" >&2; exit 2; }
+[ $# -ge 3 ] || { sed -n '3,23p' "$0" >&2; exit 2; }
 host=$1 guest=$2; shift 2
 
 [ -f "$DEVBRIDGE/tools/devbridge.py" ] || { echo "DevBridge not found at $DEVBRIDGE (set DEVBRIDGE)" >&2; exit 2; }
@@ -108,6 +112,17 @@ spruce_roms() {
 		}'
 }
 
+# --play-only: from `all:WAIT_FOR game` on (what launched the game is gone),
+# without check.sh, quit.sh or the closing wait for DevBridge.
+play_only() {
+	if [ $play_only = 1 ]; then
+		awk '/^all:WAIT_FOR game/ { on = 1 } !on { next }
+		     /check\.sh|quit\.sh|^all:WAIT_FOR devbridge/ { next } { print }'
+	else
+		cat
+	fi
+}
+
 push_helpers() {
 	sshd "$1" "mkdir -p $HELPERS"
 	for f in "$HERE"/device/*.sh; do
@@ -146,7 +161,7 @@ for test in "$@"; do
 		echo "SESSION $session $OUT"
 		sed -e "s#{host_refs}#$HERE/refs/$host_platform#g" \
 		    -e "s#{guest_refs}#$HERE/refs/$guest_platform#g" \
-		    -e "s#{helpers}#$HELPERS#g" "$test" | spruce_roms |
+		    -e "s#{helpers}#$HELPERS#g" "$test" | spruce_roms | play_only |
 		if [ $record = 1 ]; then
 			# VERIFY_WAIT REF TIMEOUT -> wait the whole timeout, then capture
 			# the screen under a name that says where its reference belongs.
@@ -167,7 +182,12 @@ for test in "$@"; do
 	# check.sh only trusts logs newer than this. The host's confirmed checkpoint
 	# outlives a clean exit (a relaunched host resumes from it), so without
 	# clearing it a test would start where the previous run of the game ended.
-	sshd "$host" "touch $HELPERS/started; rm -f /tmp/netplay-host-*.state"
+	# A game already running (--play-only) keeps its checkpoint.
+	if [ $play_only = 1 ]; then
+		sshd "$host" "touch $HELPERS/started"
+	else
+		sshd "$host" "touch $HELPERS/started; rm -f /tmp/netplay-host-*.state"
+	fi
 	sshd "$guest" "touch $HELPERS/started"
 
 	echo "== $name"

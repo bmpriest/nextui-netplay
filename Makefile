@@ -634,7 +634,7 @@ app-spruce:
 dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores check-udhcpd \
              $(NEXTUI_SYSTEM)/res/assets@2x.png
 	@rm -rf "$(SPRUCE_STAGE)" "$(SPRUCE_ARCHIVE)"
-	@D="$(SPRUCE_STAGE)/App/Netplay"; mkdir -p "$$D/nextui/.system" && \
+	@D="$(SPRUCE_STAGE)/App/Netplay"; mkdir -p "$$D/nextui/.system" "$$D/backup" && \
 	$(foreach p,$(SPRUCE_PLATFORMS),libs_$(p)="$(SPRUCE_LIBS_$(p))";) \
 	launcher/flatten.sh spruce "$$D/launcher" && \
 	mv "$$D/launcher/launch.sh" "$$D/launcher/config.json" "$$D/" && \
@@ -644,6 +644,7 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 	mkdir -p "$$D/cores/retroarch-options" && \
 	cp -R cores/retroarch-options/spruce "$$D/cores/retroarch-options/" && \
 	cp res/spruce-netplay.png "$$D/netplay.png" && \
+	mkdir -p "$$D/spruce_ui" && cp app/spruce/*.py "$$D/spruce_ui/" && \
 	cp -R "$(NEXTUI_SYSTEM)/res" "$$D/nextui/.system/res" && \
 	for p in $(SPRUCE_PLATFORMS); do \
 		mkdir -p "$$D/bin/$$p" "$$D/cores/override/$$p" "$$D/nextui/.system/$$p/bin" && \
@@ -671,7 +672,7 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		cp -R dist/compatibility-spruce32/armv7 "$$D/cores/compatibility/"; \
 	fi && \
 	chmod 755 "$$D/launch.sh" "$$D/launcher"/* "$$D"/bin/*/*
-	@cd "$(SPRUCE_STAGE)" && zip -q -r "../Netplay-spruce.zip" App -x '*/.*'
+	@cd "$(SPRUCE_STAGE)" && zip -q -r "../Netplay-spruce.zip" App -x '*/.DS_Store'
 	@du -h "$(SPRUCE_ARCHIVE)"
 
 check-spruce-app-%:
@@ -729,7 +730,7 @@ dist: dist-base dist-compatibility dist-full
 
 dist-base: $(BASE_DIST_CHECKS)
 	@rm -rf "$(BASE_STAGE)" "$(BASE_ARCHIVE)"
-	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" dist
+	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" "$(BASE_STAGE)/$(PAK)/backup" dist
 
 	@cp pak.json pak_hints.json pak_onboarding.json "$(BASE_STAGE)/$(PAK)/"
 	@cp launcher/nextui/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"

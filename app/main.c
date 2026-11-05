@@ -38,6 +38,7 @@ typedef enum {
 	SCREEN_ONBOARDING,
 	SCREEN_HOST_MENU,
 	SCREEN_CONFIG,
+	SCREEN_NICKNAME,
 	SCREEN_CORES,
 	SCREEN_CORE_LIST,       /* Base or Extras, per cores_extras */
 	SCREEN_CORE_OPTIONS,    /* Gambatte's or mGBA's, per opt_core */
@@ -392,13 +393,13 @@ static int draw_footer(SDL_Surface* s, int sel, int y);
  * level short enough that the status line is always visible. */
 enum { MENU_HOST, MENU_JOIN, MENU_CONFIG, MENU_COUNT };
 enum { HOST_ADHOC, HOST_WIFI, HOST_COUNT };
-enum { CONF_CORES, CONF_SETTINGS, CONF_DEBUG, CONF_OFF };
+enum { CONF_NICKNAME, CONF_CORES, CONF_SETTINGS, CONF_DEBUG, CONF_OFF };
 enum { CORES_BASE, CORES_EXTRAS };
 /* "Use simple client" (NS_Settings.simple_client) stays hidden: it was planned
  * but never implemented. The setting is still read and written. */
 enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE, SET_ADHOC_SWITCH,
        SET_HOST_PROTOCOL };
-enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
+enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_SAVE_BACKUPS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
 enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE, OPT_PAIRED_MGBA };
 enum { REM_NETPLAY, REM_DEVICE, REM_BACKUP, REM_CANCEL };
 
@@ -417,6 +418,9 @@ static const char* host_label(int item) {
 }
 
 static int config_sel = 0, config_top = 0;
+static char nickname_edit[NS_NICK_LEN];
+static int nickname_char = 0;
+static const char NICK_CHARS[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_.";
 static int cores_sel = 0, cores_top = 0;
 static int list_sel = 0, list_top = 0;
 static int settings_sel = 0, settings_top = 0;
@@ -722,6 +726,10 @@ static const char* const ICON_NAMES[] = { "Disabled", "Active Session", "Always"
 
 static void build_config_rows(void) {
 	row_count = 0;
+	Row* nick = add_row(ROW_SUBMENU, CONF_NICKNAME, "Nickname", HINT_get("config.nickname"));
+	char shown[NS_NICK_LEN];
+	NS_nickname(shown, sizeof(shown));
+	snprintf(nick->value, sizeof(nick->value), "%s", shown);
 	add_row(ROW_SUBMENU, CONF_CORES, "Cores", HINT_get("config.cores"));
 	add_row(ROW_SUBMENU, CONF_SETTINGS, "Settings", HINT_get("config.settings"));
 	add_row(ROW_SUBMENU, CONF_DEBUG, "Debug", HINT_get("config.debug"));
@@ -803,6 +811,9 @@ static void build_debug_rows(void) {
 	r = add_row(ROW_VALUE, DEBUG_VERBOSE_LOGS, "Verbose debugging logs",
 	            HINT_getf("debug.verbose_logs.%s", c->verbose_logs ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->verbose_logs));
+	r = add_row(ROW_VALUE, DEBUG_SAVE_BACKUPS, "Session save backups",
+	            HINT_getf("debug.save_backups.%s", c->session_save_backups ? "on" : "off"));
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->session_save_backups));
 	add_row(ROW_ACTION, DEBUG_CHECKS, "Run checks", HINT_get("debug.checks"));
 	add_row(ROW_ACTION, DEBUG_RESTORE_WIFI, "Restore Wi-Fi", HINT_get("debug.restore_wifi"));
 }
@@ -1371,6 +1382,18 @@ static void render(SDL_Surface* s) {
 		bool lr = values && *sel < row_count && rows[*sel].kind == ROW_VALUE;
 		GFX_blitButtonGroup(lr ? (char*[]){"B", "BACK", "A", "CHANGE", NULL}
 		                       : (char*[]){"B", "BACK", "A", "SELECT", NULL}, 1, s, 1);
+		break;
+	}
+	case SCREEN_NICKNAME: {
+		draw_title(s, "Nickname");
+		int y = SCALE1(PADDING + 50);
+		y = draw_line(s, nickname_edit[0] ? nickname_edit : "(device name)", y, COLOR_WHITE, false);
+		y = draw_line(s, "Up/Down: choose character", y + SCALE1(12), COLOR_GRAY, true);
+		char choice[48];
+		snprintf(choice, sizeof(choice), "Add:  %c", NICK_CHARS[nickname_char]);
+		y = draw_line(s, choice, y + SCALE1(8), COLOR_WHITE, false);
+		draw_line(s, "A add  X erase  START save", y + SCALE1(12), COLOR_GRAY, true);
+		GFX_blitButtonGroup((char*[]){"B", "CANCEL", "A", "ADD", NULL}, 1, s, 1);
 		break;
 	}
 	case SCREEN_CHORD: {
@@ -2042,12 +2065,16 @@ static int nudge_main(void) {
  *   --ctl pak dsperate|drastic install
  *   --ctl set adhoc_switch|compatibility_cores 0|1
  *   --ctl set instanced 0|1|2      paired cores: off, all, selected
+ *   --ctl peers [SECONDS]          one tab-separated line per discovered host
+ *   --ctl join-peer IP PROTOCOL [SSID PSK]
+ *   --ctl checks | cores | settings | off | restore-wifi
  */
 static void ctl_print_status(void) {
 	NS_SessionInfo si;
 	char ip[NS_IP_LEN] = "";
 	if (!NS_localIP(ip, sizeof(ip))) snprintf(ip, sizeof(ip), "none");
 	printf("ip=%s\n", ip);
+	printf("can_host_adhoc=%d\n", NS_canHostAdhoc() ? 1 : 0);
 	printf("powersave_off=%d\n", NS_settings()->disable_powersave ? 1 : 0);
 	printf("adhoc_switch=%d\n", NS_settings()->adhoc_switch ? 1 : 0);
 	if (!NS_sessionInfo(&si)) { printf("armed=0\n"); return; }
@@ -2086,13 +2113,115 @@ static int ctl_main(int argc, char* argv[]) {
 	/* No InitSettings or WIFI_init: the session code needs neither, and the
 	 * former runs amixer, whose output would bury the answer. */
 	NS_init();
-	NS_cleanupStaleSession();
-	NS_wifiRecoverIfStranded();
-	if (!NS_localIP(local_ip, sizeof(local_ip))) snprintf(local_ip, sizeof(local_ip), "no network");
+	/* Core inspection is safe to warm in the background while PyUI starts.
+	 * It only reads spruce's emulator choices and needs no network recovery. */
+	if (strcmp(cmd, "cores")) {
+		NS_cleanupStaleSession();
+		NS_wifiRecoverIfStranded();
+		if (!NS_localIP(local_ip, sizeof(local_ip))) snprintf(local_ip, sizeof(local_ip), "no network");
+	}
 
 	if (!strcmp(cmd, "status")) {
 		ctl_print_status();
 		return 0;
+	}
+
+	if (!strcmp(cmd, "settings")) {
+		NS_Settings* c = NS_settings();
+		char shown[NS_NICK_LEN];
+		NS_nickname(shown, sizeof(shown));
+		printf("nickname=%s\nnickname_custom=%s\nhost_protocol=%s\n", shown, c->nickname,
+		       c->host_protocol == NS_PROTO_RETROARCH ? "retroarch" : "linkplay");
+		printf("compatibility_cores=%d\nforce_compatibility=%d\nverbose_logs=%d\n"
+		       "session_save_backups=%d\ndisable_powersave=%d\ninst_gambatte=%d\ninst_mgba=%d\n",
+		       c->compatibility_cores, c->force_compatibility, c->verbose_logs,
+		       c->session_save_backups, c->disable_powersave,
+		       c->inst_core[0], c->inst_core[1]);
+		return 0;
+	}
+
+	if (!strcmp(cmd, "checks")) {
+		NS_Check found[8];
+		NS_CheckResult worst;
+		int n = NS_runChecks(found, 8, &worst);
+		for (int i = 0; i < n; i++)
+			printf("check\t%d\t%s\t%s\n", found[i].result, found[i].label, found[i].detail);
+		printf("worst=%d\n", worst);
+		return 0;
+	}
+
+	if (!strcmp(cmd, "cores")) {
+		if (arg[0] && strcmp(arg, "base") && strcmp(arg, "extras")) {
+			snprintf(status, sizeof(status), "cores base|extras");
+			return ctl_result(false);
+		}
+		for (int extras = 0; extras < 2; extras++) {
+			if (arg[0] && strcmp(arg, extras ? "extras" : "base")) continue;
+			cores_extras = extras;
+			int n;
+			const CoreDef* defs = list_defs(&n);
+			for (int i = 0; i < n; i++) {
+				CoreState st;
+				refresh_core(&defs[i], &st);
+				printf("core\t%s\t%s\t%s\t%s\t%d\n", extras ? "extras" : "base",
+				       defs[i].tag, defs[i].label ? defs[i].label : defs[i].tag,
+				       st.state ? st.state : "unknown", st.more ? 1 : 0);
+			}
+		}
+		printf("gambatte_dual=%d\nmgba_dual=%d\n", NS_gambatteDualAvailable(), NS_mgbaDualAvailable());
+		return 0;
+	}
+
+	if (!strcmp(cmd, "peers")) {
+		int secs = argc > 1 ? atoi(arg) : 3;
+		if (secs < 1) secs = 1;
+		if (secs > 15) secs = 15;
+		NS_Peer found[NS_MAX_PEERS], scanned[NS_MAX_PEERS];
+		NS_discoverStart();
+		int n = 0;
+		for (int i = 0; i < secs * 10; i++) {
+			n = NS_discoverTick(found, NS_MAX_PEERS);
+			usleep(100000);
+		}
+		NS_discoverStop();
+		int sn = NS_scanAdhoc(scanned, NS_MAX_PEERS);
+		for (int i = 0; i < n; i++)
+			printf("peer\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", found[i].ip,
+			       found[i].nick, found[i].platform, found[i].protocol, found[i].hotspot,
+			       found[i].ssid, found[i].psk);
+		for (int i = 0; i < sn; i++) {
+			bool duplicate = false;
+			for (int j = 0; j < n; j++)
+				if (found[j].hotspot && !strcmp(found[j].ssid, scanned[i].ssid)) duplicate = true;
+			if (!duplicate)
+				printf("peer\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", NS_HOTSPOT_HOST_IP,
+				       "", scanned[i].platform, scanned[i].protocol, 1, scanned[i].ssid, scanned[i].psk);
+		}
+		return 0;
+	}
+
+	if (!strcmp(cmd, "join-peer")) {
+		if (argc < 3 || NS_isArmed()) return ctl_result(false);
+		join_protocol_override = -1;
+		join_peer_protocol = !strcmp(argv[2], "retroarch") ? NS_PROTO_RETROARCH : NS_PROTO_LINKPLAY;
+		const char* ip = arg;
+		if (argc >= 5 && argv[3][0]) {
+			const char* psk = argv[4][0] ? argv[4] : NS_ADHOC_PSK;
+			if (!NS_hotspotJoin(argv[3], psk, status, sizeof(status))) return ctl_result(false);
+			ip = NS_HOTSPOT_HOST_IP;
+		}
+		do_arm(NS_ROLE_CLIENT, ip);
+		return ctl_result(NS_isArmed());
+	}
+
+	if (!strcmp(cmd, "off")) {
+		NS_disarm();
+		NS_hotspotStop();
+		return ctl_result(!NS_isArmed());
+	}
+	if (!strcmp(cmd, "restore-wifi")) {
+		NS_wifiRestore();
+		return ctl_result(NS_localIP(local_ip, sizeof(local_ip)));
 	}
 
 	if (!strcmp(cmd, "host")) {
@@ -2281,6 +2410,26 @@ static int ctl_main(int argc, char* argv[]) {
 			snprintf(status, sizeof(status), "host_protocol=%s", argv[2]);
 			return ctl_result(true);
 		}
+		if (argc >= 3 && (!strcmp(arg, "force_compatibility") ||
+		                  !strcmp(arg, "verbose_logs") || !strcmp(arg, "session_save_backups") ||
+		                  !strcmp(arg, "inst_gambatte") || !strcmp(arg, "inst_mgba") ||
+		                  !strcmp(arg, "disable_powersave"))) {
+			bool on = atoi(argv[2]) != 0;
+			if (!strcmp(arg, "force_compatibility")) {
+				c->force_compatibility = on;
+				if (on) c->compatibility_cores = true;
+			} else if (!strcmp(arg, "verbose_logs")) c->verbose_logs = on;
+			else if (!strcmp(arg, "session_save_backups")) c->session_save_backups = on;
+			else if (!strcmp(arg, "inst_gambatte")) set_instanced(0, on);
+			else if (!strcmp(arg, "inst_mgba")) set_instanced(1, on);
+			else {
+				c->disable_powersave = on;
+				if (on) NS_wifiPowerSaveDisable(); else NS_wifiPowerSaveRestore();
+			}
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "%s=%d", arg, on);
+			return ctl_result(true);
+		}
 		bool* value = !strcmp(arg, "adhoc_switch") ? &c->adhoc_switch
 		            : !strcmp(arg, "compatibility_cores") ? &c->compatibility_cores : NULL;
 		if (!value || argc < 3) {
@@ -2288,6 +2437,7 @@ static int ctl_main(int argc, char* argv[]) {
 			return ctl_result(false);
 		}
 		*value = atoi(argv[2]) != 0;
+		if (value == &c->compatibility_cores && !*value) c->force_compatibility = false;
 		NS_settingsSave();
 		snprintf(status, sizeof(status), "%s=%d", arg, *value ? 1 : 0);
 		return ctl_result(true);
@@ -2428,7 +2578,7 @@ int main(int argc, char* argv[]) {
 		/* X ends the session from any screen. It is the thing most often
 		 * wanted and it used to be buried in the list. Not while X might be
 		 * one of the quick menu's buttons being held. */
-		if (PAD_justPressed(BTN_X) && NS_isArmed() && screen != SCREEN_CHORD) {
+		if (PAD_justPressed(BTN_X) && NS_isArmed() && screen != SCREEN_CHORD && screen != SCREEN_NICKNAME) {
 			// NS_endSession stops the AP and restores wifi itself; calling
 			// NS_hotspotStop again here ran the teardown twice and logged a
 			// spurious "nothing recorded to restore wifi with".
@@ -2558,6 +2708,11 @@ int main(int argc, char* argv[]) {
 			if (PAD_justPressed(BTN_A)) {
 				status[0] = '\0';
 				switch (rows[config_sel].id) {
+				case CONF_NICKNAME:
+					snprintf(nickname_edit, sizeof(nickname_edit), "%s", NS_settings()->nickname);
+					nickname_char = 0;
+					screen = SCREEN_NICKNAME;
+					break;
 				case CONF_CORES:    cores_sel = 0; screen = SCREEN_CORES; break;
 				case CONF_SETTINGS: settings_sel = 0; screen = SCREEN_SETTINGS; break;
 				case CONF_DEBUG:    debug_sel = 0; screen = SCREEN_DEBUG; break;
@@ -2566,6 +2721,34 @@ int main(int argc, char* argv[]) {
 				dirty = 1;
 			}
 			break;
+
+		case SCREEN_NICKNAME: {
+			int count = (int)strlen(NICK_CHARS);
+			if (PAD_justPressed(BTN_UP)) { nickname_char = (nickname_char + count - 1) % count; dirty = 1; }
+			if (PAD_justPressed(BTN_DOWN)) { nickname_char = (nickname_char + 1) % count; dirty = 1; }
+			if (PAD_justPressed(BTN_A)) {
+				size_t len = strlen(nickname_edit);
+				if (len + 1 < sizeof(nickname_edit)) {
+					nickname_edit[len] = NICK_CHARS[nickname_char];
+					nickname_edit[len + 1] = '\0';
+					dirty = 1;
+				}
+			}
+			if (PAD_justPressed(BTN_X)) {
+				size_t len = strlen(nickname_edit);
+				if (len) nickname_edit[len - 1] = '\0';
+				dirty = 1;
+			}
+			if (PAD_justPressed(BTN_START)) {
+				NS_sanitizeNickname(nickname_edit);
+				snprintf(NS_settings()->nickname, sizeof(NS_settings()->nickname), "%s", nickname_edit);
+				NS_settingsSave();
+				screen = SCREEN_CONFIG;
+				dirty = 1;
+			}
+			if (PAD_justPressed(BTN_B)) { screen = SCREEN_CONFIG; dirty = 1; }
+			break;
+		}
 
 		case SCREEN_CORES:
 			if (step_sel(&cores_sel, row_count)) dirty = 1;
@@ -2670,6 +2853,10 @@ int main(int argc, char* argv[]) {
 				break;
 			case DEBUG_VERBOSE_LOGS:
 				c->verbose_logs = !c->verbose_logs;
+				NS_settingsSave();
+				break;
+			case DEBUG_SAVE_BACKUPS:
+				c->session_save_backups = !c->session_save_backups;
 				NS_settingsSave();
 				break;
 			case DEBUG_CHECKS:

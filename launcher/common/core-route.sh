@@ -224,6 +224,12 @@ np_cpu_restore_after_crash() {
 }
 
 np_run_session() {
+	# This happens once per game launch, before the first frontend attempt. A
+	# paired-core fallback must not overwrite the original snapshot.
+	if [ -n "$NETPLAY_SESSION" ] && [ -f "$NP/launcher/save-backup.sh" ]; then
+		sh "$NP/launcher/save-backup.sh" "$1" ||
+			echo "[netplay] could not back up original save for $1" >&2
+	fi
 	: "${NETPLAY_LOGS:=${USERDATA_PATH:-$SDCARD_PATH/.userdata/$PLATFORM}/logs}"
 	VERBOSE_LOGS=0
 	if [ -n "$NETPLAY_SESSION" ] &&

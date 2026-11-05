@@ -459,6 +459,7 @@ static NS_Settings ns_set = {
 	.compatibility_cores = true,
 	.force_compatibility = false,
 	.verbose_logs = true,
+	.session_save_backups = true,
 	.simple_client = false,
 	.add_gameswitcher = false,
 	.disable_powersave = false,
@@ -612,6 +613,7 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "compatibility_cores")) ns_set.compatibility_cores = v != 0;
 		else if (!strcmp(k, "force_compatibility")) ns_set.force_compatibility = v != 0;
 		else if (!strcmp(k, "verbose_logs")) ns_set.verbose_logs = v != 0;
+		else if (!strcmp(k, "session_save_backups")) ns_set.session_save_backups = v != 0;
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
 		else if (!strcmp(k, "add_gameswitcher")) ns_set.add_gameswitcher = v != 0;
 		else if (!strcmp(k, "disable_powersave")) ns_set.disable_powersave = v != 0;
@@ -654,6 +656,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "compatibility_cores=%d\n", ns_set.compatibility_cores ? 1 : 0);
 	fprintf(f, "force_compatibility=%d\n", ns_set.force_compatibility ? 1 : 0);
 	fprintf(f, "verbose_logs=%d\n", ns_set.verbose_logs ? 1 : 0);
+	fprintf(f, "session_save_backups=%d\n", ns_set.session_save_backups ? 1 : 0);
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
 	fprintf(f, "add_gameswitcher=%d\n", ns_set.add_gameswitcher ? 1 : 0);
 	fprintf(f, "disable_powersave=%d\n", ns_set.disable_powersave ? 1 : 0);
