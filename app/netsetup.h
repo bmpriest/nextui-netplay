@@ -25,10 +25,10 @@ typedef enum { NS_MODE_NETPLAY, NS_MODE_LINK } NS_Mode;
 #define NS_SSID_LEN 24
 #define NS_PSK_LEN  24
 
-/* Which wire protocol a session speaks. Paklink is Netplay.pak's own (the
+/* Which wire protocol a session speaks. Linkplay is Netplay.pak's own (the
  * shim's netlink.c); RetroArch is stock RetroArch netplay, protocols 5-7
  * (the shim's raproto.c). See docs/analysis/retroarch-protocol.md. */
-typedef enum { NS_PROTO_PAKLINK = 0, NS_PROTO_RETROARCH = 1 } NS_Protocol;
+typedef enum { NS_PROTO_LINKPLAY = 0, NS_PROTO_RETROARCH = 1 } NS_Protocol;
 
 #define NS_NICK_LEN 32
 
@@ -84,7 +84,7 @@ typedef enum { NS_ROLE_HOST, NS_ROLE_CLIENT } NS_Role;
 /* Write session.conf + shared Netplay/session, and install launch stubs.
  * Writes no mode= line - the shim picks the mode from the core. */
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen);
-/* The protocol the next NS_arm writes into the session. Reset to Paklink by
+/* The protocol the next NS_arm writes into the session. Reset to Linkplay by
  * each NS_arm. */
 void NS_setArmProtocol(NS_Protocol protocol);
 NS_Protocol NS_armProtocol(void);

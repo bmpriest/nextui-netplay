@@ -45,8 +45,8 @@ typedef struct __attribute__((packed)) {
 	char     nick[NS_NICK_LEN];
 } NS_Announce2;
 
-static NS_Protocol arm_protocol = NS_PROTO_PAKLINK;
-static NS_Protocol announce_protocol = NS_PROTO_PAKLINK;
+static NS_Protocol arm_protocol = NS_PROTO_LINKPLAY;
+static NS_Protocol announce_protocol = NS_PROTO_LINKPLAY;
 static char announce_nick[NS_NICK_LEN];
 
 static char ns_platform[16] = "tg5040";
@@ -622,7 +622,7 @@ void NS_settingsLoad(void) {
 			ns_set.status_icon = (v < 0 || v > NS_ICON_PERSISTENT) ? NS_ICON_OFF : (NS_IconMode)v;
 		else if (!strcmp(k, "quick_menu")) ns_set.quick_menu = v != 0;
 		else if (!strcmp(k, "host_protocol"))
-			ns_set.host_protocol = v == NS_PROTO_RETROARCH ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			ns_set.host_protocol = v == NS_PROTO_RETROARCH ? NS_PROTO_RETROARCH : NS_PROTO_LINKPLAY;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -2200,7 +2200,7 @@ bool NS_probeRetroArch(const char* ip, int timeout_ms) {
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	char path[512];
 	NS_Protocol protocol = arm_protocol;
-	arm_protocol = NS_PROTO_PAKLINK;
+	arm_protocol = NS_PROTO_LINKPLAY;
 
 	snprintf(path, sizeof(path), "%s/session.conf", ns_state);
 	FILE* f = fopen(path, "w");
@@ -2493,7 +2493,7 @@ void NS_announceStart(NS_Mode mode) {
 	announce_mode = mode;
 	/* The broker announces for an armed session, so the session says which
 	 * protocol and nickname to announce. */
-	announce_protocol = NS_PROTO_PAKLINK;
+	announce_protocol = NS_PROTO_LINKPLAY;
 	NS_nickname(announce_nick, sizeof(announce_nick));
 	char spath[512], line[160];
 	snprintf(spath, sizeof(spath), "%s/session", ns_state);
@@ -2658,7 +2658,7 @@ int NS_discoverTick(NS_Peer* peers, int max) {
 		/* A version 2 packet completes the entry its version 1 twin made. */
 		if (known >= 0 && v2) {
 			peers[known].protocol = ntohl(a2.protocol) == NS_PROTO_RETROARCH
-			                      ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			                      ? NS_PROTO_RETROARCH : NS_PROTO_LINKPLAY;
 			a2.nick[sizeof(a2.nick) - 1] = '\0';
 			snprintf(peers[known].nick, sizeof(peers[known].nick), "%s", a2.nick);
 			NS_sanitizeNickname(peers[known].nick);
@@ -2667,7 +2667,7 @@ int NS_discoverTick(NS_Peer* peers, int max) {
 		memset(&peers[count], 0, sizeof(peers[count]));
 		if (v2) {
 			peers[count].protocol = ntohl(a2.protocol) == NS_PROTO_RETROARCH
-			                      ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			                      ? NS_PROTO_RETROARCH : NS_PROTO_LINKPLAY;
 			a2.nick[sizeof(a2.nick) - 1] = '\0';
 			snprintf(peers[count].nick, sizeof(peers[count].nick), "%s", a2.nick);
 			NS_sanitizeNickname(peers[count].nick);

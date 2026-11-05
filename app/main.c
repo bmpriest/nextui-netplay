@@ -757,9 +757,9 @@ static void build_settings_rows(void) {
 
 	r = add_row(ROW_VALUE, SET_HOST_PROTOCOL, "Host protocol",
 	            HINT_getf("settings.host_protocol.%s",
-	                      c->host_protocol == NS_PROTO_RETROARCH ? "retroarch" : "paklink"));
+	                      c->host_protocol == NS_PROTO_RETROARCH ? "retroarch" : "linkplay"));
 	snprintf(r->value, sizeof(r->value), "%s",
-	         c->host_protocol == NS_PROTO_RETROARCH ? "RetroArch" : "Paklink");
+	         c->host_protocol == NS_PROTO_RETROARCH ? "RetroArch" : "Linkplay");
 
 	r = add_row(ROW_VALUE, SET_COMPAT, "Use compatibility cores",
 	            HINT_getf("settings.compat.%s", c->compatibility_cores ? "on" : "off"));
@@ -1589,23 +1589,23 @@ static void abort_arm_attempt(bool may_have_activated) {
 /* How a joiner decides the protocol (docs/analysis/retroarch-protocol.md):
  * an explicit choice wins; else a host found by a version 2 announcement said
  * which it runs; else a RetroArch host answering RetroArch's POKE probe makes
- * it RetroArch; else Paklink. Set by the caller just before do_arm. */
+ * it RetroArch; else Linkplay. Set by the caller just before do_arm. */
 static int join_protocol_override = -1;
-static NS_Protocol join_peer_protocol = NS_PROTO_PAKLINK;
+static NS_Protocol join_peer_protocol = NS_PROTO_LINKPLAY;
 
 static NS_Protocol decide_join_protocol(const char* peer) {
 	if (join_protocol_override >= 0) return (NS_Protocol)join_protocol_override;
 	if (join_peer_protocol == NS_PROTO_RETROARCH) return NS_PROTO_RETROARCH;
-	return NS_probeRetroArch(peer, 1500) ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+	return NS_probeRetroArch(peer, 1500) ? NS_PROTO_RETROARCH : NS_PROTO_LINKPLAY;
 }
 
 static void do_arm(NS_Role role, const char* peer) {
 	char err[96] = "";
-	NS_Protocol protocol = NS_PROTO_PAKLINK;
+	NS_Protocol protocol = NS_PROTO_LINKPLAY;
 	if (role == NS_ROLE_CLIENT) {
 		protocol = decide_join_protocol(peer);
 		join_protocol_override = -1;
-		join_peer_protocol = NS_PROTO_PAKLINK;
+		join_peer_protocol = NS_PROTO_LINKPLAY;
 		NS_setArmProtocol(protocol);
 	} else {
 		protocol = NS_armProtocol();
@@ -1736,7 +1736,7 @@ static void change_setting(int id, int dir) {
 		break;
 	case SET_HOST_PROTOCOL:
 		/* Read by the next Host; an armed session keeps its protocol. */
-		c->host_protocol = c->host_protocol == NS_PROTO_RETROARCH ? NS_PROTO_PAKLINK
+		c->host_protocol = c->host_protocol == NS_PROTO_RETROARCH ? NS_PROTO_LINKPLAY
 		                                                          : NS_PROTO_RETROARCH;
 		break;
 	case SET_POWERSAVE:
@@ -1832,10 +1832,10 @@ static void join_peer(SDL_Surface* s, int i) {
  * between cases. Prints one "ok ..." or "error ..." line; exits 0 on ok.
  *
  *   --ctl status
- *   --ctl host wifi|adhoc [--protocol paklink|retroarch]
- *   --ctl join IP | adhoc | discover [SECONDS] [--protocol auto|paklink|retroarch]
+ *   --ctl host wifi|adhoc [--protocol linkplay|retroarch]
+ *   --ctl join IP | adhoc | discover [SECONDS] [--protocol auto|linkplay|retroarch]
  *   --ctl set nickname NAME      shown to the other player; "" for the model name
- *   --ctl set host_protocol paklink|retroarch
+ *   --ctl set host_protocol linkplay|retroarch
  *   --ctl end
  *   --ctl powersave on|off
  *   --ctl pak dsperate|drastic install
@@ -1874,9 +1874,9 @@ static int ctl_main(int argc, char* argv[]) {
 		argc -= 2;
 		break;
 	}
-	if (protocol_arg && strcmp(protocol_arg, "auto") && strcmp(protocol_arg, "paklink") &&
+	if (protocol_arg && strcmp(protocol_arg, "auto") && strcmp(protocol_arg, "linkplay") &&
 	    strcmp(protocol_arg, "retroarch")) {
-		printf("error --protocol auto|paklink|retroarch\n");
+		printf("error --protocol auto|linkplay|retroarch\n");
 		return 1;
 	}
 	const char* cmd = argc > 0 ? argv[0] : "status";
@@ -1921,7 +1921,7 @@ static int ctl_main(int argc, char* argv[]) {
 		}
 		status[0] = '\0';
 		NS_setArmProtocol(protocol_arg ? (!strcmp(protocol_arg, "retroarch") ? NS_PROTO_RETROARCH
-		                                                                     : NS_PROTO_PAKLINK)
+		                                                                     : NS_PROTO_LINKPLAY)
 		                               : NS_settings()->host_protocol);
 		do_arm(NS_ROLE_HOST, NULL);
 		return ctl_result(NS_isArmed());
@@ -1976,7 +1976,7 @@ static int ctl_main(int argc, char* argv[]) {
 		status[0] = '\0';
 		join_protocol_override = !protocol_arg || !strcmp(protocol_arg, "auto") ? -1
 		                       : !strcmp(protocol_arg, "retroarch") ? NS_PROTO_RETROARCH
-		                       : NS_PROTO_PAKLINK;
+		                       : NS_PROTO_LINKPLAY;
 		join_peer_protocol = peer.protocol;
 		if (peer.hotspot) {
 			const char* ssid = peer.ssid[0] ? peer.ssid : NS_ADHOC_SSID;
@@ -2074,8 +2074,8 @@ static int ctl_main(int argc, char* argv[]) {
 			return ctl_result(true);
 		}
 		if (!strcmp(arg, "host_protocol") && argc >= 3 &&
-		    (!strcmp(argv[2], "paklink") || !strcmp(argv[2], "retroarch"))) {
-			c->host_protocol = !strcmp(argv[2], "retroarch") ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+		    (!strcmp(argv[2], "linkplay") || !strcmp(argv[2], "retroarch"))) {
+			c->host_protocol = !strcmp(argv[2], "retroarch") ? NS_PROTO_RETROARCH : NS_PROTO_LINKPLAY;
 			NS_settingsSave();
 			snprintf(status, sizeof(status), "host_protocol=%s", argv[2]);
 			return ctl_result(true);

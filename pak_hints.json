@@ -171,7 +171,7 @@
       "off": "Disconnects from connected Wi-Fi to create Ad Hoc Network on quieter channel."
     },
     "host_protocol": {
-      "paklink": "Host for Netplay devices. Joiners pick the protocol up.",
+      "linkplay": "Host for Netplay devices. Joiners pick the protocol up.",
       "retroarch": "Host for RetroArch netplay (spruce, Onion, muOS...) too."
     }
   },

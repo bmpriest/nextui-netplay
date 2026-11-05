@@ -256,7 +256,7 @@ them (first free device) and as Netplay already does.
 
 ## Protocol choice, detection and names
 
-**Choice at host time.** Configuration > Host protocol (Paklink or
+**Choice at host time.** Configuration > Host protocol (Linkplay or
 RetroArch; `--ctl set host_protocol`, or `--ctl host wifi --protocol
 retroarch` for one session). The armed session records `protocol=retroarch`
 for the shim, and the broker's announcement carries it: a version 2 packet
@@ -296,23 +296,16 @@ also counts as RetroArch: a RetroArch host answers POKE only from its frame
 loop, so one whose menu is open stays silent, and nothing of Netplay's own
 listens there outside a RetroArch session (the first device run missed a
 spruce host this way). Step 3's broker probe is implicit,
-since a Paklink join that finds no broker fails at the manifest exchange as
+since a Linkplay join that finds no broker fails at the manifest exchange as
 before. The probe only finds a RetroArch host whose game is already running,
 since that is when RetroArch listens.
 
-**A name for Netplay.pak's protocol.** "Netplay" is RetroArch's name for its
-own protocol too, so the UI and docs need a distinct one. Options:
-
-| Name | For | Against |
-|---|---|---|
-| **Paklink** | short, says where it comes from, matches `netlink.c`'s role | invented word |
-| Lockstep | describes the difference from RetroArch's rollback | RetroArch master's protocol 8 adds a "lockstep" host mode |
-| Netplay.pak protocol | unambiguous | long for a menu |
-
-Recommendation: **Paklink** on screen ("Host protocol: Paklink / RetroArch")
-and in new docs; the code keeps `netlink`. Used provisionally for the new
-setting (`NS_PROTO_PAKLINK`, the hint text); renaming is one string if
-another name wins.
+**A name for Netplay.pak's protocol: Linkplay.** "Netplay" is RetroArch's
+name for its own protocol too, so the UI and docs use a distinct one, decided
+2026-11-04: Linkplay on screen ("Host protocol: Linkplay / RetroArch") and in
+docs. The code keeps `netlink` for the transport; the setting is
+`NS_PROTO_LINKPLAY`. (Linkplay, the provisional name, was dropped; Lockstep was
+rejected because RetroArch master's protocol 8 has a "lockstep" host mode.)
 
 **Nicknames.** RetroArch shows a nick for every player (`NICK`, `MODE`, the
 lobby). Netplay now has one setting, `nickname`, defaulting to

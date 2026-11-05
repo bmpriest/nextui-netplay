@@ -39,7 +39,7 @@ gcc -std=gnu99 -Wall -Werror -Iapp "$TMP/dump.c" app/hints.c -o "$TMP/dump"
 	for st in ready present unsupported absent unavailable; do echo "cores.NDS.$st"; done
 	for st in off on custom needs_varnish unavailable; do echo "settings.quick_menu.$st"; done
 	for st in always session disabled needs_varnish unavailable; do echo "settings.icon.$st"; done
-	for st in paklink retroarch; do echo "settings.host_protocol.$st"; done
+	for st in linkplay retroarch; do echo "settings.host_protocol.$st"; done
 	for k in settings.compat settings.gameswitcher settings.powersave debug.force_compat debug.verbose_logs; do
 		echo "$k.on"; echo "$k.off"
 	done
