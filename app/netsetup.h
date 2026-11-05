@@ -399,12 +399,14 @@ int NS_compatSync(const char* host_ip, char* err, int errlen);
  *
  * 3 frames is 50ms, roughly twice the ad hoc worst case. Applying that same 3
  * over the access point gave 33-47fps and 63-74% stalled frames, because a
- * 50ms budget cannot absorb a 300ms spike. 10 frames is 166ms, which covers the
- * typical access-point maximum but not its worst - the honest position is that
- * lockstep over an access point is marginal at any delay, and ad hoc is the
- * transport this is built for. */
+ * 50ms budget cannot absorb a 300ms spike. Those spikes were mostly radio power
+ * save: with it off on both devices (2026-11-04, house WiFi, RG35XXH guest of a
+ * Brick, River City Ransom) the round trip was 13 / 115 / 145 ms (p50/p99/max),
+ * and 5 frames ran 59.3fps with no "Waiting for other player", against 59.2fps
+ * and 1-2 waits at 10. So 5 (83ms) is the floor; the measured round trip still
+ * raises it on a worse link, and power save left on needs 10 or more. */
 #define NS_INPUT_DELAY_ADHOC 3
-#define NS_INPUT_DELAY_WIFI  10
+#define NS_INPUT_DELAY_WIFI  5
 
 /* Generate throwaway credentials for a session. */
 void NS_hotspotCredentials(char* ssid, int ssid_len, char* psk, int psk_len);

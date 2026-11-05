@@ -168,6 +168,9 @@ a game that cached card state.
 
 ## Upstreaming
 
+[upstream.md](upstream.md) has every fix that belongs in another project, with
+the evidence and a proposed patch for each: the fceumm and picodrive state
+round trips, RetroArch's RESUME bug, spruce's WiFi import and in-game menu.
 Each of these would shrink what Netplay has to ship:
 
 1. `HAVE_NETWORK=1` for Gambatte in NextUI's cores makefile: one line, and no

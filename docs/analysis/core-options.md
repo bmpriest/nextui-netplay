@@ -56,10 +56,12 @@ High on NextUI, Low on spruce), 2026-11-04:
 | Never: host forced to spruce's values, nothing to change | PASS, 26/25 checks agreed |
 | Before loading the game (shipped) | PASS, 25/24 checks agreed, 60 fps |
 
-The divergence was in fceumm's square-wave accumulators (`FAC1`/`FAC2`) only:
-fceumm keeps sound bookkeeping outside its savestate, so once a change makes
-the two sides' copies differ, every state the host sends lands on a different
-sound engine. The CPU and game state matched throughout.
+The divergence was in fceumm's output-filter accumulators (`FAC1`/`FAC2`)
+only. At High quality the filter is fed from `WaveHi`, whose leftover samples
+carry from frame to frame and are not in the state; once a change makes the
+two sides' leftovers differ, every state the host sends lands on a different
+filter history. The CPU and game state matched throughout. The upstream fix is
+in [../upstream.md](../upstream.md).
 
 A host whose game is not running yet when the guest loads sends its values on
 connection later. The guest applies them then and refetches the host's state
@@ -97,6 +99,25 @@ Differ but never change the game: Supafaust thread affinity, Gambatte palettes
 and colourisation, mGBA's GB colours, `pcsx_rearmed_spu_interpolation` (audio
 output; not confirmed absent from the state). picodrive, Supafaust and gpSP
 (BIOS aside) match.
+
+## RetroArch's input latency
+
+Not a core option and not part of any state, but the setting that most
+changes how a RetroArch peer behaves: RetroArch runs a frame on a guessed
+remote input whenever it gets there before the real one, and rolls back when
+the guess was wrong. Measured from captures between two spruce RetroArchs
+(2026-11-02): at latency 0 (spruce's RG35XXH) 95-99% of frames were guesses,
+about 50 rollbacks a minute in picodrive; at 1-3 (spruce's Brick), 2-6% and a
+few a minute.
+
+- **Netplay hosting a RetroArch client:** the client is told 3 frames, exactly
+  (`SETTING_INPUT_LATENCY_FRAMES 3..3`, `RA_CLIENT_LATENCY`), and STALLed when
+  it still reaches our input's edge.
+- **A RetroArch host:** its own `netplay_input_latency_frames_min`/`_range`
+  apply; a client cannot change them. Netplay logs what the host announces.
+- **Netplay's own side** in either role uses the session's input delay, as
+  between two Netplay devices: 3 frames ad hoc, 5 over WiFi, raised if the
+  measured round trip needs more.
 
 ## Fast forward and rewind
 
