@@ -7,7 +7,7 @@ SD="$ROOT/card"
 NP="$SD/Tools/tg5040/Netplay.pak"
 STATE="$SD/.userdata/shared/Netplay"
 mkdir -p "$NP/launcher"
-cp "$(dirname "$0")/../launcher/state-path.sh" "$NP/launcher/"
+cp "$(dirname "$0")/../launcher/common/state-path.sh" "$NP/launcher/"
 for p in tg5040 h700 my282; do
 	mkdir -p "$SD/Emus/$p" "$NP/cores/mgba/$p/MGBA.pak"
 	printf 'new-%s\n' "$p" > "$NP/cores/mgba/$p/MGBA.pak/mgba_libretro.so"
@@ -22,7 +22,7 @@ printf state-old > "$SD/.userdata/shared/MGBA-mgba/game/state.st0"
 
 run() {
 	SDCARD_PATH="$SD" PLATFORM=tg5040 NETPLAY_PAK="$NP" NETPLAY_STATE="$STATE" \
-		sh "$PWD/launcher/mgba-manage.sh" "$@"
+		sh "$PWD/launcher/nextui/mgba-manage.sh" "$@"
 }
 
 echo '== mGBA managed installation'

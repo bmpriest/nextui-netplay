@@ -9,5 +9,12 @@ aarch64:
   my355
   h700
 
-Each directory contains the same pinned core revisions and portable feature
-profile for its ABI. Netplay.pak selects the directory from PLATFORM at launch.
+In Netplay.pak each directory contains the same pinned core revisions and
+portable feature profile for its ABI, so an armv7 and an aarch64 device can
+fall back to the same game. Netplay.pak selects the directory from PLATFORM at
+launch.
+
+In the spruce build (App/Netplay), aarch64 matches spruce's 64-bit RetroArch
+cores (RetroArch/.retroarch/cores64) and armv7 matches its 32-bit RetroArch
+cores (RetroArch/.retroarch/cores, used by ra32.*). spruce ships different
+revisions in those two directories, so the two sets differ too.

@@ -179,7 +179,7 @@ The A30's driver does not advertise interface combinations at all.
 On failure it logs hostapd's own output and the app falls back to hosting on the
 existing network rather than refusing to host at all.
 
-The SSID is `nextui-XXXX`, where the four characters are generated once per
+The SSID is `netplay-XXXX` (`nextui-XXXX` before 2026-11-04), where the four characters are generated once per
 session and shown on the armed main screen; the passphrase is fixed
 (`playwithme`).
 
@@ -480,7 +480,7 @@ SSIDs are visible from the A30 while associated.
 
 If both mechanisms see the same host, the rows are merged without losing the
 fact that the SSID scan succeeded. The resulting row is labelled with the
-`nextui-XXXX` SSID, and the result count is the number actually found by the
+`netplay-XXXX` SSID, and the result count is the number actually found by the
 scan—not the number remaining after duplicate removal.
 
 The scan reads `wpa_cli -p <ctrl> -i wlan0 scan_results` - the supplicant's

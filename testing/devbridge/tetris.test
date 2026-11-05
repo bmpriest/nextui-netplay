@@ -21,8 +21,13 @@ WAIT 10000
 # The title falls into its demo after a few idle seconds, faster than remote
 # commands can follow it. So both devices soft-reset and select 2PLAYER on
 # their own clocks, then both press START together.
-host:TRM sh {helpers}/keys.sh --bg a+b+start+select:0.4:4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 start:0.3:0
-guest:TRM sh {helpers}/keys.sh --bg a+b+start+select:0.4:4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 sleep:0.6 start:0.3:0
+host:TRM sh {helpers}/keys.sh --bg a+b+start+select:0.4:4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 start:0.3:0 # not-spruce
+guest:TRM sh {helpers}/keys.sh --bg a+b+start+select:0.4:4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 sleep:0.6 start:0.3:0 # not-spruce
+# spruce's RetroArch binds Select as its hotkey (Select+B quits on the
+# RG35XXH), so no soft reset there: B leaves the demo for the title and does
+# nothing on the title itself.
+#spruce host:TRM sh {helpers}/keys.sh --bg b:0.3:2 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 start:0.3:0
+#spruce guest:TRM sh {helpers}/keys.sh --bg b:0.3:2 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 right:0.2:0.4 sleep:0.6 start:0.3:0
 WAIT 9000
 
 # These screens are static and match exactly (difference 0.00), so a tight

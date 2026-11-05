@@ -7,7 +7,7 @@ SD="$ROOT/card"
 NP="$SD/Tools/tg5040/Netplay.pak"
 STATE="$SD/.userdata/shared/Netplay"
 mkdir -p "$NP/launcher"
-cp "$(dirname "$0")/../launcher/state-path.sh" "$NP/launcher/"
+cp "$(dirname "$0")/../launcher/common/state-path.sh" "$NP/launcher/"
 # Netplay ships an overlay, not a pak: the radio and a launcher, plus the hash
 # of the one DraStic build the radio's hook supports.
 for p in tg5040 tg5050; do
@@ -25,7 +25,7 @@ printf 'mine\n' > "$SD/Emus/tg5040/NDS.pak/drastic/config/drastic.cfg"
 
 run() {
 	SDCARD_PATH="$SD" PLATFORM=tg5040 NETPLAY_PAK="$NP" NETPLAY_STATE="$STATE" \
-		sh "$PWD/launcher/pak-manage.sh" nds "$@"
+		sh "$PWD/launcher/nextui/pak-manage.sh" nds "$@"
 }
 
 echo '== NDS.pak local wireless overlay'

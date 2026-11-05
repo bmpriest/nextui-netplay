@@ -1,9 +1,20 @@
 #!/bin/sh
 set -eu
 
-arch=${1:?usage: build-compat.sh armv7|aarch64}
+# build-compat.sh <arch> [spruce32]
+#
+# With no set, the shared pins (Makefile *_REV) into dist/compatibility/<arch>.
+# spruce32 builds the pins matching spruce's 32-bit RetroArch cores (*_REV_SPRUCE32,
+# cloned under .cache/cores/spruce32) into dist/compatibility-spruce32/<arch>.
+arch=${1:?usage: build-compat.sh armv7|aarch64 [spruce32]}
+set_name=${2:-}
 root=${CORE_SRC_ROOT:-.cache/cores}
 out="dist/compatibility/$arch"
+case "$set_name" in
+	'') ;;
+	spruce32) root="$root/spruce32"; out="dist/compatibility-spruce32/$arch" ;;
+	*) echo "unknown compatibility set: $set_name" >&2; exit 2 ;;
+esac
 jobs=${JOBS:-4}
 start=${COMPAT_START:-}
 started=0
@@ -28,6 +39,7 @@ cc="${CROSS_COMPILE}gcc"
 cxx="${CROSS_COMPILE}g++"
 ar="${CROSS_COMPILE}ar"
 strip="${CROSS_COMPILE}strip"
+extra_flags=
 
 build() {
 	name=$1 dir=$2 makefile=$3 platform_name=$4 output=$5
@@ -36,14 +48,19 @@ build() {
 		if [ "$name" = "$start" ]; then
 			started=1
 		else
-			echo "== compatibility $arch: $name (already built; resuming at $start)"
+			echo "== compatibility $arch${set_name:+ $set_name}: $name (already built; resuming at $start)"
 			return
 		fi
 	fi
 	dir_abs=$(cd "$dir" && pwd)
-	echo "== compatibility $arch: $name"
+	echo "== compatibility $arch${set_name:+ $set_name}: $name"
 	make -C "$dir" -f "$makefile" PWD="$dir_abs" platform="$platform_name" CC="$cc" CXX="$cxx" AR="$ar" clean >/dev/null 2>&1 || true
-	CFLAGS="$base_flags" CXXFLAGS="$base_flags" LDFLAGS="$base_ldflags" \
+	# Not every core's clean removes every object (picodrive keeps
+	# pico/sound/mix.o), and an object left from the other architecture
+	# breaks the link. Clear untracked build output, keeping the pin stamp.
+	git -C "$dir" clean -fdxq -e '.compat-pinned*'
+	git -C "$dir" submodule foreach -q --recursive git clean -fdxq
+	CFLAGS="$base_flags $extra_flags" CXXFLAGS="$base_flags $extra_flags" LDFLAGS="$base_ldflags" \
 		make -C "$dir" -f "$makefile" PWD="$dir_abs" platform="$platform_name" \
 		CC="$cc" CXX="$cxx" AR="$ar" -j"$jobs" "$@"
 	cp "$dir/$output" "$out/${name}_libretro.so"
@@ -65,8 +82,20 @@ build picodrive "$root/picodrive" Makefile.libretro "$pico_platform" picodrive_l
 # stream and is designed for lower-power ARM devices. Build it once and expose
 # that exact binary under both compatibility names. The canonical snes9x name
 # lets installed snes9x2005 and snes9x launchers negotiate the same fallback.
-build snes9x "$root/mednafen_supafaust" Makefile "$platform" \
+#
+# spruce's 32-bit Supafaust is the generic armhf build (VFPv3-D16, so no fused
+# multiply-add), not classic_armv7_a7's -Ofast NEON-VFPv4 one. Its DSP-1
+# (Super Mario Kart, Pilotwings) is float HLE, and -Ofast or FMA contraction
+# rounds it differently: same RAM for 3600 frames, but the DSP-1 state and
+# the odd frame differ. The plain unix build with contraction off matches.
+supa_platform=$platform
+if [ "$set_name" = spruce32 ]; then
+	supa_platform=unix
+	extra_flags=-ffp-contract=off
+fi
+build snes9x "$root/mednafen_supafaust" Makefile "$supa_platform" \
 	mednafen_supafaust_libretro.so
+extra_flags=
 cp "$out/snes9x_libretro.so" "$out/mednafen_supafaust_libretro.so"
 
 # PSX is intentionally included despite unproven ARMv7/AArch64 determinism.
@@ -90,4 +119,4 @@ cp "dist/cores/$source_platform/gambatte_libretro.so" "$out/"
 cp "dist/cores/$source_platform/gpsp_libretro.so" "$out/"
 
 [ "$started" -eq 1 ] || { echo "unknown COMPAT_START core: $start" >&2; exit 2; }
-echo "built seven compatibility cores for $arch"
+echo "built seven compatibility cores for $arch${set_name:+ ($set_name)} in $out"

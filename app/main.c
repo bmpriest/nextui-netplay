@@ -356,9 +356,10 @@ enum { CONF_CORES, CONF_SETTINGS, CONF_DEBUG, CONF_OFF };
 enum { CORES_BASE, CORES_EXTRAS };
 /* "Use simple client" (NS_Settings.simple_client) stays hidden: it was planned
  * but never implemented. The setting is still read and written. */
-enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE, SET_ADHOC_SWITCH };
+enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE, SET_ADHOC_SWITCH,
+       SET_HOST_PROTOCOL };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
-enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE };
+enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE, OPT_PAIRED_MGBA };
 enum { REM_NETPLAY, REM_DEVICE, REM_BACKUP, REM_CANCEL };
 
 /* Creating our own network needs an AP-capable interface. Offering it on a
@@ -432,7 +433,8 @@ static const struct {
 // where Netplay installs or configures something (">" or a pak to add).
 //////////////////////////////////////////////////////////////////////////////
 
-typedef enum { CK_SHIM, CK_GAMBATTE, CK_DSP, CK_MGBA, CK_NDS } CoreKind;
+/* CK_GBA: spruce's GBA row, gpSP's link plus paired mGBA for games set to mgba. */
+typedef enum { CK_SHIM, CK_GAMBATTE, CK_GBA, CK_DSP, CK_MGBA, CK_NDS } CoreKind;
 
 typedef struct {
 	const char* tag;        /* the pak, and the key into pak_hints.json */
@@ -445,22 +447,34 @@ typedef struct {
 static const CoreDef BASE_CORES[] = {
 	{ "FC",  NULL,  NULL,     "fceumm",       CK_SHIM },
 	{ "GB",  "GBC", "GB/GBC", "gambatte",     CK_GAMBATTE },
+#ifdef NETPLAY_SPRUCE
+	{ "GBA", NULL,  NULL,     "gpsp",         CK_GBA },
+#else
 	{ "GBA", NULL,  NULL,     "gpsp",         CK_SHIM },
+#endif
 	{ "MD",  NULL,  NULL,     "picodrive",    CK_SHIM },
 	{ "PS",  NULL,  NULL,     "pcsx_rearmed", CK_SHIM },
 	{ "SFC", NULL,  NULL,     "snes9x",       CK_SHIM },
 };
+/* The paks Netplay installs (DSP, MGBA, NDS) and SUPA are NextUI Extras paks;
+ * spruce has none of them. */
 static const CoreDef EXTRA_CORES[] = {
 	{ "32X",    NULL, NULL, "picodrive",          CK_SHIM },
+#ifndef NETPLAY_SPRUCE
 	{ "DSP",    NULL, NULL, "dsperate",           CK_DSP },
+#endif
 	{ "FDS",    NULL, NULL, "fceumm",             CK_SHIM },
 	{ "GG",     NULL, NULL, "picodrive",          CK_SHIM },
+#ifndef NETPLAY_SPRUCE
 	{ "MGBA",   NULL, NULL, "mgba",               CK_MGBA },
 	{ "NDS",    NULL, NULL, "drastic",            CK_NDS },
+#endif
 	{ "SEGACD", NULL, NULL, "picodrive",          CK_SHIM },
 	{ "SG1000", NULL, NULL, "picodrive",          CK_SHIM },
 	{ "SMS",    NULL, NULL, "picodrive",          CK_SHIM },
+#ifndef NETPLAY_SPRUCE
 	{ "SUPA",   NULL, NULL, "mednafen_supafaust", CK_SHIM },
+#endif
 };
 #define BASE_COUNT  (int)(sizeof(BASE_CORES) / sizeof(BASE_CORES[0]))
 #define EXTRA_COUNT (int)(sizeof(EXTRA_CORES) / sizeof(EXTRA_CORES[0]))
@@ -505,6 +519,11 @@ static bool mgba_instanced(void) {
 	return NS_settings()->inst_core[1];
 }
 
+/* spruce: no MGBA.pak, the paired core ships with Netplay. */
+static bool mgba_paired(void) {
+	return mgba_instanced() && NS_mgbaDualAvailable();
+}
+
 /* Store the instanced choices in the settings' existing shape. */
 static void set_instanced(int core, bool on) {
 	NS_Settings* c = NS_settings();
@@ -522,7 +541,8 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 	snprintf(st->core, sizeof(st->core), "%s", d->core);
 	switch (d->kind) {
 	case CK_SHIM:
-	case CK_GAMBATTE: {
+	case CK_GAMBATTE:
+	case CK_GBA: {
 		char core[32];
 		NS_SystemState sys = NS_systemStatus(d->tag, core, sizeof(core));
 		if (d->tag2 && sys != NS_SYS_READY) {
@@ -533,8 +553,9 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 		if (core[0]) snprintf(st->core, sizeof(st->core), "%s", core);
 		if (sys == NS_SYS_READY) {
 			bool dual = d->kind == CK_GAMBATTE && gambatte_dual();
-			st->mark = dual ? MARK_DOUBLE : MARK_CHECK;
-			st->state = dual ? "dual" : "ready";
+			bool paired = d->kind == CK_GBA && mgba_paired();
+			st->mark = dual || paired ? MARK_DOUBLE : MARK_CHECK;
+			st->state = dual ? "dual" : paired ? "paired" : "ready";
 		} else if (sys == NS_SYS_PRESENT) {
 			st->mark = MARK_CIRCLE;
 			st->state = "present";
@@ -543,7 +564,7 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 			st->dim = true;
 			st->state = "absent";
 		}
-		st->more = d->kind == CK_GAMBATTE && sys == NS_SYS_READY;
+		st->more = (d->kind == CK_GAMBATTE || d->kind == CK_GBA) && sys == NS_SYS_READY;
 		break;
 	}
 	case CK_DSP:
@@ -625,6 +646,13 @@ static void build_option_rows(void) {
 		                 HINT_get(!avail ? "gambatte.dual.unavailable" : on ? "gambatte.dual.on" : "gambatte.dual.off"));
 		snprintf(r->value, sizeof(r->value), "%s", !avail ? "Unavailable" : on ? "On" : "Off");
 		r->dim = !avail;
+	} else if (opt_core == CK_GBA) {
+		bool avail = NS_mgbaDualAvailable();
+		bool on = mgba_paired();
+		Row* r = add_row(ROW_VALUE, OPT_PAIRED_MGBA, "Paired mGBA",
+		                 HINT_get(!avail ? "gba.paired.unavailable" : on ? "gba.paired.on" : "gba.paired.off"));
+		snprintf(r->value, sizeof(r->value), "%s", !avail ? "Unavailable" : on ? "On" : "Off");
+		r->dim = !avail;
 	} else {
 		bool on = mgba_instanced() && pak_status.managed && pak_status.installed && !pak_status.missing;
 		bool ready = pak_status.managed && pak_status.installed && !pak_status.missing;
@@ -673,8 +701,11 @@ static void build_settings_rows(void) {
 	bool varnish = NS_varnishInstalled();
 	const char* need = NS_varnishBundled() ? "needs_varnish" : "unavailable";
 	row_count = 0;
+	Row* r;
 
-	Row* r = add_row(ROW_VALUE, SET_QUICK_MENU, "Quick Menu",
+#ifndef NETPLAY_SPRUCE
+	/* Varnish draws both, and Game Switcher is NextUI's own. */
+	r = add_row(ROW_VALUE, SET_QUICK_MENU, "Quick Menu",
 	                 HINT_getf("settings.quick_menu.%s",
 	                           c->quick_menu ? (c->quick_keys[0] ? "custom" : "on")
 	                           : varnish ? "off" : need));
@@ -688,25 +719,39 @@ static void build_settings_rows(void) {
 	            HINT_getf("settings.icon.%s",
 	                      c->status_icon == NS_ICON_OFF && !varnish ? need : ICON_HINT[c->status_icon]));
 	snprintf(r->value, sizeof(r->value), "%s", ICON_NAMES[c->status_icon]);
+#else
+	(void)varnish; (void)need;
+#endif
+
+	r = add_row(ROW_VALUE, SET_HOST_PROTOCOL, "Host protocol",
+	            HINT_getf("settings.host_protocol.%s",
+	                      c->host_protocol == NS_PROTO_RETROARCH ? "retroarch" : "paklink"));
+	snprintf(r->value, sizeof(r->value), "%s",
+	         c->host_protocol == NS_PROTO_RETROARCH ? "RetroArch" : "Paklink");
 
 	r = add_row(ROW_VALUE, SET_COMPAT, "Use compatibility cores",
 	            HINT_getf("settings.compat.%s", c->compatibility_cores ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->compatibility_cores));
 
+#ifndef NETPLAY_SPRUCE
 	r = add_row(ROW_VALUE, SET_GAMESWITCHER, "Add Netplay to GameSwitcher",
 	            HINT_getf("settings.gameswitcher.%s", c->add_gameswitcher ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->add_gameswitcher));
+#endif
 
 	r = add_row(ROW_VALUE, SET_POWERSAVE, "Disable Wi-Fi Power Saving",
 	            HINT_getf("settings.powersave.%s", c->disable_powersave ? "on" : "off"));
 	snprintf(r->value, sizeof(r->value), "%s", on_off(c->disable_powersave));
 
-	/* Only where this device can host an ad hoc network at all. */
+	/* Only where this device can host an ad hoc network at all, and not on
+	 * spruce (see NS_hotspotStart). */
+#ifndef NETPLAY_SPRUCE
 	if (NS_canHostAdhoc()) {
 		r = add_row(ROW_VALUE, SET_ADHOC_SWITCH, "Ad Hoc Network Switch",
 		            HINT_getf("settings.adhoc_switch.%s", c->adhoc_switch ? "on" : "off"));
 		snprintf(r->value, sizeof(r->value), "%s", on_off(c->adhoc_switch));
 	}
+#endif
 }
 
 static void build_debug_rows(void) {
@@ -921,7 +966,13 @@ static void wifi_poll(bool force) {
 
 	struct WIFI_connection c;
 	memset(&c, 0, sizeof(c));
+#ifdef NETPLAY_SPRUCE
+	/* NextUI's reader asks a supplicant socket path spruce does not use. */
+	c.valid = NS_wifiSSID(c.ssid, sizeof(c.ssid));
+	if (c.valid) NS_localIP(c.ip, sizeof(c.ip));
+#else
 	PLAT_wifiConnection(&c);
+#endif
 
 	wifi_up = c.valid && c.ssid[0];
 	wifi_rssi = c.rssi;
@@ -932,7 +983,8 @@ static void wifi_poll(bool force) {
 /* SSID plus what it means for us: the address a peer would dial. */
 static int draw_wifi_line(SDL_Surface* s, int y) {
 	char line[160];
-	if (wifi_up) snprintf(line, sizeof(line), "%s  (%d dBm)  -  %s", wifi_ssid, wifi_rssi, local_ip);
+	if (wifi_up && wifi_rssi) snprintf(line, sizeof(line), "%s  (%d dBm)  -  %s", wifi_ssid, wifi_rssi, local_ip);
+	else if (wifi_up) snprintf(line, sizeof(line), "%s  -  %s", wifi_ssid, local_ip);
 	else         snprintf(line, sizeof(line), "WiFi: %s", wifi_ssid);
 	return draw_line(s, line, y, COLOR_GRAY, true);
 }
@@ -1095,7 +1147,7 @@ static void draw_progress(const char* stage, int step, int steps) {
 	y = draw_line(s, line, y, COLOR_WHITE, false);
 	y += SCALE1(6);
 	/* Used to name NS_ADHOC_SSID, which is the legacy fixed name and not what
-	 * a generated nextui-XXXX session is actually called. */
+	 * a generated netplay-XXXX session is actually called. */
 	snprintf(line, sizeof(line), "step %d of %d", step, steps);
 	y = draw_line(s, line, y, COLOR_GRAY, true);
 	draw_line(s, progress_note, y, COLOR_GRAY, true);
@@ -1415,8 +1467,13 @@ static void render(SDL_Surface* s) {
 					snprintf(r.value, sizeof(r.value), "ad hoc");
 				} else {
 					int same = !strcmp(pr->platform, NS_platform());
-					snprintf(r.label, sizeof(r.label), "%s", pr->ip);
-					snprintf(r.value, sizeof(r.value), "%s%s", pr->hotspot ? "ad hoc" : "WiFi",
+					/* A version 2 announcement names the host's player. */
+					if (pr->nick[0])
+						snprintf(r.label, sizeof(r.label), "%s (%s)", pr->nick, pr->ip);
+					else
+						snprintf(r.label, sizeof(r.label), "%s", pr->ip);
+					snprintf(r.value, sizeof(r.value), "%s%s%s", pr->hotspot ? "ad hoc" : "WiFi",
+					         pr->protocol == NS_PROTO_RETROARCH ? ", RetroArch" : "",
 					         same ? "" : ", other device");
 				}
 				y = draw_two_col(s, &r, y, i == peer_sel);
@@ -1448,8 +1505,30 @@ static void abort_arm_attempt(bool may_have_activated) {
 	hosting_hotspot = 0;
 }
 
+/* How a joiner decides the protocol (docs/analysis/retroarch-protocol.md):
+ * an explicit choice wins; else a host found by a version 2 announcement said
+ * which it runs; else a RetroArch host answering RetroArch's POKE probe makes
+ * it RetroArch; else Paklink. Set by the caller just before do_arm. */
+static int join_protocol_override = -1;
+static NS_Protocol join_peer_protocol = NS_PROTO_PAKLINK;
+
+static NS_Protocol decide_join_protocol(const char* peer) {
+	if (join_protocol_override >= 0) return (NS_Protocol)join_protocol_override;
+	if (join_peer_protocol == NS_PROTO_RETROARCH) return NS_PROTO_RETROARCH;
+	return NS_probeRetroArch(peer, 1500) ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+}
+
 static void do_arm(NS_Role role, const char* peer) {
 	char err[96] = "";
+	NS_Protocol protocol = NS_PROTO_PAKLINK;
+	if (role == NS_ROLE_CLIENT) {
+		protocol = decide_join_protocol(peer);
+		join_protocol_override = -1;
+		join_peer_protocol = NS_PROTO_PAKLINK;
+		NS_setArmProtocol(protocol);
+	} else {
+		protocol = NS_armProtocol();
+	}
 
 	/* Never overwrite a live session. Re-arming used to orphan the existing
 	 * peer and could replace its transport underneath a running game. */
@@ -1492,6 +1571,10 @@ static void do_arm(NS_Role role, const char* peer) {
 			screen = SCREEN_MENU;
 			return;
 		}
+	} else if (protocol == NS_PROTO_RETROARCH) {
+		/* A RetroArch host has no broker: no manifest to compare and no
+		 * session end to listen for. NS_arm chose the builds. */
+		snprintf(core_note, sizeof(core_note), "  -  RetroArch host");
 	} else {
 		/* Always compare manifests. With compatibility disabled the exchange
 		 * still records differing installed builds so both launchers can warn;
@@ -1520,8 +1603,9 @@ static void do_arm(NS_Role role, const char* peer) {
 
 	int adhoc = NS_hotspotActive();
 	if (role == NS_ROLE_HOST)
-		snprintf(status, sizeof(status), "Hosting on %s  -  %s, delay %d",
+		snprintf(status, sizeof(status), "Hosting on %s  -  %s%s, delay %d",
 		         local_ip, adhoc ? "ad hoc" : "WiFi",
+		         protocol == NS_PROTO_RETROARCH ? " (RetroArch)" : "",
 		         adhoc ? NS_INPUT_DELAY_ADHOC : NS_INPUT_DELAY_WIFI);
 	else
 		snprintf(status, sizeof(status), "Joined %s  -  %s, delay %d%s",
@@ -1569,6 +1653,11 @@ static void change_setting(int id, int dir) {
 		 * the channel it has. */
 		c->adhoc_switch = !c->adhoc_switch;
 		break;
+	case SET_HOST_PROTOCOL:
+		/* Read by the next Host; an armed session keeps its protocol. */
+		c->host_protocol = c->host_protocol == NS_PROTO_RETROARCH ? NS_PROTO_PAKLINK
+		                                                          : NS_PROTO_RETROARCH;
+		break;
 	case SET_POWERSAVE:
 		/* Applies to an armed session now, not only from the next game
 		 * launch: Restore is a no-op when nothing was recorded. */
@@ -1600,6 +1689,13 @@ static void change_option(int id) {
 			return;
 		}
 		set_instanced(0, !gambatte_dual());
+		cores_fresh = false;
+	} else if (id == OPT_PAIRED_MGBA) {
+		if (!NS_mgbaDualAvailable()) {
+			snprintf(status, sizeof(status), "Paired mGBA is not built for this device.");
+			return;
+		}
+		set_instanced(1, !mgba_paired());
 		cores_fresh = false;
 	} else if (id == OPT_INSTANCED) {
 		bool ready = pak_status.managed && pak_status.installed && !pak_status.missing;
@@ -1642,8 +1738,10 @@ static void join_peer(SDL_Surface* s, int i) {
 		}
 		// The host's address on its own network is fixed, so we
 		// already know the peer even though its old one is gone.
+		join_peer_protocol = pr->protocol;
 		do_arm(NS_ROLE_CLIENT, NS_HOTSPOT_HOST_IP);
 	} else {
+		join_peer_protocol = pr->protocol;
 		do_arm(NS_ROLE_CLIENT, pr->ip);
 	}
 }
@@ -1653,12 +1751,15 @@ static void join_peer(SDL_Surface* s, int i) {
  * between cases. Prints one "ok ..." or "error ..." line; exits 0 on ok.
  *
  *   --ctl status
- *   --ctl host wifi|adhoc
- *   --ctl join IP | adhoc | discover [SECONDS]
+ *   --ctl host wifi|adhoc [--protocol paklink|retroarch]
+ *   --ctl join IP | adhoc | discover [SECONDS] [--protocol auto|paklink|retroarch]
+ *   --ctl set nickname NAME      shown to the other player; "" for the model name
+ *   --ctl set host_protocol paklink|retroarch
  *   --ctl end
  *   --ctl powersave on|off
  *   --ctl pak dsperate|drastic install
  *   --ctl set adhoc_switch|compatibility_cores 0|1
+ *   --ctl set instanced 0|1|2      paired cores: off, all, selected
  */
 static void ctl_print_status(void) {
 	NS_SessionInfo si;
@@ -1682,6 +1783,21 @@ static int ctl_result(bool ok) {
 }
 
 static int ctl_main(int argc, char* argv[]) {
+	/* --protocol may appear anywhere after the command; take it out so the
+	 * positional arguments stay where each command expects them. */
+	const char* protocol_arg = NULL;
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--protocol") || i + 1 >= argc) continue;
+		protocol_arg = argv[i + 1];
+		for (int j = i; j + 2 < argc; j++) argv[j] = argv[j + 2];
+		argc -= 2;
+		break;
+	}
+	if (protocol_arg && strcmp(protocol_arg, "auto") && strcmp(protocol_arg, "paklink") &&
+	    strcmp(protocol_arg, "retroarch")) {
+		printf("error --protocol auto|paklink|retroarch\n");
+		return 1;
+	}
 	const char* cmd = argc > 0 ? argv[0] : "status";
 	const char* arg = argc > 1 ? argv[1] : "";
 
@@ -1723,6 +1839,9 @@ static int ctl_main(int argc, char* argv[]) {
 			NS_announceHotspot(NULL, NULL);
 		}
 		status[0] = '\0';
+		NS_setArmProtocol(protocol_arg ? (!strcmp(protocol_arg, "retroarch") ? NS_PROTO_RETROARCH
+		                                                                     : NS_PROTO_PAKLINK)
+		                               : NS_settings()->host_protocol);
 		do_arm(NS_ROLE_HOST, NULL);
 		return ctl_result(NS_isArmed());
 	}
@@ -1774,6 +1893,10 @@ static int ctl_main(int argc, char* argv[]) {
 		}
 
 		status[0] = '\0';
+		join_protocol_override = !protocol_arg || !strcmp(protocol_arg, "auto") ? -1
+		                       : !strcmp(protocol_arg, "retroarch") ? NS_PROTO_RETROARCH
+		                       : NS_PROTO_PAKLINK;
+		join_peer_protocol = peer.protocol;
 		if (peer.hotspot) {
 			const char* ssid = peer.ssid[0] ? peer.ssid : NS_ADHOC_SSID;
 			const char* psk  = peer.psk[0]  ? peer.psk  : NS_ADHOC_PSK;
@@ -1847,8 +1970,35 @@ static int ctl_main(int argc, char* argv[]) {
 	}
 
 	if (!strcmp(cmd, "set")) {
-		/* set adhoc_switch|compatibility_cores 0|1 */
+		/* set adhoc_switch|compatibility_cores 0|1, set instanced 0|1|2 */
 		NS_Settings* c = NS_settings();
+		if (!strcmp(arg, "instanced") && argc >= 3) {
+			int v = atoi(argv[2]);
+			if (v < NS_INST_OFF || v > NS_INST_SELECTED) {
+				snprintf(status, sizeof(status), "set instanced 0|1|2");
+				return ctl_result(false);
+			}
+			c->instanced = (NS_InstMode)v;
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "instanced=%d", v);
+			return ctl_result(true);
+		}
+		if (!strcmp(arg, "nickname")) {
+			snprintf(c->nickname, sizeof(c->nickname), "%.31s", argc >= 3 ? argv[2] : "");
+			NS_sanitizeNickname(c->nickname);
+			NS_settingsSave();
+			char shown[NS_NICK_LEN];
+			NS_nickname(shown, sizeof(shown));
+			snprintf(status, sizeof(status), "nickname=%s", shown);
+			return ctl_result(true);
+		}
+		if (!strcmp(arg, "host_protocol") && argc >= 3 &&
+		    (!strcmp(argv[2], "paklink") || !strcmp(argv[2], "retroarch"))) {
+			c->host_protocol = !strcmp(argv[2], "retroarch") ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			NS_settingsSave();
+			snprintf(status, sizeof(status), "host_protocol=%s", argv[2]);
+			return ctl_result(true);
+		}
 		bool* value = !strcmp(arg, "adhoc_switch") ? &c->adhoc_switch
 		            : !strcmp(arg, "compatibility_cores") ? &c->compatibility_cores : NULL;
 		if (!value || argc < 3) {
@@ -2076,6 +2226,7 @@ int main(int argc, char* argv[]) {
 					NS_announceHotspot(NULL, NULL);
 				}
 
+				NS_setArmProtocol(NS_settings()->host_protocol);
 				do_arm(NS_ROLE_HOST, NULL);
 				dirty = 1;
 			}
@@ -2118,7 +2269,8 @@ int main(int argc, char* argv[]) {
 				case CK_SHIM:
 					break;   /* status only */
 				case CK_GAMBATTE:
-					if (st->more) { opt_core = CK_GAMBATTE; opt_sel = 0; screen = SCREEN_CORE_OPTIONS; }
+				case CK_GBA:
+					if (st->more) { opt_core = d->kind; opt_sel = 0; screen = SCREEN_CORE_OPTIONS; }
 					break;
 				case CK_MGBA:
 					if (!strcmp(st->state, "unavailable")) break;
@@ -2477,7 +2629,11 @@ int main(int argc, char* argv[]) {
 
 		}
 
+#ifndef NETPLAY_SPRUCE
+		// spruce's own daemons own sleep and the power button; NextUI's
+		// autosleep here suspends the device behind spruce's back.
 		PWR_update(&dirty, NULL, NULL, NULL);
+#endif
 
 		if (dirty) { render(s); dirty = 0; }
 		else GFX_sync();

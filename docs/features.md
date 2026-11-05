@@ -83,7 +83,7 @@ access point. Asphalt: Urban GT 2 also races. DS wants ad hoc.
 
 - **House WiFi**: both devices on the same network.
 - **Ad hoc** (Stable on Brick-class hosts): the host creates its own
-  `nextui-XXXX` network and the guest joins it. One hop instead of two, and
+  `netplay-XXXX` network and the guest joins it. One hop instead of two, and
   4 ms round trips instead of 26-43 ms. Hosts that can run an access point
   alongside their station keep their house connection; **Ad Hoc Network
   Switch** instead leaves it, for a quieter channel. Devices without an
@@ -93,7 +93,7 @@ A USB-C cable is planned as a third ([upcoming.md](upcoming.md)).
 
 ### Finding a host
 
-Join lists hosts heard on the house network and `nextui-` networks found by a
+Join lists hosts heard on the house network and `netplay-` networks found by a
 WiFi scan, merged into one list. A host that has already moved to its own
 network is still found.
 
@@ -131,8 +131,17 @@ ends it.
 ### Saves and save states
 
 Frontend save states, auto-save and auto-resume are off during a session: a
-save state from one device means nothing to the other. In-game saves work as
+save state from one device means nothing to the other. Rewind is off with them,
+and fast forward is held to the game's own speed. In-game saves work as
 described per mode above.
+
+### Core options
+
+Core options that change the game (region, clocks, fceumm's sound quality and
+the like) run the host's values on both devices for the whole session, and
+every session uses the built-in BIOS, boot ROM and so on rather than files one
+device may not have. Changes made in either emulator's menu wait until the
+session ends. See [analysis/core-options.md](analysis/core-options.md).
 
 ## Cores
 
@@ -178,3 +187,7 @@ install (see [analysis/varnish.md](analysis/varnish.md)). Not on the A30.
 | my282 | Miyoo A30 | Shared screen and link; no ad hoc hosting, no instanced mGBA, no Varnish |
 | tg5050 | TrimUI Smart Pro S | Untested |
 | my355 | Miyoo Flip | Untested |
+
+On spruce (App/Netplay, Brick and RG35XXH) everything above works except DS
+local wireless and NextUI's own integration; see
+[analysis/spruce-parity.md](analysis/spruce-parity.md).

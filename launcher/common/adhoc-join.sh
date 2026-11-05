@@ -37,7 +37,7 @@ PSK=$(sed -n 's/^adhoc_psk=//p' "$SESSION" | head -1)
 [ -n "$SSID" ] || exit 0
 # The app only writes names it generated; refuse anything else before it
 # reaches a supplicant config or a command line.
-case "$SSID" in nextui-*[!A-Za-z0-9]*|nextui-) exit 0 ;; nextui-*) ;; *) exit 0 ;; esac
+case "$SSID" in netplay-*[!A-Za-z0-9]*|netplay-) exit 0 ;; netplay-*) ;; *) exit 0 ;; esac
 case "$PSK" in *[!A-Za-z0-9]*|"") exit 0 ;; esac
 
 say() { echo "[netplay-adhoc] $*" >&2; }
@@ -81,7 +81,13 @@ EOF
 # armed. That is exactly what happened in testing.
 RESTORE="$NETPLAY_STATE/wifi_restore"
 RESTORE_HOOK="$NETPLAY_STATE/wifi_restore_hook"
-if [ ! -f "$RESTORE" ]; then
+# spruce keeps its own supplicant; the ad hoc network goes into it at runtime
+# (see wifi-platform.sh), so there is no command line to record.
+SPRUCE=0
+if np_is_spruce; then
+	SPRUCE=1
+	[ -f "$RESTORE" ] || echo spruce > "$RESTORE"
+elif [ ! -f "$RESTORE" ]; then
 	for d in /proc/[0-9]*; do
 		a0=$( { tr '\0' '\n' < "$d/cmdline"; } 2>/dev/null | head -1)
 		case "$a0" in
@@ -100,15 +106,21 @@ if [ ! -f "$RESTORE" ]; then
 	fi
 fi
 
-killall -q wpa_supplicant 2>/dev/null
-np_dhcp_stop
-ip addr flush dev wlan0 2>/dev/null
-sleep 1
+if [ $SPRUCE = 0 ]; then
+	killall -q wpa_supplicant 2>/dev/null
+	np_dhcp_stop
+	ip addr flush dev wlan0 2>/dev/null
+	sleep 1
+fi
 
 attempt=1
 while [ $attempt -le 5 ]; do
-	ip link set wlan0 up 2>/dev/null
-	wpa_supplicant -B -D nl80211 -i wlan0 -c "$CONF" >/dev/null 2>&1
+	if [ $SPRUCE = 1 ]; then
+		np_spruce_join "$SSID" "$PSK" || say "  spruce's supplicant did not take $SSID"
+	else
+		ip link set wlan0 up 2>/dev/null
+		wpa_supplicant -B -D nl80211 -i wlan0 -c "$CONF" >/dev/null 2>&1
+	fi
 
 	w=1
 	while [ $w -le 8 ]; do
@@ -123,7 +135,13 @@ while [ $attempt -le 5 ]; do
 		# (The wpa_cli probe waits for COMPLETED and does not need this, but
 		# one extra second costs nothing and keeps both paths identical.)
 		sleep 1
-		np_dhcp_start
+		if [ $SPRUCE = 1 ]; then
+			# wlan0 holds the house address until spruce's client lets it go.
+			np_spruce_renew
+			sleep 1
+		else
+			np_dhcp_start
+		fi
 		w=1
 		while [ $w -le 8 ]; do
 			np_has_ip && break
@@ -177,7 +195,11 @@ ip addr flush dev wlan0 2>/dev/null
 # the platform script performs a full rfkill/service teardown on top of the
 # stack we have already stopped, which was measured costing the Brick 10.1s
 # before restoration even began.
-if [ -f "$RESTORE" ]; then
+if [ $SPRUCE = 1 ]; then
+	np_spruce_leave
+	sleep 2
+	np_spruce_renew
+elif [ -f "$RESTORE" ]; then
 	OLD_SUPPLICANT=$(head -1 "$RESTORE" 2>/dev/null)
 	if [ -n "$OLD_SUPPLICANT" ]; then
 		# Captured service commands are not guaranteed to daemonise themselves. A

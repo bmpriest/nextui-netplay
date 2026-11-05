@@ -1,4 +1,4 @@
-.PHONY: udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
+.PHONY: corecmp app-spruce dist-spruce udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 compatibility-spruce32 compatibility-spruce32-sources check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
@@ -34,8 +34,11 @@ help:
 	@echo "make nds-pak   build a standalone DraStic NDS pak for my282 (Miyoo A30)"
 	@echo "make nds-wifi-paks  build trace-hook NDS paks for A30 and TrimUI Brick"
 	@echo "make compatibility  build seven pinned cores for ARMv7 + AArch64"
+	@echo "make compatibility-spruce32  build the ARMv7 set matching spruce's 32-bit RetroArch cores"
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
+	@echo "make app-spruce  build the app for spruce ($(SPRUCE_PLATFORMS))"
+	@echo "make dist-spruce  create Netplay-spruce.zip (App/Netplay)"
 	@echo "make cores-dsp  build DSP.pak (DSperate, NDS local wireless) for $(DSP_PLATFORMS)"
 	@echo "make cores-nds  build the NDS.pak (DraStic) local wireless overlay for $(NDS_PLATFORMS)"
 	@echo "make varnish build the bundled Varnish.pak for $(VARNISH_PLATFORMS) (needs docker)"
@@ -92,48 +95,79 @@ PICODRIVE_SRC := $(CORE_SRC_ROOT)/picodrive
 SNES9X_SRC := $(CORE_SRC_ROOT)/snes9x
 SUPAFAUST_SRC := $(CORE_SRC_ROOT)/mednafen_supafaust
 PCSX_SRC := $(CORE_SRC_ROOT)/pcsx_rearmed
-FCEUMM_REV := afe65ef1b4328c0bf2df05fb47a6b31a45bccf47
-PICODRIVE_REV := b0be121b7d58d6ee1ee2809974e62893c80a8264
-SNES9X_REV := 185488cd83aaf274752a742c94d45561cbecb7af
-SUPAFAUST_REV := d6187e5337e6c2646d003db3ab1936727ca75301
-PCSX_REV := 050981b
+# Compatibility cores we do not patch are pinned to the revisions spruce ships
+# (prebuilt in the spruceOS repo, updated only on demand), so a compatibility
+# session plays the same game spruce's own RetroArch would.
+#
+# Two pin sets, named for the spruce core directory each one matches:
+#
+#   (none)     RetroArch/.retroarch/cores64, as of bd606af63 (2025-05-31). The
+#              aarch64 set, and also the armv7 set the NextUI A30 ships: the two
+#              must share revisions, or an A30 and a Brick have no common
+#              fallback to negotiate.
+#   _SPRUCE32  RetroArch/.retroarch/cores, the 32-bit RetroArch's (ra32.*):
+#              A30, Miyoo Mini, and any 64-bit device set to raBuild=32-bit.
+#              As of f033f8ee8/109ebc490 (2025-10-08, restored 2026-01-02) every
+#              core here is a different revision from cores64. Built for armv7
+#              only, into dist/compatibility-spruce32/armv7.
+FCEUMM_REV := 3544ff567ecc417c170641587083b976739ef9db
+PICODRIVE_REV := 7102a71ba632915563529d504469094792f777a8
+SNES9X_REV := 49f484569ff2aec7ff08e7598a97d6c9e6eae72d
+SUPAFAUST_REV := e25f66765938d33f9ad5850e8d6cd597e55b7299
+PCSX_REV := febf2246848efb8937ab24c562bba20107bb46f0
+FCEUMM_REV_SPRUCE32 := 5cd4a43e16a7f3cd35628d481c347a0a98cfdfa2
+PICODRIVE_REV_SPRUCE32 := 975cdafb613e84e305f87b43e70d1e19df7e60e0
+SUPAFAUST_REV_SPRUCE32 := 75c658cce454e58ae04ea252f53a31c60d61548e
+PCSX_REV_SPRUCE32 := 228c14e10e9a8fae0ead8adf30daad2cdd8655b9
+SPRUCE32_SRC := $(CORE_SRC_ROOT)/spruce32
+# The cores put `git describe`/`rev-parse --short` into library_version (and
+# pcsx into its state header). spruce's come from libretro's buildbot: a clone
+# with no tags and 7-digit hashes. Match it, since RetroArch netplay compares
+# version strings exactly.
+COMPAT_GIT_LIKE_BUILDBOT = git -C "$(1)" config core.abbrev 7 && \
+	git -C "$(1)" tag -l | xargs -r git -C "$(1)" tag -d >/dev/null
 
 core-sources: $(GAMBATTE_STAMP) $(GPSP_STAMP)
 
-compatibility-sources: core-sources $(FCEUMM_SRC)/.compat-pinned $(PICODRIVE_SRC)/.compat-pinned \
-	$(SNES9X_SRC)/.compat-pinned \
-	$(SUPAFAUST_SRC)/.compat-pinned $(PCSX_SRC)/.compat-pinned
+compatibility-sources: core-sources $(FCEUMM_SRC)/.compat-pinned-$(FCEUMM_REV) \
+	$(PICODRIVE_SRC)/.compat-pinned-$(PICODRIVE_REV) $(SNES9X_SRC)/.compat-pinned-$(SNES9X_REV) \
+	$(SUPAFAUST_SRC)/.compat-pinned-$(SUPAFAUST_REV) $(PCSX_SRC)/.compat-pinned-$(PCSX_REV)
 
+compatibility-spruce32-sources: core-sources \
+	$(SPRUCE32_SRC)/fceumm/.compat-pinned-$(FCEUMM_REV_SPRUCE32) \
+	$(SPRUCE32_SRC)/picodrive/.compat-pinned-$(PICODRIVE_REV_SPRUCE32) \
+	$(SPRUCE32_SRC)/mednafen_supafaust/.compat-pinned-$(SUPAFAUST_REV_SPRUCE32) \
+	$(SPRUCE32_SRC)/pcsx_rearmed/.compat-pinned-$(PCSX_REV_SPRUCE32)
+
+# compat_source <dir>,<repo>,<rev>[,<patch>,<submodule update args>]
 define compat_source
-$(1)/.compat-pinned:
+$(1)/.compat-pinned-$(3): $(4)
 	@rm -rf "$(1)"
-	@mkdir -p "$(CORE_SRC_ROOT)"
+	@mkdir -p "$(dir $(1))"
 	@git clone -q $(2) "$(1)"
 	@git -C "$(1)" checkout -q $(3)
+	@$(call COMPAT_GIT_LIKE_BUILDBOT,$(1))
+	$(if $(5),@git -C "$(1)" submodule update --init $(5))
+	$(if $(4),@patch -d "$(1)" -p1 < $(4))
 	@touch "$$@"
 endef
 
-$(eval $(call compat_source,$(FCEUMM_SRC),https://github.com/libretro/libretro-fceumm.git,$(FCEUMM_REV)))
+FCEUMM_REPO := https://github.com/libretro/libretro-fceumm.git
+SUPAFAUST_REPO := https://github.com/libretro/supafaust.git
+PCSX_REPO := https://github.com/libretro/pcsx_rearmed.git
+PCSX_PATCH := cores/patches/pcsx-rearmed-old-arm-hwcap.patch
+PICODRIVE_PATCH := cores/patches/picodrive-old-arm-hwcap.patch
+
+$(eval $(call compat_source,$(FCEUMM_SRC),$(FCEUMM_REPO),$(FCEUMM_REV)))
 $(eval $(call compat_source,$(SNES9X_SRC),https://github.com/libretro/snes9x.git,$(SNES9X_REV)))
-$(eval $(call compat_source,$(SUPAFAUST_SRC),https://github.com/libretro/supafaust.git,$(SUPAFAUST_REV)))
-
-$(PICODRIVE_SRC)/.compat-pinned: cores/patches/picodrive-old-arm-hwcap.patch
-	@rm -rf "$(PICODRIVE_SRC)"
-	@mkdir -p "$(CORE_SRC_ROOT)"
-	@git clone -q https://github.com/irixxxx/picodrive.git "$(PICODRIVE_SRC)"
-	@git -C "$(PICODRIVE_SRC)" checkout -q "$(PICODRIVE_REV)"
-	@git -C "$(PICODRIVE_SRC)" submodule update --init --recursive
-	@patch -d "$(PICODRIVE_SRC)" -p1 < cores/patches/picodrive-old-arm-hwcap.patch
-	@touch "$@"
-
-$(PCSX_SRC)/.compat-pinned: cores/patches/pcsx-rearmed-old-arm-hwcap.patch
-	@rm -rf "$(PCSX_SRC)"
-	@mkdir -p "$(CORE_SRC_ROOT)"
-	@git clone -q https://github.com/libretro/pcsx_rearmed.git "$(PCSX_SRC)"
-	@git -C "$(PCSX_SRC)" checkout -q "$(PCSX_REV)"
-	@git -C "$(PCSX_SRC)" submodule update --init frontend/libpicofe
-	@patch -d "$(PCSX_SRC)" -p1 < cores/patches/pcsx-rearmed-old-arm-hwcap.patch
-	@touch "$@"
+$(eval $(call compat_source,$(SUPAFAUST_SRC),$(SUPAFAUST_REPO),$(SUPAFAUST_REV)))
+$(eval $(call compat_source,$(PICODRIVE_SRC),https://github.com/irixxxx/picodrive.git,$(PICODRIVE_REV),$(PICODRIVE_PATCH),--recursive))
+$(eval $(call compat_source,$(PCSX_SRC),$(PCSX_REPO),$(PCSX_REV),$(PCSX_PATCH),frontend/libpicofe))
+# 975cdaf is a merge of irixxxx's tree into libretro's fork, so it exists only there.
+$(eval $(call compat_source,$(SPRUCE32_SRC)/fceumm,$(FCEUMM_REPO),$(FCEUMM_REV_SPRUCE32)))
+$(eval $(call compat_source,$(SPRUCE32_SRC)/mednafen_supafaust,$(SUPAFAUST_REPO),$(SUPAFAUST_REV_SPRUCE32)))
+$(eval $(call compat_source,$(SPRUCE32_SRC)/picodrive,https://github.com/libretro/picodrive.git,$(PICODRIVE_REV_SPRUCE32),$(PICODRIVE_PATCH),--recursive))
+$(eval $(call compat_source,$(SPRUCE32_SRC)/pcsx_rearmed,$(PCSX_REPO),$(PCSX_REV_SPRUCE32),$(PCSX_PATCH),frontend/libpicofe))
 
 $(GAMBATTE_STAMP):
 	@rm -rf "$(GAMBATTE_SRC)"
@@ -341,7 +375,7 @@ NDS_WIFI_A30_ARCHIVE := dist/NDS-WiFi-a30.pak.zip
 NDS_BRICK_SOURCE ?= $(abspath $(shell git rev-parse --path-format=absolute --git-common-dir)/../../../cores/minui-nintendo-ds-pak)
 
 nds-wifi-hooks:
-	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/drastic-wifi \
+	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/cores/drastic-wifi \
 		nextui-my282-toolchain:local make BUILD=build-a30 \
 		CC=arm-a30-linux-gnueabihf-gcc \
 		CFLAGS='-O2 -g -march=armv7-a -mfpu=neon -mfloat-abi=hard' build-a30/libdrastic_wifi_diag.so
@@ -349,22 +383,22 @@ nds-wifi-hooks:
 
 # The radio for DraStic 2.5.2.0 (AArch64): one library serves every platform
 # that runs that build.
-DRASTIC_RADIO := drastic-wifi/build-brick/libdrastic_wifi.so
+DRASTIC_RADIO := cores/drastic-wifi/build-brick/libdrastic_wifi.so
 TG5040_TOOLCHAIN := ghcr.io/loveretro/tg5040-toolchain@sha256:f131c6af64029a8723d0ce8d3c2682642f5f091b04714f6beedda9bec18477ab
 
 drastic-radio:
-	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/drastic-wifi \
+	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/cores/drastic-wifi \
 		$(TG5040_TOOLCHAIN) make -s BUILD=build-brick \
 		CC=/opt/aarch64-nextui-linux-gnu/bin/aarch64-nextui-linux-gnu-gcc \
 		CXX=/opt/aarch64-nextui-linux-gnu/bin/aarch64-nextui-linux-gnu-g++ \
 		CFLAGS='-O2 -g -march=armv8-a' CXXFLAGS='-O2 -g -march=armv8-a' \
 		build-brick/libdrastic_wifi.so
-	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/drastic-wifi \
+	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/cores/drastic-wifi \
 		$(TG5040_TOOLCHAIN) /opt/aarch64-nextui-linux-gnu/bin/aarch64-nextui-linux-gnu-strip \
 		--strip-unneeded -o build-brick/libdrastic_wifi.stripped.so build-brick/libdrastic_wifi.so
 
 nds-wifi-a30-pak: nds-pak nds-wifi-hooks
-	@cp drastic-wifi/build-a30/libdrastic_wifi_diag.so \
+	@cp cores/drastic-wifi/build-a30/libdrastic_wifi_diag.so \
 		"$(NDS_STAGE)/Emus/my282/NDS.pak/drastic/libdrastic_wifi.so"
 	@cp testing/NDS.pak/WIFI-README.txt \
 		"$(NDS_STAGE)/Emus/my282/NDS.pak/"
@@ -451,6 +485,12 @@ compatibility-aarch64:
 	@$(MAKE) -s -C "$(BUILDER)" build PLATFORM=tg5040 PROJECT="$$PWD" \
 		CMD='COMPAT_START=$(COMPAT_START) sh cores/build-compat.sh aarch64'
 
+# The armv7 set matching spruce's 32-bit RetroArch (RetroArch/.retroarch/cores),
+# shipped by dist-spruce. Needs dist/cores/my282 (make cores) for gambatte/gpsp.
+compatibility-spruce32: compatibility-spruce32-sources
+	@$(MAKE) -s -C "$(BUILDER)" build PLATFORM=my282 PROJECT="$$PWD" \
+		CMD='COMPAT_START=$(COMPAT_START) sh cores/build-compat.sh armv7 spruce32'
+
 check-compatibility:
 	@for arch in armv7 aarch64; do for c in $(COMPAT_CORES); do \
 		test -f dist/compatibility/$$arch/$${c}_libretro.so || { \
@@ -464,9 +504,9 @@ NEXTUI ?= ../../NextUI
 # NEXTUI=/opt/nextui-src is where build-platforms mounts the pinned tree for the
 # platform being built - not a path on this machine.
 # DSperate (DSP.pak) - a standalone NDS emulator, not a libretro core. Its own
-# build lives in dsperate/ (toolchain images, patches, launcher); this stages
+# build lives in cores/dsperate/ (toolchain images, patches, launcher); this stages
 # one DSP.pak per platform, holding only that platform's binaries, the way
-# MGBA.pak is shipped. launcher/pak-manage.sh installs it on request.
+# MGBA.pak is shipped. launcher/nextui/pak-manage.sh installs it on request.
 DSP_PLATFORMS := tg5040 tg5050 h700
 DSP_STAGE     := dist/dsp
 DSPERATE_REPO ?= https://github.com/beebono/DSperate
@@ -474,9 +514,9 @@ DSPERATE_REPO ?= https://github.com/beebono/DSperate
 cores-dsp:
 	@for p in $(DSP_PLATFORMS); do \
 		echo "== dsp $$p"; \
-		$(MAKE) -s -C dsperate dist-$$p DSPERATE_REPO="$(DSPERATE_REPO)" >/dev/null || exit 1; \
+		$(MAKE) -s -C cores/dsperate dist-$$p DSPERATE_REPO="$(DSPERATE_REPO)" >/dev/null || exit 1; \
 		rm -rf "$(DSP_STAGE)/$$p/DSP.pak"; mkdir -p "$(DSP_STAGE)/$$p/DSP.pak"; \
-		( cd dsperate/dist/DSP.pak && for f in *; do \
+		( cd cores/dsperate/dist/DSP.pak && for f in *; do \
 			case " $(DSP_PLATFORMS) " in *" $$f "*) [ "$$f" = "$$p" ] || continue ;; esac; \
 			cp -R "$$f" "$(CURDIR)/$(DSP_STAGE)/$$p/DSP.pak/"; \
 		done ); \
@@ -489,7 +529,7 @@ check-dsp:
 	done
 
 # DraStic local wireless - not a pak but an overlay for the user's own NDS.pak
-# (launcher/pak-manage.sh nds): the radio library and a session-aware
+# (launcher/nextui/pak-manage.sh nds): the radio library and a session-aware
 # launch.sh, plus the hash of the DraStic build the radio hooks (2.5.2.0, as
 # minui-nintendo-ds-pak ships it). DraStic itself is never copied.
 NDS_PLATFORMS  := tg5040 tg5050 h700
@@ -518,7 +558,7 @@ cores-nds: drastic-radio $(NDS_BASE_ZIP)
 		rm -rf "$(NDS_OVERLAY)/$$p"; \
 		mkdir -p "$(NDS_OVERLAY)/$$p/NDS.pak/drastic/libs"; \
 		cp $(DRASTIC_RADIO:.so=.stripped.so) "$(NDS_OVERLAY)/$$p/NDS.pak/drastic/libs/libdrastic_wifi.so"; \
-		cp drastic-wifi/pak/launch.sh "$(NDS_OVERLAY)/$$p/NDS.pak/"; \
+		cp cores/drastic-wifi/pak/launch.sh "$(NDS_OVERLAY)/$$p/NDS.pak/"; \
 		chmod 755 "$(NDS_OVERLAY)/$$p/NDS.pak/launch.sh"; \
 		echo "$(DRASTIC_SHA256)" > "$(NDS_OVERLAY)/$$p/drastic.sha256"; \
 		printf "   %-7s %s\n" "$$p" "$$(du -sh $(NDS_OVERLAY)/$$p | cut -f1)"; \
@@ -538,10 +578,109 @@ app:
 	done
 	@ls -la bin/*/netplay.elf bin/*/netplay-broker.elf bin/*/netplay-wifips.elf bin/*/netplay-quickmenu.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
+# testing/corecmp: the per-frame trace harness for comparing two builds of a
+# core (usage at the top of testing/corecmp/corecmp.c and run-pair.sh).
+corecmp:
+	@for p in tg5040 h700; do \
+		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
+			CMD='sh -c "cd testing/corecmp && make PLATFORM='$$p'"' || exit 1; \
+	done
+
+###########################################################
+# spruce: the same app, shim and cores as App/Netplay.
+#
+# Built per NextUI platform, since spruce runs on the same hardware: tg5040 for
+# the TrimUI Brick and Smart Pro, h700 for the Anbernic H700 family. NextUI's UI
+# code draws the app, so it needs NextUI's fonts and images beside it, and the
+# libraries the app links that spruce's base images lack: libsamplerate and
+# libzip everywhere, and on the H700 SDL2 itself. All come from the NextUI
+# release the app is built against.
+###########################################################
+
+SPRUCE_PLATFORMS := tg5040 h700
+SPRUCE_STAGE     := dist/stage-spruce
+SPRUCE_ARCHIVE   := dist/Netplay-spruce.zip
+NEXTUI_BASE_URL    := https://github.com/LoveRetro/NextUI/releases/download/v6.15.0/NextUI-20261013-0-base.zip
+NEXTUI_BASE_SHA256 := d660d064a800bb7019b3f1f0c9d7254fdc33e92cf478e6cc9b480d6788be8f2e
+NEXTUI_BASE_ZIP    := .cache/NextUI-20261013-0-base.zip
+NEXTUI_SYSTEM      := dist/nextui-v6.15.0/.system
+SPRUCE_LIBS_tg5040 := libsamplerate.so.0 libzip.so.5
+SPRUCE_LIBS_h700   := libsamplerate.so.0 libzip.so.5 libcrypto.so.1.1 \
+                      libSDL2-2.0.so.0 libSDL2_image-2.0.so.0 libSDL2_ttf-2.0.so.0
+
+$(NEXTUI_BASE_ZIP):
+	@mkdir -p .cache
+	@curl -fsSL -o "$@.tmp" "$(NEXTUI_BASE_URL)"
+	@printf '%s  %s\n' "$(NEXTUI_BASE_SHA256)" "$@.tmp" | sha256sum -c - >/dev/null
+	@mv "$@.tmp" "$@"
+
+$(NEXTUI_SYSTEM)/res/assets@2x.png: $(NEXTUI_BASE_ZIP)
+	@printf '%s  %s\n' "$(NEXTUI_BASE_SHA256)" "$<" | sha256sum -c - >/dev/null
+	@rm -rf dist/nextui-v6.15.0 && mkdir -p dist/nextui-v6.15.0
+	@unzip -q -p "$<" MinUI.zip > dist/nextui-v6.15.0/MinUI.zip
+	@cd dist/nextui-v6.15.0 && unzip -q MinUI.zip '.system/res/*' \
+		$(foreach p,$(SPRUCE_PLATFORMS),$(foreach l,$(SPRUCE_LIBS_$(p)),'.system/$(p)/lib/$(l)')) && rm MinUI.zip
+	@touch "$@"
+
+app-spruce:
+	@for p in $(SPRUCE_PLATFORMS); do \
+		echo "== app spruce $$p"; \
+		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
+			CMD='sh -c "cd app && make PLATFORM='$$p' FIRMWARE=spruce NEXTUI=/opt/nextui-src"' || exit 1; \
+	done
+	@ls -la bin/spruce/*/netplay*.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
+
+dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores check-udhcpd \
+             $(NEXTUI_SYSTEM)/res/assets@2x.png
+	@rm -rf "$(SPRUCE_STAGE)" "$(SPRUCE_ARCHIVE)"
+	@D="$(SPRUCE_STAGE)/App/Netplay"; mkdir -p "$$D/nextui/.system" && \
+	$(foreach p,$(SPRUCE_PLATFORMS),libs_$(p)="$(SPRUCE_LIBS_$(p))";) \
+	launcher/flatten.sh spruce "$$D/launcher" && \
+	mv "$$D/launcher/launch.sh" "$$D/launcher/config.json" "$$D/" && \
+	rm -f "$$D/launcher/session.conf.example" && \
+	cp launcher/common/session.conf.example pak_hints.json "$$D/" && \
+	mkdir -p "$$D/cores/retroarch-options" && \
+	cp -R cores/retroarch-options/spruce "$$D/cores/retroarch-options/" && \
+	cp res/spruce-netplay.png "$$D/netplay.png" && \
+	cp -R "$(NEXTUI_SYSTEM)/res" "$$D/nextui/.system/res" && \
+	for p in $(SPRUCE_PLATFORMS); do \
+		mkdir -p "$$D/bin/$$p" "$$D/cores/override/$$p" "$$D/nextui/.system/$$p/bin" && \
+		cp app/spruce/governor.sh "$$D/nextui/.system/$$p/bin/" && \
+		cp bin/$$p/netplay_shim.so bin/spruce/$$p/netplay.elf bin/spruce/$$p/netplay-broker.elf \
+		   bin/spruce/$$p/netplay-wifips.elf "$$D/bin/$$p/" && \
+		eval libs=\$$libs_$$p; \
+		for l in $$libs; do cp -L "$(NEXTUI_SYSTEM)/$$p/lib/$$l" "$$D/bin/$$p/" || exit 1; done && \
+		cp dist/cores/$$p/gambatte_libretro.so dist/cores/$$p/gpsp_libretro.so \
+		   dist/cores-experimental/$$p/gambatte_dual_libretro.so "$$D/cores/override/$$p/" || exit 1; \
+		case " $(MGBA_PLATFORMS) " in *" $$p "*) \
+			cp dist/cores-experimental/$$p/mgba_dual_libretro.so "$$D/cores/override/$$p/" || exit 1 ;; \
+		esac; \
+		case " $(UDHCPD_PLATFORMS) " in *" $$p "*) \
+			cp bin/$$p/udhcpd "$$D/bin/$$p/" || exit 1 ;; \
+		esac; \
+	done && \
+	if [ -d dist/compatibility/aarch64 ]; then \
+		mkdir -p "$$D/cores/compatibility" && \
+		cp -R dist/compatibility/aarch64 "$$D/cores/compatibility/" && \
+		cp cores/compatibility-platforms.txt "$$D/cores/compatibility/PLATFORMS.txt"; \
+	fi && \
+	if [ -d dist/compatibility-spruce32/armv7 ]; then \
+		mkdir -p "$$D/cores/compatibility" && \
+		cp -R dist/compatibility-spruce32/armv7 "$$D/cores/compatibility/"; \
+	fi && \
+	chmod 755 "$$D/launch.sh" "$$D/launcher"/* "$$D"/bin/*/*
+	@cd "$(SPRUCE_STAGE)" && zip -q -r "../Netplay-spruce.zip" App -x '*/.*'
+	@du -h "$(SPRUCE_ARCHIVE)"
+
+check-spruce-app-%:
+	@test -f bin/spruce/$*/netplay.elf || { \
+		echo "missing bin/spruce/$*/netplay.elf - run 'make app-spruce' first"; exit 1; }
+
 test:
 	@./shim/test/run.sh
 	@./shim/test/link.sh
 	@./shim/test/dual.sh
+	@./shim/test/retroarch.sh
 	@./shim/test/romscan.sh
 	@./cores/tests/run.sh
 	@./cores/tests/mgbalockstep.sh
@@ -569,7 +708,7 @@ test:
 # and the shim sources, none of which belong on the device - and an exclusion
 # list silently ships whatever it forgets.
 #
-# Note this stages launcher/pak-launch.sh as launch.sh rather than the pak's own
+# Note this stages launcher/nextui/pak-launch.sh as launch.sh rather than the pak's own
 # launch.sh. Both run bin/$PLATFORM/netplay.elf; pak-launch.sh is the one that
 # sets SDCARD_PATH/SYSTEM_PATH/LOGS_PATH explicitly and creates the log dir, so
 # it works when the frontend has not exported them.
@@ -591,12 +730,9 @@ dist-base: $(BASE_DIST_CHECKS)
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" dist
 
 	@cp pak.json pak_hints.json "$(BASE_STAGE)/$(PAK)/"
-	@cp launcher/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
-	@cp launcher/minarch.elf launcher/launch-stub.sh launcher/adhoc-join.sh launcher/wifi-watchdog.sh launcher/session-cleanup.sh \
-	    launcher/install-stubs.sh launcher/wrap-pak.sh launcher/bind-mount.sh launcher/pre-launch.sh \
-	    launcher/mount-common.sh launcher/state-path.sh launcher/gameswitcher.sh launcher/gameswitcher-launch.sh launcher/mgba-manage.sh \
-	    launcher/pak-manage.sh launcher/wifi-platform.sh launcher/status-icon.sh launcher/quick-menu.sh launcher/varnish-install.sh \
-	    "$(BASE_STAGE)/$(PAK)/launcher/"
+	@cp launcher/nextui/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
+	@launcher/flatten.sh nextui "$(BASE_STAGE)/$(PAK)/launcher"
+	@rm -f "$(BASE_STAGE)/$(PAK)/launcher/pak-launch.sh" "$(BASE_STAGE)/$(PAK)/launcher/session.conf.example"
 	@for p in $(VARNISH_PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/varnish"; \
 		cp -R dist/varnish/$$p "$(BASE_STAGE)/$(PAK)/varnish/$$p"; \
@@ -604,8 +740,10 @@ dist-base: $(BASE_DIST_CHECKS)
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/res"
 	@cp res/status@1x.png res/status@2x.png res/status@3x.png res/status@4x.png \
 	    "$(BASE_STAGE)/$(PAK)/res/"
-	@cp launcher/session.conf.example "$(BASE_STAGE)/$(PAK)/"
+	@cp launcher/common/session.conf.example "$(BASE_STAGE)/$(PAK)/"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override"
+	@mkdir -p "$(BASE_STAGE)/$(PAK)/cores/retroarch-options"
+	@cp -R cores/retroarch-options/spruce "$(BASE_STAGE)/$(PAK)/cores/retroarch-options/"
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/cores/override/$$p"; \
 		cp dist/cores/$$p/gambatte_libretro.so dist/cores/$$p/gpsp_libretro.so \

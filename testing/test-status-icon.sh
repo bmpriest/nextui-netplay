@@ -33,7 +33,7 @@ LOG="$ROOT/varnish.log"
 BIN="$ROOT/bin"
 export PLATFORM SDCARD_PATH NETPLAY_PAK="$NP"
 mkdir -p "$NP/launcher" "$STATE" "$VARNISH_DIR" "$BIN"
-cp "$HERE/../launcher/status-icon.sh" "$HERE/../launcher/state-path.sh" "$NP/launcher/"
+cp "$HERE/../launcher/nextui/status-icon.sh" "$HERE/../launcher/common/state-path.sh" "$NP/launcher/"
 SCRIPT="$NP/launcher/status-icon.sh"
 
 printf '#!/bin/sh\nexit 0\n' > "$VARNISH_DIR/varnish"

@@ -23,7 +23,12 @@ Gameplay is random input from both devices (`device/gameplay.sh`). After play,
 a missing link agreement, dropped link packets or a session average under the
 test's minimum frame rate. It also prints the stall share, the longest stall
 and the slowest 10 s window: lockstep never drops input, so a poor link shows
-up as frames held waiting for the peer.
+up as frames held waiting for the peer. And it prints how many times each
+device showed "Waiting for other player": input waits (a stall of more than
+12 frames, counted once each) and pauses (the other device's menu, or its
+frontend holding a frame for over 250 ms). A low stall share can still be many
+of these. `check.sh MODE ROM MIN_FPS MAX_WAITS` fails above a count of input
+waits; no test sets one yet.
 
 ## Before running
 
@@ -39,8 +44,33 @@ up as frames held waiting for the peer.
 
     testing/devbridge/run.sh HOST_ADDR GUEST_ADDR testing/devbridge/*.test
 
-Options: `--port N` (both devices), `--identity KEY`, `--keep-going`,
-`--record`. Sessions, screenshots and closest-miss captures go to
+Options: `--port N` (both devices), `--identity KEY`, `--user USER`,
+`--keep-going`, `--record`.
+
+On spruce (App/Netplay), log in as spruce with its password:
+
+    DEVBRIDGE_PASSWORD=... testing/devbridge/run.sh --user spruce HOST GUEST testing/devbridge/sor2.test
+
+A device on USB ADB is `adb:SERIAL`, and mixes with SSH ones: a NextUI Brick on
+USB hosting a spruce device on WiFi is
+
+    DEVBRIDGE_PASSWORD=... testing/devbridge/run.sh --user spruce adb:SERIAL GUEST testing/devbridge/sor2.test
+
+run.sh maps the tests' NextUI ROM folders to spruce's (`Sega Genesis (MD)/` to
+`MD/`) and keeps spruce references in `refs/spruce-<platform>`; `quit.sh`
+quits spruce's RetroArch. A step spruce needs done differently is written
+twice: the NextUI line ends `# not-spruce`, and the spruce one follows as
+`#spruce LINE` (Tetris cannot soft-reset there, since Select is RetroArch's
+hotkey). Paired cores are off by default: `device/ctl.sh set instanced 1` on
+both before arming. mkart runs GBA through spruce's mgba with
+`device/spruce-core.sh`, which also puts spruce's core choice back.
+
+Run with WiFi power save off on both (`device/ctl.sh powersave off`): spruce
+leaves it on, and a Brick then loses the AP for minutes at a time. Brick to
+RG35XXH: sor2, rcr, contra3, tetris, mkart and aw2 pass (aw2 intermittently:
+its battle start can stall on a jittery link); ctr needs CTR on both cards.
+
+Sessions, screenshots and closest-miss captures go to
 `testing/results/devbridge/`.
 
 On an ad hoc network the guest is not on your LAN. Tunnel through the host,

@@ -29,7 +29,7 @@ export PLATFORM SDCARD_PATH LOGS_PATH
 mkdir -p "$NP/launcher" "$NP/bin/$PLATFORM" "$STATE" "$LOGS_PATH"
 # Staged the way the Makefile ships it: pak-launch.sh becomes the pak's own
 # launch.sh at the pak root, so $0's directory is the pak, not launcher/.
-cp "$HERE/../launcher/pak-launch.sh" "$NP/launch.sh"
+cp "$HERE/../launcher/nextui/pak-launch.sh" "$NP/launch.sh"
 chmod 755 "$NP/launch.sh"
 
 # Stand in for netplay.elf: writes the run marker it is given to stdout, which

@@ -36,6 +36,19 @@ typedef struct __attribute__((packed)) {
 	char     psk[NS_PSK_LEN];
 } NS_Announce;
 
+/* Version 2 adds the session protocol and the host's nickname. It is sent
+ * after a version 1 packet each time, because older builds accept only a
+ * packet of exactly sizeof(NS_Announce). */
+typedef struct __attribute__((packed)) {
+	NS_Announce v1;
+	uint32_t protocol;
+	char     nick[NS_NICK_LEN];
+} NS_Announce2;
+
+static NS_Protocol arm_protocol = NS_PROTO_PAKLINK;
+static NS_Protocol announce_protocol = NS_PROTO_PAKLINK;
+static char announce_nick[NS_NICK_LEN];
+
 static char ns_platform[16] = "tg5040";
 static char ns_pak[256];
 static char ns_state[256];
@@ -111,7 +124,7 @@ static void wifi_plat_out(char* out, int len, const char* fmt, ...) {
 /* Ad hoc credentials arrive from Wi-Fi scans and LAN announcements, which any
  * nearby device can forge, and end up in shell commands, supplicant/hostapd
  * configs and the session file. Only the shapes Netplay itself generates are
- * accepted: "nextui-" plus letters and digits, and an alphanumeric passphrase.
+ * accepted: "netplay-" plus letters and digits, and an alphanumeric passphrase.
  * Anything else (quotes, newlines, shell syntax) is dropped at the boundary. */
 static bool alnum_run(const char* s, size_t min, size_t max) {
 	size_t n = 0;
@@ -128,6 +141,15 @@ bool NS_validAdhocSsid(const char* ssid) {
 
 bool NS_validAdhocPsk(const char* psk) {
 	return psk && alnum_run(psk, 8, NS_PSK_LEN - 1);
+}
+
+/* The network this device is on, from the platform helper. */
+bool NS_wifiSSID(char* out, int len) {
+	if (!out || len <= 0) return false;
+	out[0] = '\0';
+	wifi_plat_out(out, len, "assoc-ssid");
+	out[strcspn(out, "\r\n")] = '\0';
+	return out[0] != '\0';
 }
 
 /* Associated to this SSID, or to anything when ssid is NULL. */
@@ -149,6 +171,12 @@ void NS_init(void) {
 
 	snprintf(ns_pak, sizeof(ns_pak), "%s/Tools/%s/Netplay.pak", ns_sd, ns_platform);
 	snprintf(ns_state, sizeof(ns_state), "%s/.userdata/shared/Netplay", ns_sd);
+	/* Where another firmware keeps the app and its state (spruce: App/Netplay,
+	 * Saves/netplay); its launcher says so. */
+	const char* pak = getenv("NETPLAY_PAK");
+	if (pak && pak[0]) snprintf(ns_pak, sizeof(ns_pak), "%s", pak);
+	const char* state = getenv("NETPLAY_STATE");
+	if (state && state[0]) snprintf(ns_state, sizeof(ns_state), "%s", state);
 
 	/* Updates replace the pak directory, so no user preference or recovery
 	 * record may live underneath it. Migrate files from the historical location
@@ -451,6 +479,9 @@ static void settings_path(char* out, int len) {
 /* The status icon watcher follows the setting and the session file on its own
  * once running; this starts it, or stops it and hides the icon, right away. */
 void NS_statusIconSync(void) {
+#ifdef NETPLAY_SPRUCE
+	return;     /* the icon is Varnish's, and Varnish is NextUI's */
+#endif
 	char cmd[1200];
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -461,6 +492,9 @@ void NS_statusIconSync(void) {
 
 /* The quick menu runs for as long as the setting is on, armed or not. */
 void NS_quickMenuSync(void) {
+#ifdef NETPLAY_SPRUCE
+	return;
+#endif
 	char cmd[1200];
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -470,6 +504,9 @@ void NS_quickMenuSync(void) {
 }
 
 bool NS_varnishInstalled(void) {
+#ifdef NETPLAY_SPRUCE
+	return false;
+#endif
 	char path[512];
 	snprintf(path, sizeof(path), "%s/Tools/%s/Varnish.pak/varnish", ns_sd, ns_platform);
 	return access(path, X_OK) == 0;
@@ -482,6 +519,9 @@ bool NS_varnishBundled(void) {
 }
 
 NS_VarnishState NS_varnishStatus(void) {
+#ifdef NETPLAY_SPRUCE
+	return NS_VARNISH_UNAVAILABLE;
+#endif
 	char cmd[1024], line[32] = "";
 	snprintf(cmd, sizeof(cmd),
 	         "SDCARD_PATH='%s' PLATFORM='%s' NETPLAY_PAK='%s' "
@@ -562,6 +602,11 @@ void NS_settingsLoad(void) {
 			snprintf(ns_set.quick_label, sizeof(ns_set.quick_label), "%s", eq + 1);
 			continue;
 		}
+		if (!strcmp(k, "nickname")) {
+			snprintf(ns_set.nickname, sizeof(ns_set.nickname), "%.31s", eq + 1);
+			NS_sanitizeNickname(ns_set.nickname);
+			continue;
+		}
 
 		if      (!strcmp(k, "share_cores"))   ns_set.share_cores = v != 0;
 		else if (!strcmp(k, "compatibility_cores")) ns_set.compatibility_cores = v != 0;
@@ -576,6 +621,8 @@ void NS_settingsLoad(void) {
 		else if (!strcmp(k, "status_icon"))
 			ns_set.status_icon = (v < 0 || v > NS_ICON_PERSISTENT) ? NS_ICON_OFF : (NS_IconMode)v;
 		else if (!strcmp(k, "quick_menu")) ns_set.quick_menu = v != 0;
+		else if (!strcmp(k, "host_protocol"))
+			ns_set.host_protocol = v == NS_PROTO_RETROARCH ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
 		else if (!strcmp(k, "instanced"))
 			ns_set.instanced = (v < 0 || v > NS_INST_SELECTED) ? NS_INST_OFF : (NS_InstMode)v;
 		else {
@@ -617,12 +664,17 @@ void NS_settingsSave(void) {
 	fprintf(f, "quick_menu=%d\n", ns_set.quick_menu ? 1 : 0);
 	fprintf(f, "quick_menu_keys=%s\n", ns_set.quick_keys);
 	fprintf(f, "quick_menu_label=%s\n", ns_set.quick_label);
+	fprintf(f, "nickname=%s\n", ns_set.nickname);
+	fprintf(f, "host_protocol=%d\n", (int)ns_set.host_protocol);
 	fprintf(f, "instanced=%d\n",     (int)ns_set.instanced);
 	for (int i = 0; i < NS_INST_CORES; i++)
 		fprintf(f, "inst_%s=%d\n", NS_INST_CORE[i], ns_set.inst_core[i] ? 1 : 0);
 	fclose(f);
 	if (rename(tmp, path) != 0) remove(tmp);
 
+#ifdef NETPLAY_SPRUCE
+	return;     /* Game Switcher, the icon and the quick menu are NextUI's */
+#endif
 	/* The redirect and recents view are derived state. Keep them synchronized
 	 * immediately so toggling the option never requires a reboot or re-arm. */
 	char cmd[1200];
@@ -634,6 +686,16 @@ void NS_settingsSave(void) {
 	system(cmd);
 	NS_statusIconSync();
 	NS_quickMenuSync();
+}
+
+/* The firmware's own copy of a core: NextUI's system cores, or the 64-bit
+ * RetroArch cores every 64-bit spruce device shares. */
+static void system_core_path(const char* core, char* out, int len) {
+#ifdef NETPLAY_SPRUCE
+	snprintf(out, len, "%s/RetroArch/.retroarch/cores64/%s_libretro.so", ns_sd, core);
+#else
+	snprintf(out, len, "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
+#endif
 }
 
 /* Three places a core can legitimately live: the platform's own directory, the
@@ -650,7 +712,7 @@ bool NS_coreInstalled(const char* core) {
 		return file_exists(p);
 	}
 
-	snprintf(p, sizeof(p), "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
+	system_core_path(core, p, sizeof(p));
 	if (file_exists(p)) return true;
 
 	snprintf(p, sizeof(p), "%s/cores/compatibility/%s/%s_libretro.so",
@@ -700,6 +762,23 @@ static bool system_launcher(const char* tag, char* out, int len) {
 NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len) {
 	char path[700], line[256], first[32] = "";
 	if (core && core_len) core[0] = '\0';
+#ifdef NETPLAY_SPRUCE
+	/* spruce keeps the choice in Emu/<TAG>/config.json, per device; its own
+	 * resolver answers, through launcher/systems.sh. */
+	(void)path;
+	char cmd[700];
+	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/systems.sh' core '%s' 2>/dev/null", ns_pak, tag);
+	FILE* p = popen(cmd, "r");
+	if (!p) return NS_SYS_ABSENT;
+	if (!fgets(line, sizeof(line), p)) line[0] = '\0';
+	pclose(p);
+	line[strcspn(line, "\r\n")] = '\0';
+	if (!line[0]) return NS_SYS_ABSENT;
+	if (core && core_len) snprintf(core, core_len, "%s", line);
+	for (size_t i = 0; i < sizeof(SHIM_CORES) / sizeof(SHIM_CORES[0]); i++)
+		if (!strcmp(line, SHIM_CORES[i])) return NS_SYS_READY;
+	return NS_SYS_PRESENT;
+#endif
 	if (!system_launcher(tag, path, sizeof(path))) return NS_SYS_ABSENT;
 	FILE* f = fopen(path, "r");
 	if (!f) return NS_SYS_ABSENT;
@@ -897,7 +976,7 @@ static void probe_version(const char* path, char* out, int len) {
  * are deliberately excluded here; otherwise merely bundling one would make it
  * look like the device was already using it. */
 static bool installed_core_path(const char* core, char* out, int len) {
-	snprintf(out, len, "%s/.system/%s/cores/%s_libretro.so", ns_sd, ns_platform, core);
+	system_core_path(core, out, len);
 	if (file_exists(out)) return true;
 
 	/* EXTRAS paks bundle their own - mgba lives in MGBA.pak, not the cores dir. */
@@ -1224,6 +1303,13 @@ bool NS_gambatteDualAvailable(void) {
 	return file_exists(path);
 }
 
+bool NS_mgbaDualAvailable(void) {
+	char path[512];
+	snprintf(path, sizeof(path), "%s/cores/override/%s/mgba_dual_libretro.so",
+	         ns_pak, ns_platform);
+	return file_exists(path);
+}
+
 static uint32_t instanced_available_mask(void) {
 	char path[512];
 	uint32_t mask = 0;
@@ -1484,6 +1570,20 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst) {
 	NS_CheckResult w = NS_CHECK_OK;
 	char path[512], line[512];
 
+#ifdef NETPLAY_SPRUCE
+	/* 1. spruce launches every game through its RetroArch binary, which the
+	 *    hook covers; with no binary there is nothing to cover. */
+	(void)line;
+	{
+		char ra[512], ra2[512];
+		snprintf(ra, sizeof(ra), "%s/RetroArch/ra64.universal", ns_sd);
+		snprintf(ra2, sizeof(ra2), "%s/RetroArch/ra64.h700", ns_sd);
+		bool ok = file_exists(ra) || file_exists(ra2);
+		add(out, &n, max, ok ? NS_CHECK_OK : NS_CHECK_FAIL, "RetroArch",
+		    ok ? "64-bit RetroArch found" : "no 64-bit RetroArch");
+		(void)path;
+	}
+#else
 	/* 1. Emu paks must invoke minarch.elf unqualified, or our PATH shim is
 	 *    never consulted and netplay silently does nothing. */
 	int checked = 0, unqualified = 0;
@@ -1560,6 +1660,8 @@ int NS_runChecks(NS_Check* out, int max, NS_CheckResult* worst) {
 		         : (ok ? "naming ok (no existing GBA states)" : "naming rule changed"));
 		add(out, &n, max, ok ? NS_CHECK_OK : NS_CHECK_FAIL, "Save state paths", detail);
 	}
+
+#endif
 
 	/* 4. Our own pieces are present for this platform. */
 	{
@@ -1968,8 +2070,137 @@ int NS_guestAgentRun(void) {
 	return 0;
 }
 
+void NS_setArmProtocol(NS_Protocol protocol) { arm_protocol = protocol; }
+NS_Protocol NS_armProtocol(void) { return arm_protocol; }
+
+void NS_sanitizeNickname(char* nick) {
+	char* w = nick;
+	for (const char* r = nick; *r && w - nick < NS_NICK_LEN - 1; r++)
+		if (*r >= 0x20 && *r < 0x7f && *r != '=') *w++ = *r;
+	*w = '\0';
+	while (w > nick && w[-1] == ' ') *--w = '\0';
+}
+
+/* True when the file contains needle; for model strings inside a binary. */
+static bool file_contains(const char* path, const char* needle) {
+	FILE* f = fopen(path, "rb");
+	if (!f) return false;
+	size_t nl = strlen(needle);
+	char buf[65536 + 64];
+	size_t keep = 0, n;
+	bool found = false;
+	while (!found && (n = fread(buf + keep, 1, sizeof(buf) - 64 - keep, f)) > 0) {
+		size_t have = keep + n;
+		for (size_t i = 0; i + nl <= have; i++)
+			if (buf[i] == needle[0] && !memcmp(buf + i, needle, nl)) { found = true; break; }
+		keep = have < nl ? have : nl - 1;
+		memmove(buf, buf + have - keep, keep);
+	}
+	fclose(f);
+	return found;
+}
+
+/* A name a person would recognise: the setting; else what NextUI calls the
+ * device (its launcher exports DEVICE, and TRIMUI_MODEL on the TrimUIs, from
+ * the stock MainUI's own model string, which is read here too when the app
+ * runs without NextUI's environment, as under --ctl); else a device-tree
+ * model that reads like a name (on the Brick it is the SoC, "sun50iw10", so
+ * one without a space is not used); else the platform's family name. */
+void NS_nickname(char* out, int len) {
+	if (len <= 0) return;
+	out[0] = '\0';
+	if (NS_settings()->nickname[0]) {
+		snprintf(out, len, "%s", NS_settings()->nickname);
+		return;
+	}
+	static const struct { const char* device; const char* name; } DEVICES[] = {
+		{ "brick", "TrimUI Brick" }, { "brickpro", "TrimUI Brick Pro" },
+		{ "smartpro", "TrimUI Smart Pro" }, { "smartpros", "TrimUI Smart Pro S" },
+		{ "my282", "Miyoo A30" }, { "my355", "Miyoo Flip" },
+	};
+	const char* device = getenv("DEVICE");
+	const char* trimui = getenv("TRIMUI_MODEL");
+	if ((!device || !device[0]) && (!trimui || !trimui[0])) {
+		/* Longest first: "Trimui Brick" is a prefix of "Trimui Brick Pro". */
+		static const char* MAINUI = "/usr/trimui/bin/MainUI";
+		if (file_contains(MAINUI, "Trimui Brick Pro")) device = "brickpro";
+		else if (file_contains(MAINUI, "Trimui Brick")) device = "brick";
+		else if (file_contains(MAINUI, "Trimui Smart Pro")) device = "smartpro";
+	}
+	if (trimui && !strcmp(trimui, "Trimui Brick Pro")) device = "brickpro";
+	else if (trimui && !strcmp(trimui, "Trimui Brick")) device = "brick";
+	for (size_t i = 0; device && i < sizeof(DEVICES) / sizeof(DEVICES[0]); i++)
+		if (!strcmp(device, DEVICES[i].device)) {
+			snprintf(out, len, "%s", DEVICES[i].name);
+			return;
+		}
+	FILE* f = fopen("/proc/device-tree/model", "r");
+	if (f) {
+		char model[64] = "";
+		size_t n = fread(model, 1, sizeof(model) - 1, f);
+		fclose(f);
+		model[n] = '\0';
+		if (strchr(model, ' ')) {
+			snprintf(out, len, "%.31s", model);
+			NS_sanitizeNickname(out);
+			if (out[0]) return;
+		}
+	}
+	static const struct { const char* platform; const char* name; } FAMILIES[] = {
+		{ "tg5040", "TrimUI" }, { "tg5050", "TrimUI Smart Pro S" }, { "my282", "Miyoo A30" },
+		{ "my355", "Miyoo Flip" }, { "h700", "Anbernic H700" },
+	};
+	for (size_t i = 0; i < sizeof(FAMILIES) / sizeof(FAMILIES[0]); i++)
+		if (!strcmp(ns_platform, FAMILIES[i].platform)) {
+			snprintf(out, len, "%s", FAMILIES[i].name);
+			return;
+		}
+	snprintf(out, len, "%s", ns_platform);
+}
+
+bool NS_probeRetroArch(const char* ip, int timeout_ms) {
+	struct sockaddr_in a;
+	memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_port = htons(55435);
+	if (!ip || inet_pton(AF_INET, ip, &a.sin_addr) != 1) return false;
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0) return false;
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	bool listening = false, answered = false;
+	if (connect(fd, (struct sockaddr*)&a, sizeof(a)) == 0 || errno == EINPROGRESS) {
+		struct pollfd p = { fd, POLLOUT, 0 };
+		int soerr = 0;
+		socklen_t sl = sizeof(soerr);
+		listening = poll(&p, 1, timeout_ms) == 1 &&
+		            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && !soerr;
+		if (listening) {
+			uint32_t poke = htonl(0x504F4B45u); /* POKE */
+			if (send(fd, &poke, sizeof(poke), MSG_NOSIGNAL) == (ssize_t)sizeof(poke)) {
+				uint32_t magic = 0;
+				struct pollfd r = { fd, POLLIN, 0 };
+				if (poll(&r, 1, timeout_ms) == 1 &&
+				    recv(fd, &magic, sizeof(magic), MSG_WAITALL) == (ssize_t)sizeof(magic))
+					answered = ntohl(magic) == 0x52414E50u; /* RANP */
+			}
+		}
+	}
+	close(fd);
+	/* A RetroArch host only answers POKE from its frame loop, so one whose
+	 * menu is still open accepts the connection (the kernel does) and says
+	 * nothing. Nothing of Netplay's own listens on 55435 outside a RetroArch
+	 * session, so an accepting port is taken as RetroArch either way. */
+	ns_log("RetroArch probe of %s:55435: %s\n", ip,
+	       answered ? "a RetroArch host answered" :
+	       listening ? "port open but silent (RetroArch with its menu open?) - taking it as RetroArch" :
+	       "nothing listening");
+	return listening;
+}
+
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	char path[512];
+	NS_Protocol protocol = arm_protocol;
+	arm_protocol = NS_PROTO_PAKLINK;
 
 	snprintf(path, sizeof(path), "%s/session.conf", ns_state);
 	FILE* f = fopen(path, "w");
@@ -2049,6 +2280,25 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		fprintf(f, "adhoc_ssid=%s\nadhoc_psk=%s\n", joined_ssid, joined_psk);
 	}
 
+	char nick[NS_NICK_LEN];
+	NS_nickname(nick, sizeof(nick));
+	if (nick[0]) fprintf(f, "nick=%s\n", nick);
+	if (protocol == NS_PROTO_RETROARCH) {
+		/* The shim speaks RetroArch's protocol on RetroArch's port. There is
+		 * no manifest exchange with a stock RetroArch, so the builds are
+		 * chosen here: Netplay's compatibility cores are pinned to the
+		 * revisions spruce's RetroArch ships, which is the first firmware
+		 * this targets. A per-firmware set is retroarch-plan.md phase 9. */
+		fprintf(f, "protocol=retroarch\nra_port=55435\n");
+		/* The options the peer's RetroArch runs each core with; spruce's are
+		 * the only set so far (cores/retroarch-options/README.md). */
+		fprintf(f, "ra_options=%s/cores/retroarch-options/spruce\n", ns_pak);
+		NS_CoreInfo cores[NS_MAX_MANIFEST];
+		int n = NS_coreManifest(cores, NS_MAX_MANIFEST);
+		for (int i = 0; i < n; i++)
+			if (cores[i].compat_available) fprintf(f, "compat_core.%s=1\n", cores[i].core);
+	}
+
 	if (role == NS_ROLE_HOST) {
 		fprintf(f, "role=host\nport=55437\n");
 		/* Host side of both link cores. Written unconditionally: an override for
@@ -2082,6 +2332,16 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		return false;
 	}
 
+#ifdef NETPLAY_SPRUCE
+	/* spruce starts every game through its RetroArch binary, so one shadow
+	 * mounted over that covers every system; see launcher/ra-hook.sh. */
+	snprintf(cmd, sizeof(cmd),
+	         "PLATFORM='%s' sh '%s/launcher/ra-hook.sh' up 1>&2", ns_platform, ns_pak);
+	if (system(cmd) != 0) {
+		snprintf(err, errlen, "could not hook RetroArch");
+		return false;
+	}
+#else
 	/* Bind mounts first, launch stubs only if that fails.
 	 *
 	 * The mount route writes nothing to the user's Emus tree - it stages a copy
@@ -2116,6 +2376,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 			return false;
 		}
 	}
+#endif
 
 	/* The launch stub does this again per game - power save comes back when the
 	 * interface reassociates - but doing it here means discovery and the
@@ -2138,6 +2399,9 @@ void NS_disarm(void) {
 	NS_brokerStop();
 	NS_announceStop();
 	NS_compatServeStop();
+#ifdef NETPLAY_SPRUCE
+	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/ra-hook.sh' down >/dev/null 2>&1", ns_pak);
+#else
 	/* Takes both routes down - mounts, the boot hook, and any legacy stubs -
 	 * so "off" means off regardless of how this device was covered. */
 	snprintf(cmd, sizeof(cmd),
@@ -2145,6 +2409,7 @@ void NS_disarm(void) {
 	         "USERDATA_PATH='%s/.userdata/%s' "
 	         "sh '%s/launcher/bind-mount.sh' down >/dev/null 2>&1",
 	         ns_sd, ns_platform, ns_sd, ns_platform, ns_sd, ns_platform, ns_pak);
+#endif
 	system(cmd);
 
 	snprintf(cmd, sizeof(cmd), "rm -f '%s/session' '%s/force-shim'",
@@ -2199,6 +2464,14 @@ void NS_endSession(void) {
 
 /* Covered by either route: mounts (preferred) or legacy stubs. */
 bool NS_stubsInstalled(void) {
+#ifdef NETPLAY_SPRUCE
+	{
+		char cmd[600];
+		snprintf(cmd, sizeof(cmd),
+		         "sh '%s/launcher/ra-hook.sh' status 2>/dev/null | grep -q '^covered'", ns_pak);
+		return system(cmd) == 0;
+	}
+#endif
 	char p[512];
 	snprintf(p, sizeof(p), "%s/mounts.list", ns_state);
 	if (file_exists(p)) return true;
@@ -2218,6 +2491,23 @@ static long ms_since(const struct timeval* t) {
 
 void NS_announceStart(NS_Mode mode) {
 	announce_mode = mode;
+	/* The broker announces for an armed session, so the session says which
+	 * protocol and nickname to announce. */
+	announce_protocol = NS_PROTO_PAKLINK;
+	NS_nickname(announce_nick, sizeof(announce_nick));
+	char spath[512], line[160];
+	snprintf(spath, sizeof(spath), "%s/session", ns_state);
+	FILE* sf = fopen(spath, "r");
+	while (sf && fgets(line, sizeof(line), sf)) {
+		char* end = strpbrk(line, "\r\n");
+		if (end) *end = '\0';
+		if (!strcmp(line, "protocol=retroarch")) announce_protocol = NS_PROTO_RETROARCH;
+		else if (!strncmp(line, "nick=", 5)) {
+			snprintf(announce_nick, sizeof(announce_nick), "%.31s", line + 5);
+			NS_sanitizeNickname(announce_nick);
+		}
+	}
+	if (sf) fclose(sf);
 	if (announce_fd >= 0) return;
 	announce_fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (announce_fd < 0) return;
@@ -2234,6 +2524,8 @@ void NS_announceTick(void) {
 	memset(&a, 0, sizeof(a));
 	a.magic = htonl(DISCOVERY_MAGIC);
 	a.version = htonl(1);
+	NS_Announce2 a2;
+	memset(&a2, 0, sizeof(a2));
 	a.mode = htonl((uint32_t)announce_mode);
 	a.hotspot = htonl(announce_ssid[0] ? 1u : 0u);
 	snprintf(a.ssid, sizeof(a.ssid), "%s", announce_ssid);
@@ -2246,6 +2538,11 @@ void NS_announceTick(void) {
 	to.sin_port = htons(DISCOVERY_PORT);
 	to.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 	sendto(announce_fd, &a, sizeof(a), 0, (struct sockaddr*)&to, sizeof(to));
+	a2.v1 = a;
+	a2.v1.version = htonl(2);
+	a2.protocol = htonl((uint32_t)announce_protocol);
+	snprintf(a2.nick, sizeof(a2.nick), "%s", announce_nick);
+	sendto(announce_fd, &a2, sizeof(a2), 0, (struct sockaddr*)&to, sizeof(to));
 
 	gettimeofday(&last_announce, NULL);
 }
@@ -2340,20 +2637,41 @@ int NS_discoverTick(NS_Peer* peers, int max) {
 	if (discover_fd < 0) return count;
 	if (peers == NULL) { count = 0; return 0; }
 
+	NS_Announce2 a2;
 	NS_Announce a;
 	struct sockaddr_in from;
 	socklen_t flen = sizeof(from);
+	ssize_t got;
 
-	while (recvfrom(discover_fd, &a, sizeof(a), 0, (struct sockaddr*)&from, &flen) == (ssize_t)sizeof(a)) {
+	while ((got = recvfrom(discover_fd, &a2, sizeof(a2), 0, (struct sockaddr*)&from, &flen)) > 0) {
+		if (got != (ssize_t)sizeof(NS_Announce) && got != (ssize_t)sizeof(NS_Announce2)) continue;
+		a = a2.v1;
 		if (ntohl(a.magic) != DISCOVERY_MAGIC) continue;
+		bool v2 = got == (ssize_t)sizeof(NS_Announce2) && ntohl(a.version) >= 2;
 
 		char ip[NS_IP_LEN];
 		inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
 
-		bool known = false;
+		int known = -1;
 		for (int i = 0; i < count; i++)
-			if (!strcmp(peers[i].ip, ip)) { known = true; break; }
-		if (known || count >= max) continue;
+			if (!strcmp(peers[i].ip, ip)) { known = i; break; }
+		/* A version 2 packet completes the entry its version 1 twin made. */
+		if (known >= 0 && v2) {
+			peers[known].protocol = ntohl(a2.protocol) == NS_PROTO_RETROARCH
+			                      ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			a2.nick[sizeof(a2.nick) - 1] = '\0';
+			snprintf(peers[known].nick, sizeof(peers[known].nick), "%s", a2.nick);
+			NS_sanitizeNickname(peers[known].nick);
+		}
+		if (known >= 0 || count >= max) continue;
+		memset(&peers[count], 0, sizeof(peers[count]));
+		if (v2) {
+			peers[count].protocol = ntohl(a2.protocol) == NS_PROTO_RETROARCH
+			                      ? NS_PROTO_RETROARCH : NS_PROTO_PAKLINK;
+			a2.nick[sizeof(a2.nick) - 1] = '\0';
+			snprintf(peers[count].nick, sizeof(peers[count].nick), "%s", a2.nick);
+			NS_sanitizeNickname(peers[count].nick);
+		}
 
 		snprintf(peers[count].ip, NS_IP_LEN, "%s", ip);
 		a.platform[sizeof(a.platform) - 1] = '\0';
@@ -2913,7 +3231,44 @@ static void wifi_restore_lock_release(void) {
  * Returns whether wlan0 ended up with an address. Callers used to get no signal
  * at all and reported success unconditionally, so the UI could claim it was
  * connected while the radio was still associating. */
+#ifdef NETPLAY_SPRUCE
+static bool on_own_adhoc(void);
+
+/* spruce's supplicant was never replaced (see wifi-platform.sh): take the ad hoc
+ * network back out of it and have spruce's DHCP client start over once the
+ * radio is on a network of the user's again. Until then wlan0 still holds the
+ * ad hoc address, so an address alone does not mean we are back. */
+static bool spruce_stack_up(void) {
+	if (!wifi_restore_lock_acquire()) return false;
+	wifi_plat("spruce-leave");
+	int renew_at = -1;
+	for (int i = 0; i < RESTORE_TOTAL_S; i++) {
+		if (ns_progress)
+			ns_progress(renew_at < 0 ? "Reconnecting to original WiFi"
+			                         : "Getting original WiFi address",
+			            i + 1, RESTORE_TOTAL_S);
+		sleep(1);
+		if (!wifi_link_up() || on_own_adhoc()) continue;
+		if (renew_at >= 0 && wifi_has_ip()) {
+			ns_log("restored wifi through spruce's supplicant after %ds\n", i + 1);
+			wifi_restore_lock_release();
+			return true;
+		}
+		if (renew_at < 0 || i - renew_at >= RESTORE_DHCP_RETRY_S) {
+			wifi_plat("spruce-renew");
+			renew_at = i;
+		}
+	}
+	ns_log("wifi not back through spruce's supplicant after %ds\n", RESTORE_TOTAL_S);
+	wifi_restore_lock_release();
+	return false;
+}
+#endif
+
 static bool wifi_client_stack_up(void) {
+#ifdef NETPLAY_SPRUCE
+	return spruce_stack_up();
+#endif
 	if (!wifi_restore_lock_acquire()) return false;
 
 	system("killall -q wpa_supplicant 2>/dev/null");
@@ -3235,15 +3590,23 @@ bool NS_hotspotStart(const char* ssid, const char* psk, char* err, int errlen) {
 
 	/* Follow the station if there is one - the radio permits a single channel.
 	 * Free of that constraint, survey and take the quietest. */
+	/* Not on spruce: it restarts its own supplicant on every game exit, which
+	 * would put a switched host back on the house network mid-session, on a
+	 * channel the AP is not on. */
+#ifdef NETPLAY_SPRUCE
+	bool adhoc_switch = false;
+#else
+	bool adhoc_switch = ns_set.adhoc_switch;
+#endif
 	/* Only an H700's dual-band radio can be on 5 GHz; a Brick's is 2.4 only. */
-	if (!ns_set.adhoc_switch && supplicant_ap) station_steer_24();
+	if (!adhoc_switch && supplicant_ap) station_steer_24();
 	int ch = station_home_channel();
 	/* Ad Hoc Network Switch: leave the station network so the AP can take the
 	 * quietest channel instead of whatever the router is on. Surveyed now,
 	 * while still associated; the client stack comes down just before hostapd
 	 * starts, so a failure before then leaves WiFi as it was. */
 	bool switch_station = false;
-	if (ch && ns_set.adhoc_switch) {
+	if (ch && adhoc_switch) {
 		int quiet = quiet_channel();
 		if (quiet) {
 			ns_log("ad hoc switch: leaving the station network on channel %d for channel %d\n",
@@ -3417,14 +3780,30 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 		"\tpriority=99\n}\n", ctrl, ssid, psk);
 	fclose(f);
 
+#ifdef NETPLAY_SPRUCE
+	/* spruce's supplicant stays (see wifi-platform.sh). The record is what tells
+	 * the watchdog and a reopened app there is something to put back. */
+	{
+		char path[512];
+		snprintf(path, sizeof(path), "%s/wifi_restore", ns_state);
+		FILE* w = fopen(path, "w");
+		if (w) { fprintf(w, "spruce\n"); fclose(w); }
+	}
+#else
 	/* Capture how the platform runs its supplicant before killing it - that is
 	 * what puts the existing network back afterwards. */
 	wifi_client_stack_down();
+#endif
 	joined_hotspot = true;   /* set before the first failure path can return */
 
 	for (int attempt = 1; attempt <= NS_JOIN_ATTEMPTS; attempt++) {
+#ifdef NETPLAY_SPRUCE
+		if (wifi_plat("spruce-join '%s' '%s'", ssid, psk) != 0)
+			ns_log("spruce's supplicant did not take %s (attempt %d)\n", ssid, attempt);
+#else
 		system("ip link set wlan0 up 2>/dev/null");
 		system("wpa_supplicant -B -D nl80211 -i wlan0 -c /tmp/netplay_wpa.conf >/dev/null 2>&1");
+#endif
 
 		/* Bounded per attempt: five unbounded tries is minutes of black screen. */
 		bool assoc = false;
@@ -3445,7 +3824,14 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 			 * has no exit status to read, and a client that is simply not
 			 * installed returns 127, which is not "no lease". */
 			for (int j = 0; j < 2; j++) {
+#ifdef NETPLAY_SPRUCE
+				/* wlan0 still holds the house address until spruce's client
+				 * releases it, so an address only counts after the renew. */
+				wifi_plat("spruce-renew");
+				usleep(500 * 1000);
+#else
 				wifi_plat("dhcp-start");
+#endif
 				bool leased = false;
 				for (int w = 0; w < NS_JOIN_DHCP_S && !leased; w++) {
 					if (ns_progress)
@@ -3479,7 +3865,9 @@ bool NS_hotspotJoin(const char* ssid, const char* psk, char* err, int errlen) {
 			snprintf(err, errlen, "could not find %s (attempt %d)", ssid, attempt);
 		}
 
+#ifndef NETPLAY_SPRUCE
 		system("killall -q wpa_supplicant 2>/dev/null");
+#endif
 		if (attempt < NS_JOIN_ATTEMPTS) {
 			for (int i = 0; i < NS_JOIN_GAP_S; i++) {
 				if (ns_progress) ns_progress("Retrying", attempt + 1, NS_JOIN_ATTEMPTS);

@@ -82,10 +82,10 @@ Netplay's anywhere:
 
 | Core | spruce 1.22.2 (`cores64/`) | Netplay |
 |---|---|---|
-| fceumm | `(SVN) 3544ff5` | compatibility `afe65ef` |
-| picodrive | `2.04-7102a71` | `b0be121` |
+| fceumm | `(SVN) 3544ff5` | compatibility `3544ff5` (pinned to spruce) |
+| picodrive | `2.04-7102a71` | NextUI `b0be121`; compatibility `7102a71` (pinned to spruce) |
 | snes9x | `1.63 49f48456` | NextUI's floats; fallback Supafaust |
-| mednafen_supafaust | `1.29.0 e25f667` | compatibility `d6187e5` |
+| mednafen_supafaust | `1.29.0 e25f667` | compatibility `e25f667` (pinned to spruce) |
 | gambatte | `v0.5.0 a85fe7c` | the bmpriest fork `b3803b3` |
 | gpsp | `v1.1.0-5819380` | `v1.1.0-netplay-5819380` (same base, RFU patches) |
 

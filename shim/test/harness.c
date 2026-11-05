@@ -29,6 +29,16 @@ static int failures = 0;
 	} while (0)
 
 static int env_calls = 0;
+/* HARNESS_OPTIONS_LATER at frame HARNESS_OPTIONS_LATER_AT: the player changes
+ * options in the menu, and the next update poll says so. */
+static int harness_frame;
+static int options_changed_pending;
+static const char* harness_options(void) {
+	const char* later = getenv("HARNESS_OPTIONS_LATER");
+	const char* at = getenv("HARNESS_OPTIONS_LATER_AT");
+	if (later && at && harness_frame >= atoi(at)) return later;
+	return getenv("HARNESS_OPTIONS");
+}
 static bool fe_environment(unsigned cmd, void* data) {
 	// Keep the trace bounded: a real core queries this constantly, and printing
 	// every call would dominate a benchmark.
@@ -43,6 +53,34 @@ static bool fe_environment(unsigned cmd, void* data) {
 	case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
 	case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
 		if (data) *(const char**)data = "/tmp";
+		return true;
+	case RETRO_ENVIRONMENT_GET_VARIABLE: {
+		/* HARNESS_OPTIONS="key=value;key=value": this frontend's core options. */
+		struct retro_variable* var = data;
+		const char* all = harness_options();
+		if (!var || !var->key || !all) return false;
+		static char found[16][64];
+		static int next;
+		size_t klen = strlen(var->key);
+		for (const char* p = all; *p; ) {
+			const char* end = strchr(p, ';');
+			size_t len = end ? (size_t)(end - p) : strlen(p);
+			if (len > klen && p[klen] == '=' && !strncmp(p, var->key, klen) &&
+			    len - klen - 1 < sizeof(found[0])) {
+				char* slot = found[next++ % 16];
+				memcpy(slot, p + klen + 1, len - klen - 1);
+				slot[len - klen - 1] = '\0';
+				var->value = slot;
+				return true;
+			}
+			p += len + (end ? 1 : 0);
+		}
+		var->value = NULL;
+		return false;
+	}
+	case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+		if (data) *(bool*)data = options_changed_pending;
+		options_changed_pending = 0;
 		return true;
 	case RETRO_ENVIRONMENT_SET_VARIABLES:
 	case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
@@ -230,6 +268,11 @@ int main(int argc, char** argv) {
 				_exit(0);
 			}
 			printf("fe:stall_end\n"); fflush(stdout);
+		}
+		harness_frame = i;
+		if (getenv("HARNESS_OPTIONS_LATER_AT") && i == atoi(getenv("HARNESS_OPTIONS_LATER_AT"))) {
+			printf("fe:options_changed at=%d\n", i); fflush(stdout);
+			options_changed_pending = 1;
 		}
 		run();
 		fflush(stdout);

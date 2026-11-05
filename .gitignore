@@ -20,6 +20,9 @@ cores/*
 !cores/tests/
 !cores/tests/*.cpp
 !cores/tests/*.sh
+!cores/drastic-wifi/
+!cores/dsperate/
+!cores/retroarch-options/
 wrapped/
 dist/
 logs/
@@ -31,8 +34,10 @@ testing/results/*
 bin/*/*.elf
 bin/*/statecheck
 bin/*/udhcpd
-drastic-wifi/build*/obj/
-drastic-wifi/build*/*.stripped.so
+cores/drastic-wifi/build*/obj/
+cores/drastic-wifi/build*/*.stripped.so
+bin/spruce/
+build/
 !cores/build-udhcpd.sh
 testing/devbridge/rig.json
 __pycache__/

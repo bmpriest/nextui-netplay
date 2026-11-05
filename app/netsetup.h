@@ -25,9 +25,18 @@ typedef enum { NS_MODE_NETPLAY, NS_MODE_LINK } NS_Mode;
 #define NS_SSID_LEN 24
 #define NS_PSK_LEN  24
 
+/* Which wire protocol a session speaks. Paklink is Netplay.pak's own (the
+ * shim's netlink.c); RetroArch is stock RetroArch netplay, protocols 5-7
+ * (the shim's raproto.c). See docs/analysis/retroarch-protocol.md. */
+typedef enum { NS_PROTO_PAKLINK = 0, NS_PROTO_RETROARCH = 1 } NS_Protocol;
+
+#define NS_NICK_LEN 32
+
 typedef struct {
 	char    ip[NS_IP_LEN];
 	char    platform[16];
+	NS_Protocol protocol;           /* from a version 2 announcement */
+	char    nick[NS_NICK_LEN];      /* "" from an older host */
 	NS_Mode mode;
 	bool    hotspot;                /* host will move to its own network */
 	bool    scanned;                /* found by SSID scan, not by announcement */
@@ -43,6 +52,7 @@ const char* NS_pakPath(void);
 const char* NS_sdPath(void);
 const char* NS_statePath(void); /* durable state in .userdata/shared/Netplay */
 bool NS_localIP(char* out, int len);
+bool NS_wifiSSID(char* out, int len);
 
 /* --- assumption checks -------------------------------------------------
  *
@@ -74,6 +84,18 @@ typedef enum { NS_ROLE_HOST, NS_ROLE_CLIENT } NS_Role;
 /* Write session.conf + shared Netplay/session, and install launch stubs.
  * Writes no mode= line - the shim picks the mode from the core. */
 bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen);
+/* The protocol the next NS_arm writes into the session. Reset to Paklink by
+ * each NS_arm. */
+void NS_setArmProtocol(NS_Protocol protocol);
+NS_Protocol NS_armProtocol(void);
+/* True when a RetroArch netplay host answers at ip:55435. Uses RetroArch's
+ * own POKE probe, which a host answers with its header and then closes,
+ * without taking a player slot. */
+bool NS_probeRetroArch(const char* ip, int timeout_ms);
+/* The nickname setting, or the device's model name when it is empty. */
+void NS_nickname(char* out, int len);
+/* Keeps printable ASCII without '=', trims to NS_NICK_LEN - 1. */
+void NS_sanitizeNickname(char* nick);
 
 /* Remove session, force flag and stubs. */
 void NS_disarm(void);
@@ -198,6 +220,10 @@ typedef struct {
 	char        quick_label[32];
 	NS_InstMode instanced;
 	bool        inst_core[NS_INST_CORES];
+	/* Shown to the other player: RetroArch's NICK, Netplay's announcement.
+	 * Empty means the device's model name. Printable ASCII, no '='. */
+	char        nickname[NS_NICK_LEN];
+	NS_Protocol host_protocol;  /* what Host offers */
 } NS_Settings;
 
 NS_Settings* NS_settings(void);   /* live, mutable; call NS_settingsSave after */
@@ -268,6 +294,7 @@ typedef enum {
 NS_SystemState NS_systemStatus(const char* tag, char* core, int core_len);
 /* The paired Gambatte core that dual-instance link play needs is staged. */
 bool NS_gambatteDualAvailable(void);
+bool NS_mgbaDualAvailable(void);
 
 /* --- core manifest ------------------------------------------------------
  *
@@ -341,9 +368,9 @@ int NS_compatSync(const char* host_ip, char* err, int errlen);
  * 6.5/26-43/118-300ms through an access point - one hop instead of two. That
  * worst case sits far inside the shim's input-delay window, which the
  * two-hop path did not. */
-#define NS_ADHOC_PREFIX "nextui"
-/* Legacy fixed name, still accepted when joining so an older host is reachable. */
-#define NS_ADHOC_SSID   "nextui-netplay"
+#define NS_ADHOC_PREFIX "netplay"
+/* Joined when a host announces a network without naming it. */
+#define NS_ADHOC_SSID   NS_ADHOC_PREFIX "-netplay"
 #define NS_ADHOC_PSK  "playwithme"
 
 /* Join retry shape. Each attempt is bounded so five failures cannot take
@@ -372,12 +399,14 @@ int NS_compatSync(const char* host_ip, char* err, int errlen);
  *
  * 3 frames is 50ms, roughly twice the ad hoc worst case. Applying that same 3
  * over the access point gave 33-47fps and 63-74% stalled frames, because a
- * 50ms budget cannot absorb a 300ms spike. 10 frames is 166ms, which covers the
- * typical access-point maximum but not its worst - the honest position is that
- * lockstep over an access point is marginal at any delay, and ad hoc is the
- * transport this is built for. */
+ * 50ms budget cannot absorb a 300ms spike. Those spikes were mostly radio power
+ * save: with it off on both devices (2026-11-04, house WiFi, RG35XXH guest of a
+ * Brick, River City Ransom) the round trip was 13 / 115 / 145 ms (p50/p99/max),
+ * and 5 frames ran 59.3fps with no "Waiting for other player", against 59.2fps
+ * and 1-2 waits at 10. So 5 (83ms) is the floor; the measured round trip still
+ * raises it on a worse link, and power save left on needs 10 or more. */
 #define NS_INPUT_DELAY_ADHOC 3
-#define NS_INPUT_DELAY_WIFI  10
+#define NS_INPUT_DELAY_WIFI  5
 
 /* Generate throwaway credentials for a session. */
 void NS_hotspotCredentials(char* ssid, int ssid_len, char* psk, int psk_len);
@@ -415,7 +444,7 @@ void NS_setProgressCallback(NS_ProgressFn fn);
 void NS_announceStart(NS_Mode mode);
 void NS_announceHotspot(const char* ssid, const char* psk);
 
-/* True for the network names and passphrases Netplay generates ("nextui-" plus
+/* True for the network names and passphrases Netplay generates ("netplay-" plus
  * letters and digits; an alphanumeric passphrase of 8+ characters). Scan
  * results, announcements and session values that fail are ignored. */
 bool NS_validAdhocSsid(const char* ssid);

@@ -276,6 +276,7 @@ binary-patching approach shipped a 705 KB `minarch.elf`, a 3.1 MB gambatte and a
 shim/
 ├── shim.c              the wrapper: modes, lockstep, state sync, paired cores
 ├── netlink.c           the TCP transport and its receive thread
+├── raproto.c           RetroArch's netplay protocol (5-7), for RetroArch peers
 ├── overlay.c           text drawn into the core's frame for the shim's overlays
 ├── romscan.c           ROM and ZIP scanning, to find the peer's cartridge
 ├── include/libretro.h  vendored, so the shim needs no NextUI checkout

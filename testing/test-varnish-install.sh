@@ -22,7 +22,7 @@ DEST="$ROOT/Tools/$PLATFORM/Varnish.pak"
 LOG="$ROOT/varnish.log"
 export PLATFORM SDCARD_PATH NETPLAY_PAK="$NP"
 mkdir -p "$NP/launcher"
-cp "$HERE/../launcher/varnish-install.sh" "$NP/launcher/"
+cp "$HERE/../launcher/nextui/varnish-install.sh" "$NP/launcher/"
 SCRIPT="$NP/launcher/varnish-install.sh"
 
 # A bundle at the given version whose varnish logs how it was run.

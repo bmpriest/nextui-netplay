@@ -7,7 +7,7 @@ SD="$ROOT/card"
 NP="$SD/Tools/tg5040/Netplay.pak"
 STATE="$SD/.userdata/shared/Netplay"
 mkdir -p "$NP/launcher"
-cp "$(dirname "$0")/../launcher/state-path.sh" "$NP/launcher/"
+cp "$(dirname "$0")/../launcher/common/state-path.sh" "$NP/launcher/"
 # DSP.pak keeps one binary per platform directory inside the pak.
 for p in tg5040 h700; do
 	mkdir -p "$SD/Emus/$p" "$NP/cores/dsp/$p/DSP.pak/$p"
@@ -23,7 +23,7 @@ printf state-old > "$SD/.userdata/shared/DSP-dsperate/game.0.dss"
 
 run() {
 	SDCARD_PATH="$SD" PLATFORM=tg5040 NETPLAY_PAK="$NP" NETPLAY_STATE="$STATE" \
-		sh "$PWD/launcher/pak-manage.sh" dsp "$@"
+		sh "$PWD/launcher/nextui/pak-manage.sh" dsp "$@"
 }
 
 echo '== DSP.pak managed installation'

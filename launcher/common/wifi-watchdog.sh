@@ -40,7 +40,7 @@ RESTORE_HOOK="$NETPLAY_STATE/wifi_restore_hook"
 LOCK="/tmp/netplay_watchdog.pid"
 RESTORE_LOCK="/tmp/netplay_wifi_restore.lock"
 HOST=10.0.0.1
-PREFIX=nextui
+PREFIX=netplay
 
 INTERVAL=${NETPLAY_WATCHDOG_INTERVAL:-20}      # seconds between checks
 FAILS_NEEDED=${NETPLAY_WATCHDOG_FAILS:-3}      # ~60s grace by default
@@ -94,23 +94,7 @@ on_adhoc() {
 	esac
 }
 
-restore_wifi() {
-	# The setup app has a foreground restore path using the same radio and daemon
-	# commands. Only one may own that transaction: otherwise each can kill the
-	# supplicant the other just started. A live owner will finish (or retain the
-	# breadcrumb), so the watchdog can retry on its next failure window.
-	if ! mkdir "$RESTORE_LOCK" 2>/dev/null; then
-		_owner=$(cat "$RESTORE_LOCK/pid" 2>/dev/null)
-		if [ -n "$_owner" ] && [ -d "/proc/$_owner" ]; then
-			log "wifi restoration already owned by pid $_owner"
-			return 1
-		fi
-		rm -f "$RESTORE_LOCK/pid"
-		rmdir "$RESTORE_LOCK" 2>/dev/null
-		mkdir "$RESTORE_LOCK" 2>/dev/null || return 1
-	fi
-	echo $$ > "$RESTORE_LOCK/pid"
-
+restore_replay() {
 	# Same command the app captured before it moved the client stack. Replaying
 	# it verbatim is the only portable route back: /etc/wifi/wifi_init.sh exists
 	# on some platforms and not others.
@@ -151,6 +135,50 @@ restore_wifi() {
 		sleep 1
 		_w=$((_w + 1))
 	done
+}
+
+# spruce: nothing was moved. The ad hoc network comes back out of spruce's own
+# supplicant and spruce's DHCP client starts over (wifi-platform.sh).
+restore_spruce() {
+	np_spruce_leave
+	_w=1
+	while [ $_w -le 10 ]; do
+		np_assoc && ! on_adhoc && break
+		sleep 1
+		_w=$((_w + 1))
+	done
+	np_spruce_renew
+	sleep 1
+	_w=1
+	while [ $_w -le 10 ]; do
+		np_has_ip && break
+		sleep 1
+		_w=$((_w + 1))
+	done
+}
+
+restore_wifi() {
+	# The setup app has a foreground restore path using the same radio and daemon
+	# commands. Only one may own that transaction: otherwise each can kill the
+	# supplicant the other just started. A live owner will finish (or retain the
+	# breadcrumb), so the watchdog can retry on its next failure window.
+	if ! mkdir "$RESTORE_LOCK" 2>/dev/null; then
+		_owner=$(cat "$RESTORE_LOCK/pid" 2>/dev/null)
+		if [ -n "$_owner" ] && [ -d "/proc/$_owner" ]; then
+			log "wifi restoration already owned by pid $_owner"
+			return 1
+		fi
+		rm -f "$RESTORE_LOCK/pid"
+		rmdir "$RESTORE_LOCK" 2>/dev/null
+		mkdir "$RESTORE_LOCK" 2>/dev/null || return 1
+	fi
+	echo $$ > "$RESTORE_LOCK/pid"
+
+	if np_is_spruce; then
+		restore_spruce
+	else
+		restore_replay || return 1
+	fi
 
 	_ip=$(np_ip)
 	if [ -z "$_ip" ]; then

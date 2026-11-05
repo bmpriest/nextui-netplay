@@ -27,6 +27,7 @@
     },
     "GBA": {
       "ready": "Link: Wireless Adapter, Pokemon, Advance Wars.",
+    "paired": "gpSP link; games set to mgba play paired mGBA.",
       "present": "This GBA.pak uses a core Netplay does not drive.",
       "absent": "No GBA.pak on this device."
     },
@@ -109,6 +110,13 @@
       "unavailable": "No dual-instance core for this device."
     }
   },
+  "gba": {
+    "paired": {
+      "on": "Games set to mgba in spruce: both GBAs on each device.",
+      "off": "Games set to mgba in spruce play without Netplay.",
+      "unavailable": "No paired mGBA core for this device."
+    }
+  },
   "mgba": {
     "instanced": {
       "on": "Both GBAs on each device; inputs cross Wi-Fi.",
@@ -161,6 +169,10 @@
     "adhoc_switch": {
       "on": "Disconnects from connected Wi-Fi to create Ad Hoc Network on quieter channel.",
       "off": "Disconnects from connected Wi-Fi to create Ad Hoc Network on quieter channel."
+    },
+    "host_protocol": {
+      "paklink": "Host for Netplay devices. Joiners pick the protocol up.",
+      "retroarch": "Host for RetroArch netplay (spruce, Onion, muOS...) too."
     }
   },
   "chord": {

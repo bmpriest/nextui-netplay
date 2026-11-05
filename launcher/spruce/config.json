@@ -1,0 +1,8 @@
+{
+  "label": "Netplay",
+  "icon": "netplay.png",
+  "launch": "launch.sh",
+  "description": "Two-player netplay with Netplay's own sync",
+  "devices": ["TRIMUI_A133P", "ANBERNIC_RGXX"],
+  "hideInSimpleMode": false
+}

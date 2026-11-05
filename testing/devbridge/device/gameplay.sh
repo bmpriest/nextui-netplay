@@ -29,13 +29,14 @@ if [ "$1" = --bg ]; then
 fi
 
 # A menu in front means the game is gone (crashed or quit): pressing on would
-# walk the device through NextUI or toggle DevBridge's own settings.
+# walk the device through NextUI or toggle DevBridge's own settings. On spruce
+# both spruce's menu and DevBridge's are PyUI (mainui.py).
 in_menu() {
 	# Brackets keep grep from finding its own command line.
-	grep -qs -e 'nextui[.]elf' -e 'DevBridge[.]pak/launch[.]sh' /proc/[0-9]*/cmdline
+	grep -qs -e 'nextui[.]elf' -e 'DevBridge[.]pak/launch[.]sh' -e 'mainui[.]py' /proc/[0-9]*/cmdline
 }
 
-IN=$(ls /mnt/SDCARD/Tools/*/DevBridge.pak/bin/input 2>/dev/null | head -1)
+IN=$(ls /mnt/SDCARD/Tools/*/DevBridge.pak/bin/input /mnt/SDCARD/App/DevBridge/bin/input 2>/dev/null | head -1)
 [ -x "$IN" ] || { echo "gameplay.sh: DevBridge input helper not found" >&2; exit 1; }
 
 end=$(( $(date +%s) + $1 )); shift

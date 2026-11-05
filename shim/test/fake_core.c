@@ -179,8 +179,31 @@ void retro_reset(void) {
 	memset(state_blob, 0xC3, sizeof(state_blob));
 }
 
+/* FAKE_CORE_REPORT_OPTIONS="key,key": print what the core is given for each,
+ * at load and whenever the frontend reports an update - the way a real core
+ * re-reads its options inside retro_run. */
+static void report_options(const char* tag) {
+	const char* keys = getenv("FAKE_CORE_REPORT_OPTIONS");
+	if (!keys) return;
+	char buf[512];
+	snprintf(buf, sizeof(buf), "%s", keys);
+	char* save = NULL;
+	for (char* k = strtok_r(buf, ",", &save); k; k = strtok_r(NULL, ",", &save)) {
+		struct retro_variable var = { k, NULL };
+		if (cb_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+			printf("core:%s %s=%s\n", tag, k, var.value);
+		else
+			printf("core:%s %s=<unset>\n", tag, k);
+	}
+}
+
 void retro_run(void) {
 	HIT("run");
+	{
+		bool updated = false;
+		if (cb_environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+			report_options("option-update");
+	}
 	state_blob[1]++;
 	const char* corrupt_at = getenv("FAKE_CORE_CORRUPT_AT");
 	if (corrupt_at && core_runs == (unsigned)atoi(corrupt_at)) {
@@ -260,6 +283,17 @@ void retro_run(void) {
 		input_sum ^= (unsigned)p0; input_sum *= 16777619u;
 		input_sum ^= (unsigned)p1; input_sum *= 16777619u;
 		if (++shown % 100 == 0) printf("core:inputsum frames=%d sum=%08x\n", shown, input_sum);
+		/* FAKE_STATE_INPUTS folds each frame's two inputs into the serialized
+		 * state (bytes 4..7, little-endian FNV-1a), so a state hash taken by
+		 * the peer proves which inputs ran on which frame. The RetroArch model
+		 * in testing/retroarch/ra_model.py computes the same fold. */
+		if (getenv("FAKE_STATE_INPUTS")) {
+			uint32_t h = (uint32_t)state_blob[4] | ((uint32_t)state_blob[5] << 8) |
+			             ((uint32_t)state_blob[6] << 16) | ((uint32_t)state_blob[7] << 24);
+			h ^= (uint32_t)(uint16_t)p0; h *= 16777619u;
+			h ^= (uint32_t)(uint16_t)p1; h *= 16777619u;
+			for (int i = 0; i < 4; i++) state_blob[4 + i] = (unsigned char)(h >> (8 * i));
+		}
 	}
 	if (core_runs <= 3)
 		printf("core:persistent sram=%u rtc=%u\n", save_ram[0], rtc_ram[0]);
@@ -290,6 +324,15 @@ bool retro_serialize(void* data, size_t size) {
 	if (size < sizeof(state_blob) + pad) return false;
 	memcpy(data, state_blob, sizeof(state_blob));
 	for (size_t i = 0; i < pad; i++) ((unsigned char*)data)[sizeof(state_blob) + i] = pad_byte(i);
+	/* Byte 8 of the saved state records the savestate context the frontend
+	 * reported, so a test can see the shim answer it as RetroArch's netplay
+	 * does (ROLLBACK_NETPLAY) around its own serialize calls. */
+	if (getenv("FAKE_STATE_INPUTS")) {
+		int context = RETRO_SAVESTATE_CONTEXT_NORMAL;
+		if (!cb_environment(RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT, &context))
+			context = RETRO_SAVESTATE_CONTEXT_NORMAL;
+		((unsigned char*)data)[8] = (unsigned char)context;
+	}
 	return true;
 }
 
@@ -312,7 +355,7 @@ bool retro_unserialize(const void* data, size_t size) {
 void retro_cheat_reset(void) { HIT("cheat_reset"); }
 void retro_cheat_set(unsigned index, bool enabled, const char* code) { HIT("cheat_set"); }
 
-bool retro_load_game(const struct retro_game_info* game) { HIT("load_game"); return true; }
+bool retro_load_game(const struct retro_game_info* game) { HIT("load_game"); report_options("option-load"); return true; }
 bool retro_load_game_special(unsigned t, const struct retro_game_info* i, size_t n) { HIT("load_game_special"); return false; }
 void retro_unload_game(void) { HIT("unload_game"); }
 
