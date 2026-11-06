@@ -1,0 +1,20 @@
+{
+  "review": "Visual review of both captured YOU / VS / RIVAL stage selection screens, with character portraits and stage grid. The race-start marker changes between captures; it is not a stable mode assertion. Verify this unique VS page before launch, then the coin HUD after race start. Existing agreement, disconnect, and serial checks remain unchanged. Match the central VS emblem so either Mario/Luigi assignment is accepted.",
+  "source": "/home/benja/dev/sbcs/my-paks/.worktrees/netplay-net-traffic/testing/results/devbridge/mariodx-20261106-080013",
+  "references": [
+    "spruce-tg5040/mariodx-vs-select.png",
+    "spruce-h700/mariodx-vs-select.png"
+  ],
+  "mode_region": [
+    0.39,
+    0.27,
+    0.23,
+    0.24
+  ],
+  "race_region": [
+    0.3,
+    0,
+    0.14,
+    0.05
+  ]
+}
