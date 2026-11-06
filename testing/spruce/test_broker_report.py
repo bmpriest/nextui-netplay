@@ -61,6 +61,17 @@ class ReportTests(unittest.TestCase):
         self.assertAlmostEqual(value['avg_fps'],60)
         self.assertAlmostEqual(value['longest_freeze_ms'],50)
 
+    def test_midgame_rebootstrap_is_product_failure_and_freeze_unknown(self):
+        spec=importlib.util.spec_from_file_location('judge',Path(__file__).with_name('judge.py'))
+        judge=importlib.util.module_from_spec(spec);spec.loader.exec_module(judge)
+        end=r.datetime(2026,11,6,0,0,20).timestamp()
+        text='[00:00:10.000] [netplay-shim] connection 3 requires a fresh instanced bootstrap\n[00:00:11.000] [netplay-shim] adopted authoritative paired checkpoint'
+        self.assertEqual(judge.inspect(text,end-20,end)['verdict'],'PRODUCT_FAIL')
+        metrics=r.device_metrics(text,'linkplay',end-20,end)
+        self.assertIsNone(metrics['longest_freeze_ms'])
+        self.assertEqual(len(metrics['interruptions']),1)
+        self.assertEqual(metrics['state_resends'],1)
+
     def test_udp_hash_duplicates_are_one_logical_check(self):
         end=r.datetime(2026,11,6,0,0,10).timestamp()
         line='[00:00:10.000] [netplay-shim] in sync at frame 600'

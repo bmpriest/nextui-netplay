@@ -33,6 +33,9 @@ def inspect(text, start, end):
         when = stamp.timestamp()
         # A failed startup followed by solo gameplay invalidates the run even
         # when the disconnect preceded the measurement window.
+        restart = re.match(r'connection (\d+) requires a fresh instanced bootstrap', match[2])
+        if start <= when <= end and restart and int(restart[1]) > 1:
+            losses.append({'time': when, 'message': match[2]})
         if when <= end and LOSS.search(match[2]):
             losses.append({'time': when, 'message': match[2]})
         if start - 10 <= when <= end and PROGRESS.search(match[2]):
