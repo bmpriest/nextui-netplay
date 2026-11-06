@@ -18,6 +18,7 @@ HELPERS=/tmp/netplay-devbridge
 TCPDUMP=/mnt/SDCARD/spruce/bin64/tcpdump
 SESSION_FILE=/mnt/SDCARD/Saves/netplay/session
 mkdir -p "$OUT"
+OUT=$(CDPATH= cd -- "$OUT" && pwd)
 
 [ -n "${DEVBRIDGE_PASSWORD:-}" ] || { echo "set DEVBRIDGE_PASSWORD to the spruce password" >&2; exit 2; }
 export DEVBRIDGE_PASSWORD
@@ -30,6 +31,7 @@ spruce_ssh() {
 	addr=$1 port=$2; shift 2
 	SSH_ASKPASS=$ASKPASS SSH_ASKPASS_REQUIRE=force timeout "${ON_TIMEOUT:-180}" \
 		setsid -w ssh -p "$port" -o ConnectTimeout=15 -o PubkeyAuthentication=no \
+            -o ControlMaster=auto -o ControlPath=/tmp/netplay-fixture-ssh-%C -o ControlPersist=120 \
 		-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
 		"spruce@$addr" "$@"
 }
@@ -64,9 +66,13 @@ push_helpers() {
 
 # db ARGS...: DevBridge with h (tunnel) and b (adb) attached.
 db() {
+	db_output=$(mktemp "${TMPDIR:-/tmp}/netplay-db-output.XXXXXX") || return 1
 	(cd "$DEVBRIDGE" && timeout "${DB_TIMEOUT:-180}" python3 -P tools/devbridge.py --user spruce \
-		--session-root "$OUT/shots" --connect "$TUNNEL_ADDR:h:$TUNNEL_PORT" --adb "$BRICK_ADB=b" "$@") 2>&1 |
-		grep -v '^connected'
+		--session-root "$OUT/shots" --connect "$TUNNEL_ADDR:h:$TUNNEL_PORT" --adb "$BRICK_ADB=b" "$@") > "$db_output" 2>&1
+	db_status=$?
+	grep -v '^connected' "$db_output"
+	rm -f "$db_output"
+	return "$db_status"
 }
 
 # shot DEV|all NAME: screenshot; prints the png path(s).
@@ -93,7 +99,13 @@ devbridge_open() {
 spruce_menu() { for d in "$@"; do on $d "sh $HELPERS/spruce-menu.sh"; done; }
 
 # open DEV SYS ROM: open Roms/SYS/ROM in spruce's launcher.
-open_game() { db exec "$1:OPEN_GAME" "$2" "$2/$3" | grep -o "$1: .*"; }
+open_game() {
+	response=$(db exec "$1:OPEN_GAME" "$2" "$2/$3")
+	open_status=$?
+	printf '%s\n' "$response"
+	[ "$open_status" = 0 ] || return "$open_status"
+	printf '%s\n' "$response" | grep -q "$1: ok=queued" || return 1
+}
 
 # keys DEV STEP...: keys.sh on the device (exact holds; see keys.sh). keys.sh
 # refuses to press while a menu is in front, so spruce's own menu and the
@@ -109,6 +121,12 @@ dev_ip() { on "$1" 'ip -4 addr show wlan0' | sed -n 's/.*inet \([0-9.]*\).*/\1/p
 capture_start() {
 	dir=$1; shift
 	mkdir -p "$dir"; touch "$dir/started"
+	if [ "${CAPTURE_MODE:-pcap}" = logs ]; then
+		on b 'mkdir -p /tmp/racap; touch /tmp/racap/started' || return 1
+		on h 'mkdir -p /tmp/racap; touch /tmp/racap/started' || return 1
+		meta "$dir" telemetry "device logs only; no packet capture"
+		return 0
+	fi
 	on h "mkdir -p /tmp/racap; rm -f /tmp/racap/*; touch /tmp/racap/started; setsid $TCPDUMP -i wlan0 -s 0 -U -w /tmp/racap/cap.pcap $* </dev/null >/dev/null 2>&1 & sleep 1; pidof tcpdump >/dev/null || echo 'h: tcpdump did not start'"
 	on b "mkdir -p /tmp/racap; rm -f /tmp/racap/*; touch /tmp/racap/started; start-stop-daemon -S -b -m -p /tmp/racap/pid -x $TCPDUMP -- -i wlan0 -s 0 -U -w /tmp/racap/cap.pcap $*; sleep 1; pidof tcpdump >/dev/null || echo 'b: tcpdump did not start'"
 }
@@ -154,8 +172,10 @@ tunnel_up() {
 	done
 	[ -n "$ip" ] || { echo "RG35XXH not on the ad hoc network" >&2; return 1; }
 	tunnel_down
-	ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o BatchMode=yes \
-		-L "$TUNNEL_ADDR:$TUNNEL_PORT:$ip:22" "root@$AP_LAN" || return 1
+    # USB reaches the AP's SSH daemon without the unreliable house-WiFi hop.
+    adb -s "$AP_ADB" forward tcp:40243 tcp:22 >/dev/null || return 1
+	ssh -f -N -p 40243 -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o BatchMode=yes \
+		-L "$TUNNEL_ADDR:$TUNNEL_PORT:$ip:22" root@127.0.0.1 || return 1
 	echo "$ip"
 }
 tunnel_down() {

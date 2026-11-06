@@ -1,0 +1,18 @@
+{
+  "devices": {
+    "host": {"id": "spruce-brick", "adb": "1c000c66050607724dd"},
+    "guest": {"id": "spruce-rg35xxh", "address": "127.0.0.2", "port": 2222}
+  },
+  "devbridge_args": ["--user", "spruce"],
+  "cells": [{
+    "id": "linkplay-mariodx-readiness",
+    "devices": ["host", "guest"],
+    "timeout_s": 1800,
+    "preflight": ["sh", "../../testing/spruce/broker-cell.sh", "preflight"],
+    "setup": ["sh", "../../testing/spruce/broker-cell.sh", "setup"],
+    "test": ["sh", "../../testing/spruce/broker-cell.sh", "test"],
+    "collect": ["sh", "../../testing/spruce/broker-cell.sh", "collect"],
+    "judge": ["sh", "../../testing/spruce/broker-cell.sh", "judge"],
+    "teardown": ["sh", "../../testing/spruce/broker-cell.sh", "teardown"]
+  }]
+}

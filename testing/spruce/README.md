@@ -21,7 +21,9 @@ PC stays on the house network and reaches the RG35XXH through the NextUI
 Brick, which keeps its house connection while it serves the ad hoc network:
 `ssh -L 127.0.0.2:2222:<RG35XXH ad hoc address>:22 root@<NextUI Brick>`.
 `adhoc.sh` finds that address by the RG35XXH's MAC in the NextUI Brick's ARP
-table and keeps the tunnel up.
+table. The control tunnel now reaches the AP's SSH daemon through USB ADB
+(`127.0.0.1:40243` forwards to its port 22), avoiding the AP's unreliable
+house-WiFi hop. Gameplay still uses the same ad hoc network.
 
 Locally: DevBridge.pak checked out beside this repository (or `DEVBRIDGE=`
 in `rig.conf`), adb, Python 3 and Pillow. On the devices: Netplay installed
@@ -229,3 +231,55 @@ shipped ones on a spruce device. See its header for what it expects in
 `adhoc.sh down` ends both spruce sessions, which also puts their house WiFi
 back. It also restores the Brick's power-save setting, ends the NextUI
 Brick's network, and closes the tunnel.
+
+## Broker suite
+
+The deterministic spruce manifest covers FC, SFC with Snes9x and Supafaust,
+MD, GB/GBC paired and cable modes, GBA with mGBA and gpSP, PS, and the four
+DSperate/DraStic pairings. Of 26 planned cells, six RetroArch link-core cells
+are declared unsupported: the adapter does not carry NETPACKET traffic.
+
+With the existing rig on its ad hoc network and both devices in DevBridge:
+
+```sh
+DEVBRIDGE_PASSWORD=... python3 -P testing/devbridge/spruce-broker.py \
+  testing/devbridge/spruce-complete-suite.json \
+  --out testing/results/broker-autonomous-20261106 --resume
+```
+
+The adapter uses the sibling DevBridge PC broker. It preserves failed attempts,
+skips passing cells on resume, archives the rendered gameplay script and its
+screens/events, checks ROM hashes, restores core choices and settings, and
+quarantines devices after a failed teardown. A stopped broker's leases must
+only be reclaimed after verifying recovery on both devices. Final restoration
+returns this rig to its starting ad hoc LinkPlay host/client session and
+DevBridge foreground; it does not put an already-armed rig onto house WiFi.
+
+The connection judge derives the gameplay interval from the recorded input
+commands and checks both archived logs. Solo continuation fails, missing
+coverage is an infrastructure failure, and normal disconnection after play
+is outside the interval. Successful navigation checks retain their captured
+frame without taking another screenshot. Reviewed references include their
+source and hash in `testing/devbridge/refs/spruce-*-review-20261106.json`.
+DS references still awaiting layout-specific review cannot produce a pass.
+
+This run uses existing device logs without packet capture or gameplay polling.
+The instrumentation overhead gate remains outstanding. Performance is
+unvalidated and network RTT is `NO_DATA`; functional passes are not protocol
+performance comparisons.
+
+Rebuild the protocol/game measurement report from archived broker evidence,
+without touching the handhelds:
+
+```sh
+python3 testing/spruce/broker-report.py testing/results/broker-autonomous-20261106
+```
+
+The broker also runs this reporter automatically. `report.md` and
+`comparison.csv` contain average FPS, slowest 10 seconds, longest logged
+freeze, checks failed, state resends, and the result for every planned cell.
+Each attempted row links to `telemetry.json` with the exact gameplay window,
+both devices' measurements, log coverage, and sources. FPS is estimated from
+logged pacing bins; missing measurements remain `NO_DATA`. Counter deltas
+exclude RetroArch's initial state transfer. These observed measurements do
+not establish that the instrumentation overhead gate has passed.

@@ -36,13 +36,13 @@ host:VERIFY_UNTIL {host_refs}/ctr-modes.png 60000 every=6000 region=0.58,0.22,0.
 # and a DOWN sent while it settles is lost: a Brick landed on ARCADE. Wait,
 # then make sure VS. is the highlighted row (ARCADE scores 47 there).
 host:TRM sh {helpers}/keys.sh sleep:2.5 down:0.3:0.6 down:0.3:0.6 down:0.3:0.8
-host:VERIFY_WAIT {host_refs}/ctr-modes-vs.png 20000 region=0.58,0.40,0.35,0.22 threshold=20
+host:VERIFY_UNTIL {host_refs}/ctr-modes-vs.png 30000 every=2000 region=0.58,0.40,0.35,0.22 threshold=20 :: sh {helpers}/keys.sh down:0.3:0
 all:SCREEN ctr-modes
 # VS. -> Single -> 2P.
 host:TRM sh {helpers}/keys.sh b:0.3:3 b:0.3:3 b:0.3:3
 # Only the portrait grid: the karts above it turn (8 apart on the right
 # screen, the mode list 59).
-host:VERIFY_WAIT {host_refs}/ctr-characters.png 20000 region=0.24,0.57,0.5,0.4 threshold=20
+host:VERIFY_UNTIL {host_refs}/ctr-characters.png 30000 every=4000 region=0.24,0.57,0.5,0.4 threshold=20 :: sh {helpers}/keys.sh b:0.3:0
 all:SCREEN ctr-characters
 
 # Each player confirms their own racer: a racer the guest picks can only have

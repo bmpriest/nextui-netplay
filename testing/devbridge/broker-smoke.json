@@ -1,0 +1,18 @@
+{
+  "devices": {
+    "host": {"id": "spruce-brick", "adb": "1c000c66050607724dd"},
+    "guest": {"id": "spruce-rg35xxh", "address": "127.0.0.2", "port": 2222}
+  },
+  "devbridge_args": ["--user", "spruce"],
+  "cells": [{
+    "id": "broker-control-smoke",
+    "devices": ["host", "guest"],
+    "timeout_s": 60,
+    "preflight": "broker-smoke.test",
+    "setup": "broker-smoke.test",
+    "test": "broker-smoke.test",
+    "judge": "broker-smoke.test",
+    "collect": "broker-smoke.test",
+    "teardown": "broker-smoke.test"
+  }]
+}

@@ -1,0 +1,50 @@
+# Super Mario Bros. Deluxe - Game Boy Color link (Gambatte), VS mode.
+#
+# Past the title and file screens on both, VS on the main menu, then 90
+# seconds of random running and jumping -> both logs must show the link.
+#
+# Built from the 2026-11-05 protocol comparison on spruce (Brick hosting the
+# RG35XXH), where paired consoles (`ctl.sh set instanced 1` on both before
+# arming) passed with every checkpoint agreeing. Gambatte's plain link cable
+# did not: VS came up on one side only. No references recorded yet, so the
+# screens are captures to look at, not checks.
+
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME GBC "Game Boy Color (GBC)/Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip"
+WAIT 3000
+guest:OPEN_GAME GBC "Game Boy Color (GBC)/Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip"
+all:WAIT_FOR game 30000
+WAIT 15000
+
+# Each device on its own console: A past the title, then DOWN twice from
+# ORIGINAL 1985 through CHALLENGE to VS GAME. Let the animated menu settle
+# between presses; a combined keys.sh command lost the second Down.
+all:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 1200
+all:SCREEN mariodx-1
+all:TRM sh {helpers}/keys.sh --bg down:0.25:0
+WAIT 1500
+all:TRM sh {helpers}/keys.sh --bg down:0.25:0
+WAIT 1500
+all:SCREEN mariodx-2
+all:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 2500
+all:SCREEN mariodx-vs
+
+# The host chooses the highlighted 1-1 stage; both consoles enter the race.
+host:TRM sh {helpers}/keys.sh a:0.25:0
+WAIT 3000
+all:SCREEN mariodx-race
+host:VERIFY_WAIT {host_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
+guest:VERIFY_WAIT {guest_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
+
+host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
+guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
+WAIT 93000
+all:SCREEN mariodx-after-play
+
+host:TRM sh {helpers}/check.sh link Deluxe 45
+guest:TRM sh {helpers}/check.sh link Deluxe 45
+
+all:TRM sh {helpers}/quit.sh minarch
+all:WAIT_FOR devbridge 30000

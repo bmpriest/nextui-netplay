@@ -23,6 +23,10 @@ host:TRM sh {helpers}/keys.sh start:0.3:2.5 start:0.3:3
 all:SCREEN rcr-title
 host:TRM sh {helpers}/keys.sh start:0.3:3
 all:SCREEN rcr-play
+host:VERIFY_WAIT {host_refs}/rcr-two-player.png 10000 region=0.08,0.02,0.16,0.06
+host:VERIFY_WAIT {host_refs}/rcr-two-player.png 10000 region=0.51,0.02,0.16,0.06
+guest:VERIFY_WAIT {guest_refs}/rcr-two-player.png 10000 region=0.08,0.02,0.16,0.06
+guest:VERIFY_WAIT {guest_refs}/rcr-two-player.png 10000 region=0.51,0.02,0.16,0.06
 
 host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+b right+a left b b a a up down up+right down+right a+b
 guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+b right+a left b b a a up down up+right down+right a+b

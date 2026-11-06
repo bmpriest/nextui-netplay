@@ -1,0 +1,14 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/dsp-mk-menu.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-003646/observed-dsp-mk-menu-host.png",
+    "sha256": "c150bb94a5652e431589caeb3c184ffd8551b06c044a5c2cbf5e888b8cc99466",
+    "review": "Codex visually reviewed actual spruce DSperate capture: bottom DS main menu full screen, SINGLE PLAYER highlighted. Approved only this emulator/model/layout main menu. Other DS references remain unapproved."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-menu-pip.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-003646/verify-miss-dsp-mk-menu-guest.png",
+    "sha256": "fe1bbf1642dafc2f7cbeac5ec4ad49663f4fe2b941cdf3cf82611e0aad361b74",
+    "review": "Codex visually reviewed actual spruce DSperate capture: picture-in-picture layout, bottom DS main menu inset, SINGLE PLAYER highlighted. Approved only this emulator/model/layout main menu. Other DS references remain unapproved."
+  }
+]

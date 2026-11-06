@@ -1,0 +1,163 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-normal-host.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-normal-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-rooms-guest.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-rooms-guest.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-menu.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-menu.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-groups.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-groups.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-character.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-character.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-settings-host.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-settings-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-settings-guest.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-settings-guest.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-select-game.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-select-game.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-seeking-host.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-seeking-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-lobby-guest.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-lobby-guest.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-lobby-host.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/dsp-mk-lobby-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-normal-host.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-normal-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-rooms-guest.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-rooms-guest.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-menu.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-menu.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-groups.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-groups.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-character.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-character.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-settings-host.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-settings-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-settings-guest.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-settings-guest.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-select-game.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-select-game.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-seeking-host.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-seeking-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-lobby-guest.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-lobby-guest.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/nds-mk-lobby-host.png",
+    "source": "testing/devbridge/refs/spruce-h700/dsp-mk-lobby-host.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "layout": "vertical top-above-bottom",
+    "pass_gate": "broker requires separate DS reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/nds-mk-menu.png",
+    "source": "testing/results/devbridge/spruce-nds-mkds-20261106-015032/verify-miss-nds-mk-menu-host.png",
+    "sha256": "e3bdf59771c7c1c764d69fdba7b370cc1d80e726a49effa82a13be361706182b",
+    "status": "REVIEWED_MAIN_MENU_ONLY",
+    "review": "Actual spruce DraStic Brick capture: vertical, top DS screen above bottom, SINGLE PLAYER highlighted. Visually reviewed by Codex."
+  }
+]

@@ -16,9 +16,19 @@ DIR=$OUT/$tag
 
 for d in b h; do on $d "sh $HELPERS/quit.sh retroarch >/dev/null 2>&1"; done
 devbridge_open b h
-brick=$(dev_ip b) h700=$(dev_ip h)
-proto=$(on b "sed -n 's/^protocol=//p' $SESSION_FILE")
-delay=$(on b "sed -n 's/^input_delay=//p' $SESSION_FILE")
+host_status=$(on b "sh $HELPERS/ctl.sh status") || exit 1
+guest_status=$(on h "sh $HELPERS/ctl.sh status") || exit 1
+field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1; }
+brick=$(field "$host_status" ip)
+h700=$(field "$guest_status" ip)
+proto=${BROKER_PROTOCOL:-linkplay}
+role=$(field "$host_status" role)
+guest_role=$(field "$guest_status" role)
+[ -n "$brick" ] && [ -n "$h700" ] || { echo "device IP unavailable (host=$brick guest=$h700)" >&2; exit 1; }
+[ "$(field "$host_status" armed)" = 1 ] && [ "$(field "$guest_status" armed)" = 1 ] || { echo "Netplay not armed on both devices" >&2; exit 1; }
+[ "$role" = host ] && [ "$guest_role" = client ] || { echo "wrong Netplay roles ($role/$guest_role)" >&2; exit 1; }
+delay=$(field "$host_status" input_delay)
+: "${delay:=configured}"
 case $proto in retroarch) p=ra-netplay ;; *) p=linkplay ;; esac
 capture_start "$DIR" host "$brick" and host "$h700" and not port 22
 meta "$DIR" protocol "$p"
@@ -27,6 +37,6 @@ meta "$DIR" game "$(basename "${rom%.*}")"
 meta "$DIR" host_ip "$brick"
 meta "$DIR" guest_ip "$h700"
 
-open_game b "$sys" "$rom"
+open_game b "$sys" "$rom" || exit 1
 sleep 3
-open_game h "$sys" "$rom"
+open_game h "$sys" "$rom" || exit 1

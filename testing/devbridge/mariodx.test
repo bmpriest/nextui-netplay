@@ -35,6 +35,8 @@ all:SCREEN mariodx-vs
 host:TRM sh {helpers}/keys.sh a:0.25:0
 WAIT 3000
 all:SCREEN mariodx-race
+host:VERIFY_WAIT {host_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
+guest:VERIFY_WAIT {guest_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
 
 host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
 guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right

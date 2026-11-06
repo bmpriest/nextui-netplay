@@ -206,7 +206,10 @@ def linkplay(run):
         p = re.match(r".*pacing: .* longest (\d+),", msg)
         if p:
             freeze_ms = max(freeze_ms, int(p.group(1)) * FRAME_MS)
-    fps, slow, _ = rate_stats(sorted(pts), t0, t1)
+    rates = rate_stats(sorted(pts), t0, t1)
+    if rates is None:
+        return None
+    fps, slow, _ = rates
     return fps, slow, freeze_ms, checks, failed, resends, None
 
 
@@ -226,7 +229,10 @@ def ralog(run):
             vals = (int(m.group(4)), int(m.group(5)), int(m.group(6)))
             first = first or vals
             last = vals
-    fps, slow, _ = rate_stats(sorted(pts), t0, t1)
+    rates = rate_stats(sorted(pts), t0, t1)
+    if rates is None or first is None or last is None:
+        return None
+    fps, slow, _ = rates
     return fps, slow, freeze_ms, last[1] - first[1], last[0] - first[0], last[2] - first[2], None
 
 
@@ -242,6 +248,9 @@ for d in sys.argv[1:]:
         r = linkplay(run)
     else:
         r = capture(run) or ralog(run)
+    if r is None:
+        print(f"| {NAMES.get(run['protocol'], run['protocol'])} | {run.get('label', '')} | {run.get('game', os.path.basename(d))} | NO_DATA | — | — | — | — | — | — |")
+        continue
     fps, slow, freeze, checks, failed, resends, guess = r
     if guess:
         hg, cg = guess
