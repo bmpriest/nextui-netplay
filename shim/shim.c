@@ -4175,7 +4175,13 @@ static bool dual_link_tick(void) {
 	if (dual_frame >= (uint32_t)input_delay &&
 	    !NetLink_getRemoteInput(dual_frame, &theirs)) {
 		if (fe_input_poll) fe_input_poll();
-		if (!input_stall_since.tv_sec) gettimeofday(&input_stall_since, NULL);
+		if (!input_stall_since.tv_sec) {
+			gettimeofday(&input_stall_since, NULL);
+			/* First tick of this stall: if every redundant copy was
+			 * lost, ask for one retransmit instead of waiting the
+			 * frame out to the 30 s failure. */
+			NetLink_requestInput(dual_frame);
+		}
 		if (elapsed_ms(&input_stall_since) > peer_wait_timeout_ms()) {
 			dual_recoverable_fail(NetLink_isConnected()
 			                      ? "Peer stopped sending input."
@@ -4964,7 +4970,13 @@ void retro_run(void) {
 			// Peer input for this frame has not arrived. Stall rather than run
 			// ahead: advancing without it would desync immediately.
 			if (fe_input_poll) fe_input_poll();
-			if (!input_stall_since.tv_sec) gettimeofday(&input_stall_since, NULL);
+			if (!input_stall_since.tv_sec) {
+				gettimeofday(&input_stall_since, NULL);
+				// First tick of this stall: if every redundant copy
+				// was lost, ask for one retransmit instead of
+				// waiting the frame out to the 30 s failure.
+				NetLink_requestInput(netplay_frame);
+			}
 			if (elapsed_ms(&input_stall_since) > peer_wait_timeout_ms()) {
 				recovery_fail(NetLink_isConnected()
 				              ? "Peer stopped sending input."

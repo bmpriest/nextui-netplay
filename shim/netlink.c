@@ -28,8 +28,13 @@
  * 15: an authoritative state may cross as a delta against block hashes of the
  *     receiver's own state (STATE_KIND_BASIS, STATE_DELTA, CMD_STATE_NACK).
  * 16: CMD_SESSION_OPTIONS: the host's values for the core options that change
- *     emulated state, first thing on each connection. */
-#define NETLINK_PROTOCOL 16
+ *     emulated state, first thing on each connection.
+ * 17: hybrid transport (R1): CMD_INPUT and CMD_HASH move to UDP with
+ *     preemptive redundancy, advertised by CMD_UDP_ENDPOINT; everything
+ *     else stays on TCP.
+ * 18: CMD_INPUT_REQUEST: ask the peer, over TCP, to resend one input
+ *     whose redundant UDP copies were all lost. */
+#define NETLINK_PROTOCOL 18
 
 #define QUEUE_SIZE    512
 /* Inputs are indexed by frame; the ring only has to outlast the input delay
@@ -81,6 +86,19 @@
  * overrun the peer's queue first. A frame is ~16ms. */
 #define STALL_MS       250
 
+/* Hybrid transport (docs/analysis/net-traffic-analysis.md R1). Only traffic
+ * whose value expires moves to UDP: CMD_INPUT and CMD_HASH. Every datagram
+ * carries the newest UDP_REDUNDANCY entries ({frame, value} pairs, newest
+ * first), so one lost datagram is covered by the next, ~17 ms later, with
+ * no retransmit. CMD_STATE, CMD_DATA, CMD_PAUSE/CMD_RESUME and CMD_HELLO
+ * stay on TCP: they need reliable, ordered, exactly-once delivery, and TCP
+ * flow control is the backpressure the worker relies on below. */
+#define UDP_MAGIC      0x4E505544u /* 'NPUD' */
+#define UDP_REDUNDANCY 3
+/* {magic, token, cmd, count, client_id} then count x {frame, value}. */
+#define UDP_HEADER     12
+#define UDP_MAX_PACKET (UDP_HEADER + UDP_REDUNDANCY * 8)
+
 enum {
 	CMD_HELLO = 0x00,
 	CMD_DATA  = 0x01,
@@ -101,6 +119,8 @@ enum {
 	CMD_RTT_ECHO       = 0x10, /* {token} */
 	CMD_STATE_NACK     = 0x11, /* {kind} - a delta did not rebuild; send it whole */
 	CMD_SESSION_OPTIONS = 0x12, /* "key=value\n"... - host-decided core options */
+	CMD_UDP_ENDPOINT   = 0x13, /* {udp port, per-connection token} - over TCP */
+	CMD_INPUT_REQUEST  = 0x14, /* {frame} - resend this input over TCP */
 };
 
 /* Round-trip probes, for sizing input delay from what the link actually does
@@ -130,6 +150,12 @@ typedef struct {
 	size_t  len;
 } QueuedPacket;
 
+typedef struct {
+	uint32_t frame;
+	uint32_t value;
+	bool     valid;
+} TxEntry;
+
 static struct {
 	NetLinkRole role;
 	uint16_t    port;
@@ -140,6 +166,26 @@ static struct {
 	int  fd;
 	bool connected;
 	bool running;
+
+	/* UDP side of the hybrid transport. udp_fd lives for the whole
+	 * NetLink_start; the endpoint and tokens below live for one TCP
+	 * connection. The peer learns our port and token from
+	 * CMD_UDP_ENDPOINT over TCP, and we learn theirs the same way, so a
+	 * datagram is accepted only from the TCP peer's address and port and
+	 * only with the token this connection advertised. A stale datagram
+	 * from a dead connection therefore cannot collide with a new one. */
+	int      udp_fd;
+	uint16_t udp_port;       /* our bound port, host order */
+	uint32_t my_udp_token;   /* token the peer must present to us */
+	uint32_t peer_udp_token; /* token we present to the peer */
+	uint16_t peer_udp_port;  /* host order; 0 until CMD_UDP_ENDPOINT */
+	uint32_t peer_ip;        /* TCP peer's IPv4, network order */
+	TxEntry tx_inputs[UDP_REDUNDANCY], tx_hashes[UDP_REDUNDANCY];
+	/* Every input we sent, kept so a peer whose redundant copies were
+	 * all lost can ask for one again. Frame-indexed like the receive
+	 * ring; 256 frames is ~4 s of history at 60 fps. */
+	TxEntry tx_sent[INPUT_RING];
+	unsigned udp_test_drop; /* NETLINK_TEST_DROP_FIRST_UDP countdown */
 
 	pthread_t       thread;
 	pthread_mutex_t lock;
@@ -345,6 +391,208 @@ static bool send_framed(uint8_t cmd, const void* data, size_t len, uint16_t clie
 	return true;
 }
 
+static void drop_connection(const char* reason);
+
+/* Store one peer input. Frame-indexed, so duplicates and reordering -
+ * both normal once UDP redundancy sends each frame three times - are
+ * harmless: the same slot is simply rewritten with the same value. */
+static void store_peer_input(uint32_t frame, uint32_t buttons) {
+	pthread_mutex_lock(&nl.lock);
+	unsigned slot = frame % INPUT_RING;
+	nl.inputs[slot].frame = frame;
+	nl.inputs[slot].buttons = buttons;
+	nl.inputs[slot].valid = true;
+	pthread_mutex_unlock(&nl.lock);
+}
+
+/* Store one peer hash, at most once per frame. Without the dedup, UDP
+ * redundancy would queue three copies of every checkpoint. */
+static void store_peer_hash(uint32_t frame, uint32_t hash) {
+	pthread_mutex_lock(&nl.lock);
+	for (unsigned i = 0; i < nl.peer_hash_count; i++) {
+		unsigned slot = (nl.peer_hash_head + i) % HASH_RING;
+		if (nl.peer_hashes[slot].frame == frame) {
+			pthread_mutex_unlock(&nl.lock);
+			return;
+		}
+	}
+	if (nl.peer_hash_count == HASH_RING) {
+		nl.peer_hash_head = (nl.peer_hash_head + 1) % HASH_RING;
+		nl.peer_hash_count--;
+		nl_log("state-hash queue full - dropped oldest checkpoint\n");
+	}
+	unsigned slot = (nl.peer_hash_head + nl.peer_hash_count) % HASH_RING;
+	nl.peer_hashes[slot].frame = frame;
+	nl.peer_hashes[slot].hash = hash;
+	nl.peer_hash_count++;
+	pthread_mutex_unlock(&nl.lock);
+}
+
+static uint32_t make_udp_token(void) {
+	uint32_t token = 0;
+	int fd = open("/dev/urandom", O_RDONLY);
+	if (fd >= 0) {
+		ssize_t n = read(fd, &token, sizeof(token));
+		close(fd);
+		if (n == (ssize_t)sizeof(token) && token) return token;
+	}
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	token = (uint32_t)now.tv_sec ^ (uint32_t)now.tv_usec * 2654435761u ^
+	        (uint32_t)getpid() << 16 ^ nl.connection_generation;
+	return token ? token : 1;
+}
+
+/* The host binds the session port; the client binds an ephemeral port so
+ * two peers on one loopback (and later, behind one NAT) never collide.
+ * The client still sends to the host's session port, which it knows from
+ * the session file; the host learns the client's port from
+ * CMD_UDP_ENDPOINT. Failure is not fatal: sends fall back to TCP. */
+static void setup_udp(void) {
+	if (nl.udp_fd >= 0) return;
+	/* Test hook: the pre-R1 transport, for A/B loss simulations. */
+	if (getenv("NETLINK_TEST_NO_UDP")) {
+		nl_log("test hook: UDP disabled - input/hash staying on TCP\n");
+		return;
+	}
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return;
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = INADDR_ANY;
+	addr.sin_port = htons(nl.role == NETLINK_ROLE_HOST ? nl.port : 0);
+	if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+		nl_log("UDP input/hash transport unavailable (%s) - using TCP\n",
+		       strerror(errno));
+		close(fd);
+		return;
+	}
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+	socklen_t len = sizeof(addr);
+	if (getsockname(fd, (struct sockaddr*)&addr, &len) < 0) {
+		close(fd);
+		return;
+	}
+	nl.udp_fd = fd;
+	nl.udp_port = ntohs(addr.sin_port);
+}
+
+/* Drain every waiting datagram. Runs on the worker thread; each datagram
+ * must come from the TCP peer's address and advertised UDP port and
+ * carry this connection's token, so only the session peer can fill the
+ * input ring or the hash queue. */
+static void drain_udp(void) {
+	if (nl.udp_fd < 0) return;
+	uint8_t buf[UDP_MAX_PACKET];
+	for (;;) {
+		struct sockaddr_in src;
+		socklen_t slen = sizeof(src);
+		ssize_t n = recvfrom(nl.udp_fd, buf, sizeof(buf), 0,
+		                     (struct sockaddr*)&src, &slen);
+		if (n < 0) return;
+		if (!nl.my_udp_token || src.sin_addr.s_addr != nl.peer_ip ||
+		    !nl.peer_udp_port || src.sin_port != htons(nl.peer_udp_port))
+			continue;
+		if (n < UDP_HEADER) continue;
+		uint32_t magic, token;
+		memcpy(&magic, buf, 4);
+		memcpy(&token, buf + 4, 4);
+		if (ntohl(magic) != UDP_MAGIC || ntohl(token) != nl.my_udp_token)
+			continue;
+		uint8_t cmd = buf[8];
+		unsigned count = buf[9];
+		if ((cmd != CMD_INPUT && cmd != CMD_HASH) ||
+		    count < 1 || count > UDP_REDUNDANCY ||
+		    n != (ssize_t)(UDP_HEADER + count * 8))
+			continue;
+		for (unsigned i = 0; i < count; i++) {
+			uint32_t frame, value;
+			memcpy(&frame, buf + UDP_HEADER + i * 8, 4);
+			memcpy(&value, buf + UDP_HEADER + i * 8 + 4, 4);
+			if (cmd == CMD_INPUT) store_peer_input(ntohl(frame), ntohl(value));
+			else                  store_peer_hash(ntohl(frame), ntohl(value));
+		}
+	}
+}
+
+/* Send one expiring message (CMD_INPUT or CMD_HASH) with preemptive
+ * redundancy: the datagram carries this entry plus the previous two, so
+ * a single loss is covered ~17 ms later with no retransmit. Before the
+ * peer's endpoint arrives - or if UDP is unavailable - the message goes
+ * over TCP exactly as it did before R1, so priming traffic is never
+ * held up waiting for the UDP handshake. */
+static bool send_expiring(uint8_t cmd, uint32_t frame, uint32_t value) {
+	pthread_mutex_lock(&nl.lock);
+	bool connected = nl.connected;
+	if (!connected) {
+		pthread_mutex_unlock(&nl.lock);
+		return false;
+	}
+	TxEntry* hist = cmd == CMD_INPUT ? nl.tx_inputs : nl.tx_hashes;
+	memmove(&hist[1], &hist[0], (UDP_REDUNDANCY - 1) * sizeof(hist[0]));
+	hist[0].frame = frame;
+	hist[0].value = value;
+	hist[0].valid = true;
+	if (cmd == CMD_INPUT) {
+		unsigned slot = frame % INPUT_RING;
+		nl.tx_sent[slot].frame = frame;
+		nl.tx_sent[slot].value = value;
+		nl.tx_sent[slot].valid = true;
+	}
+
+	bool sent = false;
+	if (nl.udp_fd >= 0 && nl.peer_udp_port && nl.peer_ip) {
+		if (nl.udp_test_drop) {
+			nl.udp_test_drop--;
+			nl_log("test hook: dropping a UDP input/hash datagram\n");
+			pthread_mutex_unlock(&nl.lock);
+			return true;
+		}
+		uint8_t pkt[UDP_MAX_PACKET];
+		uint32_t w = htonl(UDP_MAGIC);
+		memcpy(pkt, &w, 4);
+		w = htonl(nl.peer_udp_token);
+		memcpy(pkt + 4, &w, 4);
+		pkt[8] = cmd;
+		unsigned count = 0;
+		for (unsigned i = 0; i < UDP_REDUNDANCY; i++) {
+			/* Inputs: only frame, frame-1, frame-2 - after a timeline
+			 * jump the older entries belong to an abandoned timeline.
+			 * Hashes are 300 frames apart, so for them the previous
+			 * entries are simply the previous hashes sent. The sender
+			 * history is cleared on every timeline reset either way. */
+			if (!hist[i].valid) break;
+			if (cmd == CMD_INPUT && hist[i].frame != frame - i) break;
+			if (cmd == CMD_HASH && i && hist[i].frame >= hist[i - 1].frame) break;
+			uint32_t f = htonl(hist[i].frame), v = htonl(hist[i].value);
+			memcpy(pkt + UDP_HEADER + count * 8, &f, 4);
+			memcpy(pkt + UDP_HEADER + count * 8 + 4, &v, 4);
+			count++;
+		}
+		pkt[9] = (uint8_t)count;
+		uint16_t id = htons(NetLink_localClientId());
+		memcpy(pkt + 10, &id, 2);
+		struct sockaddr_in dst;
+		memset(&dst, 0, sizeof(dst));
+		dst.sin_family = AF_INET;
+		dst.sin_addr.s_addr = nl.peer_ip;
+		dst.sin_port = htons(nl.peer_udp_port);
+		size_t len = UDP_HEADER + count * 8;
+		sent = sendto(nl.udp_fd, pkt, len, 0,
+		              (struct sockaddr*)&dst, sizeof(dst)) == (ssize_t)len;
+	}
+	if (!sent) {
+		uint32_t payload[2] = { htonl(frame), htonl(value) };
+		sent = send_framed(cmd, payload, sizeof(payload),
+		                   NetLink_localClientId());
+	}
+	pthread_mutex_unlock(&nl.lock);
+	if (!sent) drop_connection("protocol send failed");
+	return sent;
+}
+
 //////////////////////////////////////////////////////////////////////////////
 // configuration
 //////////////////////////////////////////////////////////////////////////////
@@ -353,7 +601,10 @@ bool NetLink_configure(const char* session_path) {
 	memset(&nl, 0, sizeof(nl));
 	nl.listen_fd = -1;
 	nl.fd = -1;
+	nl.udp_fd = -1;
 	nl.port = NETLINK_DEFAULT_PORT;
+	{ const char* v = getenv("NETLINK_TEST_DROP_FIRST_UDP");
+	  if (v) nl.udp_test_drop = (unsigned)atoi(v); }
 	pthread_mutex_init(&nl.lock, NULL);
 
 	if (!session_path || !session_path[0]) return false;
@@ -474,8 +725,12 @@ static int do_listen_accept(void) {
 		nl_log("hosting on port %u\n", nl.port);
 	}
 
-	int fd = accept(nl.listen_fd, NULL, NULL);
+	struct sockaddr_in peer_addr;
+	socklen_t peer_len = sizeof(peer_addr);
+	int fd = accept(nl.listen_fd, (struct sockaddr*)&peer_addr, &peer_len);
 	if (fd < 0) return -1;
+	/* The UDP side is accepted only from this address. */
+	nl.peer_ip = peer_addr.sin_addr.s_addr;
 	return fd;
 }
 
@@ -492,6 +747,8 @@ static int do_connect(void) {
 		close(fd);
 		return -1;
 	}
+	/* The UDP side is accepted only from this address. */
+	nl.peer_ip = addr.sin_addr.s_addr;
 
 	/* Non-blocking, with a deadline.
 	 *
@@ -601,6 +858,14 @@ static void drop_connection(const char* reason) {
 		 * strands us waiting for a CMD_RESUME that can never arrive. */
 		nl.peer_paused = false;
 		nl.told_peer_paused = false;
+		/* The UDP endpoint and both tokens die with the TCP connection;
+		 * the next connection advertises fresh ones. */
+		nl.my_udp_token = nl.peer_udp_token = 0;
+		nl.peer_udp_port = 0;
+		nl.peer_ip = 0;
+		memset(nl.tx_inputs, 0, sizeof(nl.tx_inputs));
+		memset(nl.tx_hashes, 0, sizeof(nl.tx_hashes));
+		memset(nl.tx_sent, 0, sizeof(nl.tx_sent));
 		nl.rtt_count = nl.rtt_next = 0;
 		nl.rtt_outstanding = false;
 		/* Everything the departed peer told us dies with it, so a reconnecting
@@ -644,6 +909,9 @@ static void* worker(void* arg) {
 
 			pthread_mutex_lock(&nl.lock);
 			nl.fd = fd;
+			nl.my_udp_token = make_udp_token();
+			nl.peer_udp_token = 0;
+			nl.peer_udp_port = 0;
 			nl.peer_session_identity_ready = false;
 			nl.peer_options_ready = false;
 			nl.checkpoint_ack_ready = false;
@@ -669,12 +937,21 @@ static void* worker(void* arg) {
 			if (have_options) memcpy(options, nl.local_options, options_len);
 			pthread_mutex_unlock(&nl.lock);
 			if (have_options) send_command(CMD_SESSION_OPTIONS, options, options_len);
+			/* Advertise the UDP side over TCP: the peer sends inputs and
+			 * hashes there, stamped with our per-connection token. */
+			if (nl.udp_fd >= 0 && nl.udp_port) {
+				uint32_t wire[2] = { htonl(nl.udp_port), htonl(nl.my_udp_token) };
+				send_command(CMD_UDP_ENDPOINT, wire, sizeof(wire));
+			}
 			continue;
 		}
 
 		/* --- connected: wait for a frame, or wake to heartbeat --- */
-		struct pollfd pfd = { .fd = nl.fd, .events = POLLIN, .revents = 0 };
-		int pr = poll(&pfd, 1, POLL_WAIT_MS);
+		struct pollfd pfd[2] = {
+			{ .fd = nl.fd,     .events = POLLIN, .revents = 0 },
+			{ .fd = nl.udp_fd, .events = POLLIN, .revents = 0 },
+		};
+		int pr = poll(pfd, nl.udp_fd >= 0 ? 2 : 1, POLL_WAIT_MS);
 
 		if (pr < 0 && errno != EINTR) {
 			char why[64];
@@ -683,7 +960,7 @@ static void* worker(void* arg) {
 			continue;
 		}
 
-		if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+		if (pfd[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
 			drop_connection("socket error from poll");
 			continue;
 		}
@@ -739,7 +1016,12 @@ static void* worker(void* arg) {
 			}
 		}
 
-		if (pr <= 0 || !(pfd.revents & POLLIN)) continue;
+		/* UDP is drained even when TCP is backpressured below: inputs and
+		 * hashes are exactly the traffic that must not wait behind a
+		 * stalled reliable stream. */
+		if (pr > 0 && nl.udp_fd >= 0 && (pfd[1].revents & POLLIN)) drain_udp();
+
+		if (pr <= 0 || !(pfd[0].revents & POLLIN)) continue;
 
 		/* Backpressure instead of discarding. When the frontend stalls - a menu,
 		 * a sleep - nothing drains the queue, so stop taking data off the socket
@@ -797,15 +1079,46 @@ static void* worker(void* arg) {
 			}
 		}
 
+		/* Inputs normally arrive by UDP; TCP still carries them until
+		 * the peer's endpoint is known, and the store is shared. */
 		if (hdr.cmd == CMD_INPUT && size == 8) {
+			store_peer_input(ntohl(*(uint32_t*)buf),
+			                 ntohl(*(uint32_t*)(buf + 4)));
+		}
+
+		if (hdr.cmd == CMD_INPUT_REQUEST && size == 4) {
+			/* The peer lost every redundant copy of this frame. Resend
+			 * it over TCP, where one copy is enough - and the frames
+			 * after it too, up to a small window: loss that kills one
+			 * frame outright is usually a burst that killed its
+			 * neighbours, and recovering them one request per frame
+			 * would cost a round trip each. Inputs this old that we
+			 * no longer hold are simply not answered. */
 			uint32_t f = ntohl(*(uint32_t*)buf);
-			uint32_t b = ntohl(*(uint32_t*)(buf + 4));
 			pthread_mutex_lock(&nl.lock);
-			unsigned slot = f % INPUT_RING;
-			nl.inputs[slot].frame = f;
-			nl.inputs[slot].buttons = b;
-			nl.inputs[slot].valid = true;
+			bool sent = true, any = false;
+			for (uint32_t k = 0; k < 32 && sent; k++) {
+				unsigned slot = (f + k) % INPUT_RING;
+				if (!nl.tx_sent[slot].valid || nl.tx_sent[slot].frame != f + k)
+					break;
+				uint32_t payload[2] = { htonl(f + k), htonl(nl.tx_sent[slot].value) };
+				sent = nl.connected &&
+				       send_framed(CMD_INPUT, payload, sizeof(payload),
+				                   NetLink_localClientId());
+				any = any || sent;
+			}
 			pthread_mutex_unlock(&nl.lock);
+			if (any && sent) nl_log("resent input frame %u on request\n", f);
+			if (any && !sent && nl.connected) drop_connection("input resend failed");
+		}
+
+		if (hdr.cmd == CMD_UDP_ENDPOINT && size == 8) {
+			pthread_mutex_lock(&nl.lock);
+			nl.peer_udp_port = (uint16_t)ntohl(*(uint32_t*)buf);
+			nl.peer_udp_token = ntohl(*(uint32_t*)(buf + 4));
+			pthread_mutex_unlock(&nl.lock);
+			nl_log("peer UDP endpoint port=%u (input/hash off TCP)\n",
+			       (unsigned)ntohl(*(uint32_t*)buf));
 		}
 
 		if (hdr.cmd == CMD_STATE_NACK && size == 4) {
@@ -941,22 +1254,11 @@ static void* worker(void* arg) {
 			pthread_mutex_unlock(&nl.lock);
 		}
 
+		/* Hashes normally arrive by UDP; TCP still carries them until
+		 * the peer's endpoint is known, and the store is shared. */
 		if (hdr.cmd == CMD_HASH && size == 8) {
-			pthread_mutex_lock(&nl.lock);
-			uint32_t hf = ntohl(*(uint32_t*)buf);
-			uint32_t hv = ntohl(*(uint32_t*)(buf + 4));
-			/* Keep every checkpoint until the emulator thread consumes it.
-				 * A single slot let a newer hash overwrite a late older one. */
-				if (nl.peer_hash_count == HASH_RING) {
-					nl.peer_hash_head = (nl.peer_hash_head + 1) % HASH_RING;
-					nl.peer_hash_count--;
-					nl_log("state-hash queue full - dropped oldest checkpoint\n");
-				}
-				unsigned slot = (nl.peer_hash_head + nl.peer_hash_count) % HASH_RING;
-				nl.peer_hashes[slot].frame = hf;
-				nl.peer_hashes[slot].hash = hv;
-			nl.peer_hash_count++;
-			pthread_mutex_unlock(&nl.lock);
+			store_peer_hash(ntohl(*(uint32_t*)buf),
+			                ntohl(*(uint32_t*)(buf + 4)));
 		}
 
 		if (hdr.cmd == CMD_RESYNC_REQUEST && size == 4) {
@@ -1051,6 +1353,7 @@ static void* worker(void* arg) {
 bool NetLink_start(void) {
 	if (!nl.configured || nl.running) return false;
 
+	setup_udp();
 	nl.running = true;
 	if (pthread_create(&nl.thread, NULL, worker, NULL) != 0) {
 		nl_log("could not start worker thread\n");
@@ -1068,6 +1371,7 @@ void NetLink_stop(void) {
 
 	if (nl.listen_fd >= 0) { close(nl.listen_fd); nl.listen_fd = -1; }
 	if (nl.fd >= 0)        { close(nl.fd);        nl.fd = -1; }
+	if (nl.udp_fd >= 0)    { close(nl.udp_fd);    nl.udp_fd = -1; }
 	nl.connected = false;
 
 	if (nl.dropped) nl_log("%u packet(s) were dropped this session\n", nl.dropped);
@@ -1130,6 +1434,10 @@ uint32_t NetLink_connectionGeneration(void) {
 
 static void reset_timeline_locked(void) {
 	memset(nl.inputs, 0, sizeof(nl.inputs));
+	/* A new timeline must not re-send the old one's redundant entries. */
+	memset(nl.tx_inputs, 0, sizeof(nl.tx_inputs));
+	memset(nl.tx_hashes, 0, sizeof(nl.tx_hashes));
+	memset(nl.tx_sent, 0, sizeof(nl.tx_sent));
 	nl.peer_hash_head = nl.peer_hash_count = 0;
 	nl.checkpoint_ack_ready = false;
 }
@@ -1169,8 +1477,19 @@ static bool send_command(uint8_t cmd, const void* data, size_t len) {
 }
 
 bool NetLink_sendInput(uint32_t frame, uint32_t buttons) {
-	uint32_t payload[2] = { htonl(frame), htonl(buttons) };
-	return send_command(CMD_INPUT, payload, sizeof(payload));
+	return send_expiring(CMD_INPUT, frame, buttons);
+}
+
+/* Ask the peer to resend one input over TCP. Called when the frame is
+ * actually needed and has not arrived, so at most once per stalled
+ * frame in practice; the request itself is reliable, so once is
+ * enough. Retransmit turns a frame redundancy could not save from a
+ * 30 s timeout into a one-round-trip stall. */
+bool NetLink_requestInput(uint32_t frame) {
+	uint32_t wire = htonl(frame);
+	if (!send_command(CMD_INPUT_REQUEST, &wire, sizeof(wire))) return false;
+	nl_log("requested missing input frame %u\n", frame);
+	return true;
 }
 
 bool NetLink_getRemoteInput(uint32_t frame, uint32_t* buttons) {
@@ -1525,8 +1844,7 @@ ask_whole:;
 }
 
 bool NetLink_sendHash(uint32_t frame, uint32_t hash) {
-	uint32_t payload[2] = { htonl(frame), htonl(hash) };
-	return send_command(CMD_HASH, payload, sizeof(payload));
+	return send_expiring(CMD_HASH, frame, hash);
 }
 
 bool NetLink_sendSessionIdentity(const NetLinkSessionIdentity* identity) {
