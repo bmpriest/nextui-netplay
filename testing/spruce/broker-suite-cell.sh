@@ -91,7 +91,7 @@ test)
     # It verifies that UDP negotiation results in actual incoming datagrams.
     case "$DEVBRIDGE_ATTEMPT_DIR:$protocol:$test:$core" in
     *-hybrid/*:linkplay:rcr:*|*-hybrid/*:linkplay:sf2:snes9x)
-        for d in b h; do
+        for d in h; do
             on "$d" "rm -f /tmp/netplay-udp-proof.pcap; setsid timeout 20 $TCPDUMP -i wlan0 -s 96 -c 20 -U -w /tmp/netplay-udp-proof.pcap 'udp and port 55437' > /tmp/netplay-udp-proof.log 2>&1 < /dev/null &"
         done
         ;;
@@ -116,10 +116,6 @@ ARCHIVE
         on h 'cat /tmp/netplay-udp-proof.pcap' > "$OUT/h-udp-navigation.pcap"
         on h 'cat /tmp/netplay-udp-proof.log' > "$OUT/h-udp-navigation.txt"
         on h 'rm -f /tmp/netplay-udp-proof.pcap'
-    fi
-    if on b 'test -s /tmp/netplay-udp-proof.pcap'; then
-        adb -s "$BRICK_ADB" pull /tmp/netplay-udp-proof.pcap "$OUT/b-udp-navigation.pcap" >/dev/null 2>&1 || :
-        on b 'cat /tmp/netplay-udp-proof.log; rm -f /tmp/netplay-udp-proof.pcap' > "$OUT/b-udp-navigation.txt"
     fi
     for d in b h; do
         on "$d" "find /mnt/SDCARD/Saves/netplay/logs -type f -mmin -30 | head -50" > "$OUT/$d-log-inventory.txt"

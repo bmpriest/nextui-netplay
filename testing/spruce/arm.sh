@@ -19,6 +19,9 @@ case $proto in linkplay|retroarch|off) ;; *) sed -n '3,13p' "$0" >&2; exit 2 ;; 
 if [ "${NETWORK:-adhoc}" = house ]; then
     on h "setsid sh -c 'sh $HELPERS/ctl.sh end' > /tmp/house-end.log 2>&1 < /dev/null &" || exit 1
     on b "sh $HELPERS/ctl.sh end >/dev/null 2>&1"
+    # This rig's saved house profile is network 0. Session end can restore
+    # the prior ad hoc selection, even after a Wi-Fi session on the house LAN.
+    on b 'wpa_cli -i wlan0 select_network 0 >/dev/null; sleep 4; sh /mnt/SDCARD/App/Netplay/launcher/wifi-platform.sh spruce-renew >/dev/null'
     sleep 8
     tunnel_up >/dev/null || exit 1
     i=0
