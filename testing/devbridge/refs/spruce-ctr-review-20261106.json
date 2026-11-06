@@ -1,0 +1,20 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ctr-modes.png",
+    "source": "testing/results/broker-autonomous-20261106/ps-reference-prep/devbridge-20261106-010641/ctr-modes-host.png",
+    "sha256": "2ac95221dd434e05e6fffaa57c8ef28ba00d655accddb90fadac08c5833a2b9f",
+    "review": "Codex visually inspected actual spruce Brick mode list: Adventure, Time Trial, Arcade, VS., Battle, High Score. Adventure highlighted. Approved mode-list region."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ctr-modes-vs.png",
+    "source": "testing/results/devbridge/ctr-20261105-171449/ctr-modes-host.png",
+    "sha256": "4d78970b3a091c7ec3768c60e1f177768790e4c78c3297ae59adf6aa17e4a57d",
+    "review": "Codex visually reviewed prior actual spruce capture: VS. highlighted, fourth mode row. Approved existing test region."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ctr-characters.png",
+    "source": "testing/results/devbridge/ctr-20261105-171449/ctr-characters-host.png",
+    "sha256": "a9dd83005e4cb2458a05f75e1f0b51f7e9d76a169564f3a2534cc12b68c70cbd",
+    "review": "Codex visually reviewed prior actual spruce capture: SELECT CHARACTER with Crash P1 and Cortex P2. Approved existing test region."
+  }
+]

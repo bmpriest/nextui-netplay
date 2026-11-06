@@ -1,0 +1,14 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/sf2-select.png",
+    "source": "testing/results/devbridge/sf2-20261106-001413/sf2-select-host.png",
+    "sha256": "fb4c1a559d6e350981ff9a40d1cca274d29c9abc23e939fbc929a6288bb7d831",
+    "review": "Codex visually inspected actual spruce capture: PLAYER SELECT, two-player VS, Ryu versus Ken, both portraits and win/loss totals visible. Approved only for this picker, role and model."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/sf2-select.png",
+    "source": "testing/results/devbridge/sf2-20261106-001413/sf2-select-guest.png",
+    "sha256": "dc23b26cd0518a6c79c7736932a60e8744c67aaa2ceaa9b263132038ef7e7b36",
+    "review": "Codex visually inspected actual spruce capture: PLAYER SELECT, two-player VS, Ryu versus Ken, both portraits and win/loss totals visible. Approved only for this picker, role and model."
+  }
+]

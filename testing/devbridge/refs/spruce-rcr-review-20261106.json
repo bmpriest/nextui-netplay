@@ -1,0 +1,14 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/rcr-two-player.png",
+    "source": "testing/results/devbridge/rcr-20261106-002417/rcr-after-play-host.png",
+    "sha256": "92c404be62e6b10a103ba59dc5f2d55b6bf04eb4c811dc4af1a67e33fe435e62",
+    "review": "Codex visually inspected actual spruce after-play capture: Alex and Ryan HUD names, same game scene on both handhelds. Approve only HUD name regions; exclude changing HP and scenery."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/rcr-two-player.png",
+    "source": "testing/results/devbridge/rcr-20261106-002417/rcr-after-play-guest.png",
+    "sha256": "0ad1a72c8c3debba725681dbd6fe88afc6ddb37d00a70214c84bbd55bcbbd9a8",
+    "review": "Codex visually inspected actual spruce after-play capture: Alex and Ryan HUD names, same game scene on both handhelds. Approve only HUD name regions; exclude changing HP and scenery."
+  }
+]

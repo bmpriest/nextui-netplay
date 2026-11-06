@@ -23,8 +23,20 @@ log=$(ls -t $(find /mnt/SDCARD/.userdata/*/logs/netplay-games /mnt/SDCARD/Saves/
 echo "log: $log"
 
 # Correctness first: any of these means the consoles parted ways.
-bad=$(grep -iE 'disagree|diverg|desync|synchronization timed out|could not adopt' "$log" | head -3)
+bad=$(grep -iE 'disagree|diverg|desync|synchronization timed out|could not adopt|ra: frame .*crc [1-9][0-9]* bad of' "$log" | head -3)
 [ -z "$bad" ] || fail "$bad"
+bad=$(grep -iE 'continued this game solo|host disconnected|Peer disconnected|Peer unavailable|Core cannot save state|recovery failed' "$log" | head -3)
+[ -z "$bad" ] || fail "$bad"
+
+# RetroArch uses a different progress/identity contract from LinkPlay.
+# The PC interval judge checks timestamped coverage on both sides afterward.
+if grep -q '^protocol=retroarch$' /mnt/SDCARD/Saves/netplay/session 2>/dev/null; then
+    [ "$MODE" = shared ] || fail "UNSUPPORTED: RetroArch adapter cannot carry link-core NETPACKET"
+    grep -q 'RetroArch client plays port 2\|playing as RetroArch port 2' "$log" || fail "RetroArch peer never entered player slot 2"
+    grep -q 'ra: frame' "$log" || fail "NO_DATA: no RetroArch frame progress"
+    echo "PASS: RetroArch player identity and frame progress; PC checks interval coverage"
+    exit 0
+fi
 
 case $MODE in
 shared)

@@ -1,0 +1,1849 @@
+{
+  "devices": {
+    "host": {
+      "id": "spruce-brick",
+      "adb": "1c000c66050607724dd"
+    },
+    "guest": {
+      "id": "spruce-rg35xxh",
+      "address": "127.0.0.2",
+      "port": 2222
+    }
+  },
+  "devbridge_args": [
+    "--user",
+    "spruce"
+  ],
+  "cells": [
+    {
+      "id": "linkplay-fc",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ]
+    },
+    {
+      "id": "linkplay-sfc-snes9x",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ]
+    },
+    {
+      "id": "linkplay-md",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ]
+    },
+    {
+      "id": "linkplay-gb-paired",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ]
+    },
+    {
+      "id": "linkplay-gbc-paired",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ]
+    },
+    {
+      "id": "linkplay-gba-mgba",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ]
+    },
+    {
+      "id": "linkplay-ps",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ]
+    },
+    {
+      "id": "linkplay-nds-dsp-dsp",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "spruce-dsp-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-dsperate"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "spruce-dsp-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-dsperate"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "spruce-dsp-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-dsperate"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "spruce-dsp-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-dsperate"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "spruce-dsp-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-dsperate"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "spruce-dsp-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-dsperate"
+      ],
+      "requires_reference_review": true
+    },
+    {
+      "id": "linkplay-sfc-supafaust",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ]
+    },
+    {
+      "id": "linkplay-gba-gpsp",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ]
+    },
+    {
+      "id": "linkplay-nds-nds-nds",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "spruce-nds-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-drastic"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "spruce-nds-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-drastic"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "spruce-nds-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-drastic"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "spruce-nds-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-drastic"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "spruce-nds-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-drastic"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "spruce-nds-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-drastic"
+      ],
+      "requires_reference_review": true
+    },
+    {
+      "id": "linkplay-nds-nds-dsp",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "spruce-mixed-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-dsperate"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "spruce-mixed-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-dsperate"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "spruce-mixed-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-dsperate"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "spruce-mixed-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-dsperate"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "spruce-mixed-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-dsperate"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "spruce-mixed-mkds",
+        "NDS",
+        "mariokart.nds",
+        "drastic-dsperate"
+      ],
+      "requires_reference_review": true
+    },
+    {
+      "id": "linkplay-nds-dsp-nds",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "spruce-reverse-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-drastic"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "spruce-reverse-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-drastic"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "spruce-reverse-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-drastic"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "spruce-reverse-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-drastic"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "spruce-reverse-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-drastic"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "spruce-reverse-mkds",
+        "NDS",
+        "mariokart.nds",
+        "dsperate-drastic"
+      ],
+      "requires_reference_review": true
+    },
+    {
+      "id": "retroarch-fc",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "rcr",
+        "FC",
+        "River City Ransom (USA).zip",
+        "default"
+      ]
+    },
+    {
+      "id": "retroarch-sfc-snes9x",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "snes9x"
+      ]
+    },
+    {
+      "id": "retroarch-md",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "sor2",
+        "MD",
+        "Streets of Rage 2 (USA).zip",
+        "default"
+      ]
+    },
+    {
+      "id": "retroarch-gb-paired",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "tetris",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "default"
+      ],
+      "unsupported": "RetroArch adapter forces shared-screen mode and does not carry link-core NETPACKET traffic (shim/shim.c core_wants_link guard). Declared before launch."
+    },
+    {
+      "id": "retroarch-gbc-paired",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "mariodx",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "default"
+      ],
+      "unsupported": "RetroArch adapter forces shared-screen mode and does not carry link-core NETPACKET traffic (shim/shim.c core_wants_link guard). Declared before launch."
+    },
+    {
+      "id": "retroarch-gba-mgba",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "mkart",
+        "GBA",
+        "Mario Kart - Super Circuit (USA).zip",
+        "mgba"
+      ],
+      "unsupported": "RetroArch adapter forces shared-screen mode and does not carry link-core NETPACKET traffic (shim/shim.c core_wants_link guard). Declared before launch."
+    },
+    {
+      "id": "retroarch-ps",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "ctr",
+        "PS",
+        "CTR - Crash Team Racing (USA).chd",
+        "default"
+      ]
+    },
+    {
+      "id": "retroarch-sfc-supafaust",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "sf2",
+        "SFC",
+        "Street Fighter II (USA).zip",
+        "mednafen_supafaust"
+      ]
+    },
+    {
+      "id": "retroarch-gba-gpsp",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "performance_claims": false,
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "aw2",
+        "GBA",
+        "Advance Wars 2 - Black Hole Rising (USA).zip",
+        "gpsp"
+      ],
+      "unsupported": "RetroArch adapter forces shared-screen mode and does not carry link-core NETPACKET traffic (shim/shim.c core_wants_link guard). Declared before launch."
+    },
+    {
+      "id": "linkplay-gb-cable",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "performance_claims": false,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ]
+    },
+    {
+      "id": "linkplay-gbc-cable",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "performance_claims": false,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "linkplay",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "linkplay",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "linkplay",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "linkplay",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "linkplay",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "linkplay",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ]
+    },
+    {
+      "id": "retroarch-gb-cable",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "performance_claims": false,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "tetris-cable",
+        "GB",
+        "Tetris (World) (Rev 1).zip",
+        "cable"
+      ],
+      "unsupported": "RetroArch adapter does not carry link-core NETPACKET traffic; built-in Gambatte cable requires it. Declared before launch."
+    },
+    {
+      "id": "retroarch-gbc-cable",
+      "devices": [
+        "host",
+        "guest"
+      ],
+      "timeout_s": 900,
+      "performance_claims": false,
+      "telemetry_profile": "existing-device-logs-unvalidated",
+      "preflight": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "preflight",
+        "retroarch",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "setup": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "setup",
+        "retroarch",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "test": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "test",
+        "retroarch",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "collect": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "collect",
+        "retroarch",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "judge": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "judge",
+        "retroarch",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "teardown": [
+        "bash",
+        "../../testing/spruce/broker-suite-cell.sh",
+        "teardown",
+        "retroarch",
+        "mariodx-cable",
+        "GBC",
+        "Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip",
+        "cable"
+      ],
+      "unsupported": "RetroArch adapter does not carry link-core NETPACKET traffic; built-in Gambatte cable requires it. Declared before launch."
+    }
+  ]
+}

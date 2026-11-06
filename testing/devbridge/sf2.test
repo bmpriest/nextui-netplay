@@ -21,6 +21,8 @@ WAIT 12000
 host:TRM sh {helpers}/keys.sh start:0.3:2.5
 host:TRM sh {helpers}/keys.sh down:0.3:0.6 start:0.3:2.5
 all:SCREEN sf2-select
+host:VERIFY_WAIT {host_refs}/sf2-select.png 6000
+guest:VERIFY_WAIT {guest_refs}/sf2-select.png 6000
 
 # Player 1 moves right to E. Honda; both confirm with B at the same moment.
 host:TRM sh {helpers}/keys.sh --bg right:0.3:0.6 b:0.3:0

@@ -1,0 +1,119 @@
+# Mario Kart DS - DraStic (NDS.pak + Netplay's radio overlay) hosting, DSperate
+# (DSP.pak) joining, over the Netplay session.
+#
+# The two emulators share melonDS's LAN protocol, so a TrimUI with DraStic and
+# an H700 with DSperate race each other. The host needs Settings > Nintendo DS
+# (DraStic) on and its ROM at Roms/Nintendo DS (NDS)/mariokart.nds; the guest
+# needs DSP.pak and Roms/Nintendo DS (DSP)/mariokart.nds. Both need a Mario Kart
+# save made once by hand.
+#
+# DraStic is driven with BTN and second-long gaps: it misses keys.sh's short
+# holds, and Mario Kart drops the first D-pad press after its menu settles, so
+# a harmless RIGHT goes first and every A follows a VERIFY. The guest steps are
+# dsp-mkds.test's.
+
+all:WAIT_FOR devbridge 30000
+guest:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+host:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+all:WAIT_FOR game 30000
+
+WAIT 10000
+host:VERIFY_WAIT {host_refs}/ds-main-single.png 12000
+host:VERIFY_UNTIL {host_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
+host:TRM sh {helpers}/keys.sh a:0.25:0
+guest:VERIFY_WAIT {guest_refs}/ds-main-single.png 12000
+guest:VERIFY_UNTIL {guest_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
+guest:TRM sh {helpers}/keys.sh a:0.25:0
+WAIT 2000
+# Only confirm an observed YES button during first wireless-profile setup.
+host:IF_SCREEN {host_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+WAIT 1000
+host:IF_SCREEN {host_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+WAIT 1000
+host:IF_SCREEN {host_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+WAIT 1000
+host:IF_SCREEN {host_refs}/ds-main-single.png threshold=12 region=0.28,0.52,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0.8 a:0.25:0
+host:IF_SCREEN {host_refs}/ds-main-multiplayer.png threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh a:0.25:0
+host:VERIFY_WAIT {host_refs}/dsp-mk-groups.png 15000
+guest:IF_SCREEN {guest_refs}/ds-main-single.png threshold=12 region=0.28,0.52,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0.8 a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-main-multiplayer.png threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 15000
+
+# The host creates a Normal group.
+guest:BTN UP
+WAIT 1200
+guest:BTN A
+WAIT 2500
+guest:VERIFY_WAIT {guest_refs}/nds-mk-normal-host.png 6000
+guest:BTN A
+guest:VERIFY_WAIT {guest_refs}/nds-mk-seeking-host.png 10000
+
+# The guest's browser lists the room once a beacon arrives; then it joins.
+host:VERIFY_WAIT {host_refs}/dsp-mk-rooms-guest.png 20000
+host:TRM sh {helpers}/keys.sh a:0.2:0
+WAIT 6000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-lobby-host.png 10000
+host:VERIFY_WAIT {host_refs}/dsp-mk-lobby-guest.png 10000
+
+# The lobby has to hold.
+WAIT 15000
+guest:VERIFY {guest_refs}/nds-mk-lobby-host.png
+host:VERIFY {host_refs}/dsp-mk-lobby-guest.png
+
+# CUT OFF: the MP command/reply exchange starts. Mario Kart saves first.
+guest:BTN A
+WAIT 12000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-select-game.png 15000
+host:VERIFY_WAIT {host_refs}/dsp-mk-select-game.png 15000
+
+# VS; host Mario, guest Luigi; karts.
+guest:BTN A
+WAIT 4000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-character.png 8000
+host:VERIFY_WAIT {host_refs}/dsp-mk-character.png 8000
+host:TRM sh {helpers}/keys.sh right:0.2:0.6 a:0.2:3 a:0.2:0
+guest:BTN A
+WAIT 4000
+guest:BTN A
+WAIT 8000
+guest:VERIFY_WAIT {guest_refs}/nds-mk-settings-host.png 10000
+host:VERIFY_WAIT {host_refs}/dsp-mk-settings-guest.png 10000
+
+# Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK.
+guest:BTN DOWN
+WAIT 700
+guest:BTN DOWN
+WAIT 700
+guest:BTN DOWN
+WAIT 700
+guest:BTN DOWN
+WAIT 700
+guest:BTN DOWN
+WAIT 1200
+guest:BTN A
+WAIT 4000
+guest:BTN A
+WAIT 3000
+guest:BTN A
+WAIT 3000
+guest:BTN A
+WAIT 15000
+all:SCREEN nds-mk-race-start
+
+# A minute of racing, then both quit so each launcher archives its log:
+# DraStic through its own menu (MENU, UP, UP, A, held on the device by keys.sh
+# so no press is lost in the tunnel), DSperate through its pause menu (a MENU
+# tap, UP wraps to Quit, A).
+all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
+WAIT 30000
+all:SCREEN nds-mk-race-30s
+WAIT 32000
+all:SCREEN nds-mk-race-60s
+host:TRM sh {helpers}/keys.sh menu:0.12:0.8 up:0.12:0.4 a:0.12:0
+guest:TRM sh {helpers}/keys.sh menu:0.2:2 up:0.15:0.7 up:0.15:0.7 a:0.15:0
+all:WAIT_FOR devbridge 45000
+guest:TRM sh {helpers}/check.sh dsp mariokart 45
+host:TRM sh {helpers}/check.sh dsp mariokart 45

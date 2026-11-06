@@ -33,12 +33,29 @@ guest:WAIT_FOR game 30000
 # the start, the middle and the end of its timeout, so the timeouts stay short
 # (checks 2 s apart); a long one let both menus run into their demos.
 WAIT 9000
-host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 4000
-guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 4000
-all:TRM sh {helpers}/keys.sh --bg down:0.2:0.8 a:0.2:0
-WAIT 3500
-host:VERIFY_WAIT {host_refs}/dsp-mk-groups.png 6000
-guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 6000
+host:VERIFY_WAIT {host_refs}/ds-main-single.png 12000
+host:VERIFY_UNTIL {host_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
+host:TRM sh {helpers}/keys.sh a:0.25:0
+guest:VERIFY_WAIT {guest_refs}/ds-main-single.png 12000
+guest:VERIFY_UNTIL {guest_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
+guest:TRM sh {helpers}/keys.sh a:0.25:0
+WAIT 2000
+# Only confirm an observed YES button during first wireless-profile setup.
+host:IF_SCREEN {host_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+WAIT 1000
+host:IF_SCREEN {host_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+WAIT 1000
+host:IF_SCREEN {host_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-wireless-confirm.png threshold=12 region=0.29,0.83,0.18,0.10 :: sh {helpers}/keys.sh a:0.25:0
+WAIT 1000
+host:IF_SCREEN {host_refs}/ds-main-single.png threshold=12 region=0.28,0.52,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0.8 a:0.25:0
+host:IF_SCREEN {host_refs}/ds-main-multiplayer.png threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh a:0.25:0
+host:VERIFY_WAIT {host_refs}/dsp-mk-groups.png 15000
+guest:IF_SCREEN {guest_refs}/ds-main-single.png threshold=12 region=0.28,0.52,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0.8 a:0.25:0
+guest:IF_SCREEN {guest_refs}/ds-main-multiplayer.png threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh a:0.25:0
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 15000
 
 # The host creates a Normal group. Up from the first room wraps to CREATE GROUP.
 host:TRM sh {helpers}/keys.sh up:0.2:0.8 a:0.2:2

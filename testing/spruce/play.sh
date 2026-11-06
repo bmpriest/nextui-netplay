@@ -16,5 +16,8 @@
 [ $# -eq 2 ] || { sed -n '3,11p' "$0" >&2; exit 2; }
 test=$ROOT/testing/devbridge/${1%.test}.test
 [ -f "$test" ] || { echo "no $test" >&2; exit 2; }
-DEVBRIDGE=$DEVBRIDGE "$ROOT/testing/devbridge/run.sh" --play-only --keep-going --user spruce \
-	--port "$TUNNEL_PORT" "adb:$BRICK_ADB" "$TUNNEL_ADDR" "$test" 2>&1 | tee "$OUT/$2/play.log"
+DEVBRIDGE=$DEVBRIDGE "$ROOT/testing/devbridge/run.sh" --play-only --user spruce \
+	--port "$TUNNEL_PORT" "adb:$BRICK_ADB" "$TUNNEL_ADDR" "$test" > "$OUT/$2/play.log" 2>&1
+result=$?
+cat "$OUT/$2/play.log"
+exit "$result"

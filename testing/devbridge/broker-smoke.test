@@ -1,0 +1,3 @@
+# Control-channel smoke only: no game launch or performance measurement.
+all:ASSERT_STATE input=ready
+all:STATUS

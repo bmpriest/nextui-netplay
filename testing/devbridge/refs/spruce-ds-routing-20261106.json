@@ -1,0 +1,50 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ds-main-single.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-014734/verify-pass-dsp-mk-menu-host.png",
+    "layout": "vertical top-above-bottom",
+    "purpose": "named navigation condition; DS final pass still requires reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ds-main-multiplayer.png",
+    "source": "testing/devbridge/refs/h700/dsp-mk-menu.png",
+    "layout": "vertical top-above-bottom",
+    "purpose": "named navigation condition; DS final pass still requires reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ds-wireless-confirm.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-014734/verify-miss-dsp-mk-groups-guest.png",
+    "layout": "vertical top-above-bottom",
+    "purpose": "named navigation condition; DS final pass still requires reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/ds-main-single.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-014734/verify-pass-dsp-mk-menu-guest.png",
+    "layout": "vertical top-above-bottom",
+    "purpose": "named navigation condition; DS final pass still requires reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/ds-main-multiplayer.png",
+    "source": "testing/devbridge/refs/h700/dsp-mk-menu.png",
+    "layout": "vertical top-above-bottom",
+    "purpose": "named navigation condition; DS final pass still requires reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/ds-wireless-confirm.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-014734/verify-miss-dsp-mk-groups-guest.png",
+    "layout": "vertical top-above-bottom",
+    "purpose": "named navigation condition; DS final pass still requires reference review"
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/ds-main-multiplayer.png",
+    "source": "testing/results/devbridge/spruce-dsp-mkds-20261106-022753/verify-miss-ds-main-multiplayer-host.png",
+    "sha256": "db94bd70d77e11a695d56abcf54ef0f28f5e0c385b97690e648ac45b35350c17",
+    "review": "Codex visually confirmed MULTIPLAYER highlighted in actual spruce Brick common vertical view. Approved highlight region for this model."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/ds-main-multiplayer.png",
+    "source": "testing/devbridge/refs/spruce-tg5040/ds-main-multiplayer.png",
+    "status": "UNAPPROVED_NAVIGATION_HINT",
+    "purpose": "same game and explicit common vertical view; actual guest match frame retained for review; final DS pass blocked pending review"
+  }
+]

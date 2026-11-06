@@ -18,9 +18,11 @@ DIR=$OUT/$1
 [ -f "$DIR/run.env" ] || { echo "no run $DIR (pure-ra.sh or launch.sh starts one)" >&2; exit 1; }
 
 LOGS='find /mnt/SDCARD/Saves/netplay/logs/netplay-games -name "*.log" -newer /tmp/racap/started 2>/dev/null | xargs -r ls -t | head -1'
-on h 'kill $(pidof tcpdump) 2>/dev/null; sleep 1; cat /tmp/racap/cap.pcap' > "$DIR/h700.pcap"
-on b 'kill $(pidof tcpdump) 2>/dev/null; sleep 1' >/dev/null
-adb -s "$BRICK_ADB" pull /tmp/racap/cap.pcap "$DIR/brick.pcap" >/dev/null
+if [ "${CAPTURE_MODE:-pcap}" != logs ]; then
+	on h 'kill $(pidof tcpdump) 2>/dev/null; sleep 1; cat /tmp/racap/cap.pcap' > "$DIR/h700.pcap"
+	on b 'kill $(pidof tcpdump) 2>/dev/null; sleep 1' >/dev/null
+	adb -s "$BRICK_ADB" pull /tmp/racap/cap.pcap "$DIR/brick.pcap" >/dev/null
+fi
 # The launcher archives the game log once the game has quit.
 on h "sh $HELPERS/quit.sh retroarch >/dev/null 2>&1; sleep 2; f=\$($LOGS); [ -n \"\$f\" ] && cat \"\$f\"" > "$DIR/h700.log"
 on b "sh $HELPERS/quit.sh retroarch >/dev/null 2>&1; sleep 2; f=\$($LOGS); [ -n \"\$f\" ] && cat \"\$f\"" > "$DIR/brick.log"

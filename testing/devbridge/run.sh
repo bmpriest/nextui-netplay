@@ -147,8 +147,10 @@ auth="--identity $identity"
 host_platform=$(platform_of "$host")
 guest_platform=$(platform_of "$guest")
 echo "host $host ($host_platform), guest $guest ($guest_platform)"
-push_helpers "$host"
-push_helpers "$guest"
+if [ "${DEVBRIDGE_HELPERS_READY:-0}" != 1 ]; then
+	push_helpers "$host"
+	push_helpers "$guest"
+fi
 mkdir -p "$OUT" "$HERE/refs/$host_platform" "$HERE/refs/$guest_platform"
 
 status=0
@@ -178,6 +180,9 @@ for test in "$@"; do
 			cat
 		fi
 	} > "$script"
+	if [ -n "${DEVBRIDGE_ATTEMPT_DIR:-}" ]; then
+		cp "$script" "$DEVBRIDGE_ATTEMPT_DIR/rendered-$name.test"
+	fi
 
 	# check.sh only trusts logs newer than this. The host's confirmed checkpoint
 	# outlives a clean exit (a relaunched host resumes from it), so without

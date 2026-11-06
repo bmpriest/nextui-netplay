@@ -1,0 +1,14 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-tg5040/mariodx-vs-race.png",
+    "source": "testing/results/devbridge/mariodx-20261106-011050/mariodx-race-host.png",
+    "sha256": "aa19e3215ecc409e4ce63743b4a5b0fe308f6479f3e5d44e7f1fe596d4750211",
+    "review": "Codex visually reviewed actual VS race: cloud player 1 marker. Only player-marker region approved; gameplay and timer excluded."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/mariodx-vs-race.png",
+    "source": "testing/results/devbridge/mariodx-20261106-011050/mariodx-race-guest.png",
+    "sha256": "6d36b25481ca9553927eb485bc56134f3a8979c40f68c9c368631ef7205744a3",
+    "review": "Codex visually reviewed actual VS race: cloud player 2 marker. Only player-marker region approved; gameplay and timer excluded."
+  }
+]
