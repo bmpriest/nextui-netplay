@@ -16,6 +16,24 @@
 
 proto=${1:-}
 case $proto in linkplay|retroarch|off) ;; *) sed -n '3,13p' "$0" >&2; exit 2 ;; esac
+if [ "${NETWORK:-adhoc}" = house ]; then
+    on h "setsid sh -c 'sh $HELPERS/ctl.sh end' > /tmp/house-end.log 2>&1 < /dev/null &" || exit 1
+    on b "sh $HELPERS/ctl.sh end >/dev/null 2>&1"
+    sleep 8
+    tunnel_up >/dev/null || exit 1
+    i=0
+    until ON_TIMEOUT=20 on h 'ip -4 addr show wlan0 | grep -q "inet 192\.168\.0\."'; do
+        i=$((i+1)); [ "$i" -lt 12 ] || exit 1; sleep 5
+    done
+    brick=$(dev_ip b)
+    case $brick in 192.168.0.*) ;; *) echo "host not on house WiFi: $brick"; exit 1 ;; esac
+    on b 'echo 1 > /sys/kernel/debug/ieee80211/phy0/xradio/ps_disable'
+    [ "$proto" = off ] || {
+        on b "sh $HELPERS/ctl.sh host wifi --protocol $proto" | tail -1
+        on h "sh $HELPERS/ctl.sh join $brick --protocol $proto" | tail -1
+    }
+    exit 0
+fi
 ssid=$(ap_ssid) psk=$(ap_psk)
 [ -n "$ssid" ] || { echo "no ad hoc network: adhoc.sh up first" >&2; exit 1; }
 

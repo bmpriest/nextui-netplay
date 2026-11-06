@@ -283,3 +283,17 @@ both devices' measurements, log coverage, and sources. FPS is estimated from
 logged pacing bins; missing measurements remain `NO_DATA`. Counter deltas
 exclude RetroArch's initial state transfer. These observed measurements do
 not establish that the instrumentation overhead gate has passed.
+
+For the TCP/hybrid experiment, `transport-rig.sh deploy` preserves the installed
+shim and launcher under `/tmp/netplay-transport-original` and deploys the build
+from `TRANSPORT_WORKTREE` (default: the sibling `.worktrees/netplay-net-traffic`).
+`tcp` sets `NETLINK_TEST_NO_UDP=1`; `hybrid` clears it. The RetroArch hook must
+be rebound after changing the launcher inode. `restore` reinstalls the saved
+files and refreshes the hook. Run this helper only with both games stopped.
+
+`transport-report.py RUN_ROOT` combines `adhoc-tcp`, `adhoc-hybrid`, `house-tcp`,
+and `house-hybrid` broker directories into a side-by-side Markdown report and
+CSV. It preserves all planned cells and shows transport negotiation evidence.
+RetroArch's independent transport is an unchanged control. The input recipes
+are shared, but random gameplay draws differ; this is a physical-network
+comparison, not a claim of statistically established loss resilience.

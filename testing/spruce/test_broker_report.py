@@ -2,12 +2,34 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import json
+import tempfile
 
 spec=importlib.util.spec_from_file_location('report',Path(__file__).with_name('broker-report.py'))
 r=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 
 class ReportTests(unittest.TestCase):
+    def test_transport_report_accepts_incomplete_or_failed_suites(self):
+        spec=importlib.util.spec_from_file_location('transport_report',Path(__file__).with_name('transport-report.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); (root/'adhoc-tcp').mkdir()
+            (root/'adhoc-tcp/results.json').write_text(json.dumps([{'cell':'linkplay-fc','verdict':'INFRA_FAIL','reason':'navigation failed'}]))
+            module.main(root)
+            self.assertIn('navigation failed',(root/'report.md').read_text())
+            self.assertTrue((root/'comparison.csv').exists())
+
+    def test_failed_postplay_recovers_window_with_numeric_error_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            attempt=Path(directory); (attempt/'gameplay').mkdir()
+            events=[{'event':'command','line':'host:TRM sh gameplay.sh --bg 60','time':'2026-11-06T00:00:00+00:00'},
+                    {'event':'command','line':'guest:TRM sh gameplay.sh --bg 60','time':'2026-11-06T00:00:01+00:00'},
+                    {'event':'error','line':56,'time':'2026-11-06T00:01:05+00:00'}]
+            (attempt/'gameplay/events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+            window=r.measurement_window(attempt)
+            self.assertEqual(window['end']-window['start'],59)
+
     def test_weighted_average_and_rolling_minimum(self):
         value=r.rates([(0,10,600),(10,30,600)],0,30)
         self.assertAlmostEqual(value['avg_fps'],40)
@@ -38,6 +60,19 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(value['state_resends'],2)
         self.assertAlmostEqual(value['avg_fps'],60)
         self.assertAlmostEqual(value['longest_freeze_ms'],50)
+
+    def test_udp_hash_duplicates_are_one_logical_check(self):
+        end=r.datetime(2026,11,6,0,0,10).timestamp()
+        line='[00:00:10.000] [netplay-shim] in sync at frame 600'
+        value=r.device_metrics('\n'.join([line]*3),'linkplay',end-10,end)
+        self.assertEqual(value['checks_total'],1)
+        self.assertEqual(value['raw_check_messages'],3)
+
+    def test_paired_desync_counts_as_failed_check(self):
+        end=r.datetime(2026,11,6,0,0,10).timestamp()
+        value=r.device_metrics('[00:00:10.000] [netplay-shim] PAIRED DESYNC at frame 600', 'linkplay',end-10,end)
+        self.assertEqual(value['checks_failed'],1)
+        self.assertEqual(value['checks_total'],1)
 
     def test_link_pacing_without_stall_or_crc_is_unknown(self):
         end=r.datetime(2026,11,6,0,0,10).timestamp()
