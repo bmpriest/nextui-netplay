@@ -478,7 +478,7 @@ static const struct {
 //////////////////////////////////////////////////////////////////////////////
 
 /* CK_GBA: spruce's GBA row, gpSP's link plus paired mGBA for games set to mgba. */
-typedef enum { CK_SHIM, CK_GAMBATTE, CK_GBA, CK_DSP, CK_MGBA, CK_NDS } CoreKind;
+typedef enum { CK_SHIM, CK_GAMBATTE, CK_GBA, CK_DSP, CK_MGBA, CK_NDS, CK_SPRUCE_DS } CoreKind;
 
 typedef struct {
 	const char* tag;        /* the pak, and the key into pak_hints.json */
@@ -509,6 +509,10 @@ static const CoreDef EXTRA_CORES[] = {
 #endif
 	{ "FDS",    NULL, NULL, "fceumm",             CK_SHIM },
 	{ "GG",     NULL, NULL, "picodrive",          CK_SHIM },
+#ifdef NETPLAY_SPRUCE
+	{ "NDS",    NULL, "NDS (DraStic)", "drastic", CK_SPRUCE_DS },
+	{ "DSP",    NULL, "NDS (DSperate)", "dsperate", CK_SPRUCE_DS },
+#endif
 #ifndef NETPLAY_SPRUCE
 	{ "MGBA",   NULL, NULL, "mgba",               CK_MGBA },
 	{ "NDS",    NULL, NULL, "drastic",            CK_NDS },
@@ -584,6 +588,23 @@ static void refresh_core(const CoreDef* d, CoreState* st) {
 	memset(st, 0, sizeof(*st));
 	snprintf(st->core, sizeof(st->core), "%s", d->core);
 	switch (d->kind) {
+#ifdef NETPLAY_SPRUCE
+	case CK_SPRUCE_DS: {
+		char path[256];
+		const char* binary = !strcmp(d->core, "drastic") ? "drastic64" : "dsperate";
+		snprintf(path, sizeof(path), "/mnt/SDCARD/Emu/NDS/%s", binary);
+		bool present = access(path, X_OK) == 0;
+		bool radio = true;
+		if (!strcmp(d->core, "drastic")) {
+			snprintf(path, sizeof(path), "/mnt/SDCARD/App/Netplay/bin/%s/libdrastic_wifi.so", PLATFORM);
+			radio = access(path, R_OK) == 0;
+		}
+		st->mark = present && radio ? MARK_CHECK : present ? MARK_CIRCLE : MARK_DASH;
+		st->dim = !present;
+		st->state = present && radio ? "ready" : present ? "present" : "absent";
+		break;
+	}
+#endif
 	case CK_SHIM:
 	case CK_GAMBATTE:
 	case CK_GBA: {

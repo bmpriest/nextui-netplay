@@ -2507,6 +2507,10 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 		snprintf(err, errlen, "could not hook RetroArch");
 		return false;
 	}
+	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/nds-hook.sh' up 1>&2", ns_pak);
+	if (system(cmd) != 0) {
+		ns_log("spruce DS wrapper unavailable; RetroArch remains armed\n");
+	}
 #else
 	/* Bind mounts first, launch stubs only if that fails.
 	 *
@@ -2567,6 +2571,8 @@ void NS_disarm(void) {
 	NS_compatServeStop();
 #ifdef NETPLAY_SPRUCE
 	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/ra-hook.sh' down >/dev/null 2>&1", ns_pak);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "sh '%s/launcher/nds-hook.sh' down >/dev/null 2>&1", ns_pak);
 #else
 	/* Takes both routes down - mounts, the boot hook, and any legacy stubs -
 	 * so "off" means off regardless of how this device was covered. */

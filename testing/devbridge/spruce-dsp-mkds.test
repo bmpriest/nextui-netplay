@@ -1,0 +1,103 @@
+# Mario Kart DS - DSperate (DSP.pak) local wireless over the Netplay session.
+#
+# Each device runs its own DS; DSperate carries the DS radio over the LAN in
+# melonDS's protocol, host as --lan-host, guest as --lan-join <host>. Both
+# devices need DSP.pak, the ROM at the path below, and a Mario Kart save made
+# once by hand (the first boot asks for a nickname and emblem).
+#
+# MULTIPLAYER -> host CREATE GROUP (Normal) -> guest joins the room -> lobby
+# shows 2/8 on both and holds -> host CUT OFF -> VS -> characters -> karts ->
+# settings -> Figure-8 Circuit -> a minute of racing -> both logs checked.
+# Run over Netplay's ad hoc network: through an access point the MP round
+# trips leave the race at a third of full speed.
+#
+# Run with run.sh (host first). References are per platform and role:
+# refs/tg5040 has both roles and refs/h700 the guest's, so a Brick can host a
+# Brick or an RG35XXH (recorded 2026-10-25 and 2026-10-23).
+
+all:WAIT_FOR devbridge 30000
+# Host first, the guest once the host's DSperate is up. DSP.pak's launcher
+# can take seconds longer on one device than the other (11 s against 0.3 s
+# on a Brick whose card is mounted sync), and launched together the faster
+# one reached its attract demo before the slower one showed its menu.
+host:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+host:WAIT_FOR game 30000
+guest:OPEN_GAME NDS "Nintendo DS (NDS)/mariokart.nds"
+guest:WAIT_FOR game 30000
+
+# With a save present the main menu slides in about 11 s after launch and the
+# attract demo replaces it about 8 s later. An A pressed during the slide-in
+# lands on SINGLE PLAYER. The guest's game starts 1-2 s after the host's, so
+# its menu follows the host's by about that much: check the host's, then the
+# guest's, then take MULTIPLAYER on both at once. VERIFY_WAIT only looks at
+# the start, the middle and the end of its timeout, so the timeouts stay short
+# (checks 2 s apart); a long one let both menus run into their demos.
+WAIT 9000
+host:VERIFY_WAIT {host_refs}/dsp-mk-menu.png 4000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-menu.png 4000
+all:TRM sh {helpers}/keys.sh --bg down:0.2:0.8 a:0.2:0
+WAIT 3500
+host:VERIFY_WAIT {host_refs}/dsp-mk-groups.png 6000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-groups.png 6000
+
+# The host creates a Normal group. Up from the first room wraps to CREATE GROUP.
+host:TRM sh {helpers}/keys.sh up:0.2:0.8 a:0.2:2
+host:VERIFY_WAIT {host_refs}/dsp-mk-normal-host.png 6000
+host:TRM sh {helpers}/keys.sh a:0.2:2
+host:VERIFY_WAIT {host_refs}/dsp-mk-seeking-host.png 10000
+
+# The guest's browser lists the host's room once its beacon arrives over the
+# LAN. Pressing A before that would create a rival group instead.
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-rooms-guest.png 20000
+guest:TRM sh {helpers}/keys.sh a:0.2:0
+WAIT 6000
+host:VERIFY_WAIT {host_refs}/dsp-mk-lobby-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-lobby-guest.png 10000
+
+# The lobby has to hold: a dropped guest falls back to 1/8.
+WAIT 15000
+host:VERIFY {host_refs}/dsp-mk-lobby-host.png
+guest:VERIFY {guest_refs}/dsp-mk-lobby-guest.png
+
+# CUT OFF starts the MP command/reply exchange, the step that once ended in
+# "Communication error" on the guest. Both consoles reach SELECT GAME together.
+host:TRM sh {helpers}/keys.sh a:0.2:0
+WAIT 8000
+host:VERIFY_WAIT {host_refs}/dsp-mk-select-game.png 15000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-select-game.png 15000
+
+# VS, then host Mario, guest Luigi.
+host:TRM sh {helpers}/keys.sh a:0.2:0
+WAIT 3000
+host:VERIFY_WAIT {host_refs}/dsp-mk-character.png 8000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-character.png 8000
+guest:TRM sh {helpers}/keys.sh right:0.2:0.6
+all:TRM sh {helpers}/keys.sh --bg a:0.2:0
+WAIT 3000
+host:VERIFY_WAIT {host_refs}/dsp-mk-kart-host.png 8000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-kart-guest.png 8000
+
+# Karts confirmed: GAME SETTINGS, which only the host can change.
+all:TRM sh {helpers}/keys.sh --bg a:0.2:0
+WAIT 6000
+host:VERIFY_WAIT {host_refs}/dsp-mk-settings-host.png 10000
+guest:VERIFY_WAIT {guest_refs}/dsp-mk-settings-guest.png 10000
+
+# Down to OK, then Mushroom Cup -> Figure-8 Circuit -> OK. The guest follows.
+host:TRM sh {helpers}/keys.sh down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.6 down:0.2:0.8 a:0.2:4 a:0.2:3 a:0.2:3 a:0.2:0
+WAIT 15000
+all:SCREEN dsp-mk-race-start
+
+# A minute of racing on both, then both quit (a MENU tap opens the pause menu,
+# UP wraps to Quit) so DSP.pak archives the
+# verbose log, which check.sh reads: both radios in the session, and the
+# session's average speed across menus and race.
+all:TRM sh {helpers}/gameplay.sh --bg 60 a a a a+left a+right a+left a+right a+up
+WAIT 30000
+all:SCREEN dsp-mk-race-30s
+WAIT 32000
+all:SCREEN dsp-mk-race-60s
+all:TRM sh {helpers}/keys.sh menu:0.12:0.8 up:0.12:0.4 a:0.12:0
+all:WAIT_FOR devbridge 30000
+host:TRM sh {helpers}/check.sh dsp mariokart 50
+guest:TRM sh {helpers}/check.sh dsp mariokart 50

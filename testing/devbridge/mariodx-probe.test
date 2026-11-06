@@ -1,0 +1,20 @@
+# Trace Super Mario Bros. Deluxe's VS selection on spruce without long pauses.
+all:WAIT_FOR devbridge 30000
+host:OPEN_GAME GBC "Game Boy Color (GBC)/Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip"
+WAIT 3000
+guest:OPEN_GAME GBC "Game Boy Color (GBC)/Super Mario Bros. Deluxe (USA, Europe) (Rev 2).zip"
+all:WAIT_FOR game 30000
+WAIT 12000
+all:SCREEN gbc-title
+all:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 1200
+all:SCREEN gbc-menu
+all:TRM sh {helpers}/keys.sh --bg down:0.25:0
+WAIT 1000
+all:SCREEN gbc-down1
+all:TRM sh {helpers}/keys.sh --bg down:0.25:0
+WAIT 1000
+all:SCREEN gbc-down2
+all:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 2500
+all:SCREEN gbc-selected

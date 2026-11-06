@@ -59,11 +59,13 @@ BaseOS), ours joins its list.
 
 ## Gaps
 
-1. **DS local wireless.** Not offered: DSP.pak and NDS.pak are NextUI paks.
-   spruce ships DraStic (drastic32/64) and DSperate in Emu/NDS and launches them
-   itself, not through RetroArch, so neither the RetroArch hook nor the MinArch
-   shadow reaches them. Needs a hook for spruce's NDS launch, then the DraStic
-   radio and/or Netplay's DSperate against spruce's binaries.
+1. **DS local wireless gameplay validation.** Netplay now mounts launch wrappers
+   over spruce's AArch64 DraStic and DSperate in `Emu/NDS` for armed sessions.
+   DraStic gets the radio hook; DSperate gets its LAN launch flags. The wrappers
+   preserve spruce's existing emulator setup and pass through when no session
+   is armed. Mount and restore were checked on the Brick and RG35XXH; a live
+   two-device DS game session remains to be checked. DraStic-Steward (`drastic32`)
+   is not covered by the AArch64 radio hook.
 2. **Power save default.** spruce leaves WiFi power save on, and Bricks then
    lose their AP for minutes at a time (seen on a NextUI Brick too). Netplay's
    "Disable Wi-Fi Power Saving" stays off by default; turn it on for sessions on

@@ -387,6 +387,9 @@ nds-wifi-hooks:
 DRASTIC_RADIO := cores/drastic-wifi/build-brick/libdrastic_wifi.so
 TG5040_TOOLCHAIN := ghcr.io/loveretro/tg5040-toolchain@sha256:f131c6af64029a8723d0ce8d3c2682642f5f091b04714f6beedda9bec18477ab
 
+$(DRASTIC_RADIO):
+	@$(MAKE) --no-print-directory drastic-radio
+
 drastic-radio:
 	@docker run --rm -u $$(id -u):$$(id -g) -v "$(CURDIR):/src" -w /src/cores/drastic-wifi \
 		$(TG5040_TOOLCHAIN) make -s BUILD=build-brick \
@@ -632,6 +635,7 @@ app-spruce:
 	@ls -la bin/spruce/*/netplay*.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
 dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores check-udhcpd \
+             $(DRASTIC_RADIO) \
              $(NEXTUI_SYSTEM)/res/assets@2x.png
 	@rm -rf "$(SPRUCE_STAGE)" "$(SPRUCE_ARCHIVE)"
 	@D="$(SPRUCE_STAGE)/App/Netplay"; mkdir -p "$$D/nextui/.system" "$$D/backup" && \
@@ -651,6 +655,7 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		cp app/spruce/governor.sh "$$D/nextui/.system/$$p/bin/" && \
 		cp bin/$$p/netplay_shim.so bin/spruce/$$p/netplay.elf bin/spruce/$$p/netplay-broker.elf \
 		   bin/spruce/$$p/netplay-wifips.elf "$$D/bin/$$p/" && \
+		cp "$(DRASTIC_RADIO)" "$$D/bin/$$p/libdrastic_wifi.so" && \
 		eval libs=\$$libs_$$p; \
 		for l in $$libs; do cp -L "$(NEXTUI_SYSTEM)/$$p/lib/$$l" "$$D/bin/$$p/" || exit 1; done && \
 		cp dist/cores/$$p/gambatte_libretro.so dist/cores/$$p/gpsp_libretro.so \

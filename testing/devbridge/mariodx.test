@@ -16,20 +16,25 @@ guest:OPEN_GAME GBC "Game Boy Color (GBC)/Super Mario Bros. Deluxe (USA, Europe)
 all:WAIT_FOR game 30000
 WAIT 15000
 
-# Each device on its own console, pressed together: A past the title, A past
-# the file screen, then DOWN DOWN A to VS.
-host:TRM sh {helpers}/keys.sh --bg a:0.3:2.5
-guest:TRM sh {helpers}/keys.sh --bg a:0.3:2.5
-WAIT 3500
+# Each device on its own console: A past the title, then DOWN twice from
+# ORIGINAL 1985 through CHALLENGE to VS GAME. Let the animated menu settle
+# between presses; a combined keys.sh command lost the second Down.
+all:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 1200
 all:SCREEN mariodx-1
-host:TRM sh {helpers}/keys.sh --bg a:0.35:3
-guest:TRM sh {helpers}/keys.sh --bg a:0.35:3
-WAIT 4000
+all:TRM sh {helpers}/keys.sh --bg down:0.25:0
+WAIT 1500
+all:TRM sh {helpers}/keys.sh --bg down:0.25:0
+WAIT 1500
 all:SCREEN mariodx-2
-host:TRM sh {helpers}/keys.sh --bg down:0.25:0.7 down:0.25:0.7 a:0.35:0
-guest:TRM sh {helpers}/keys.sh --bg down:0.25:0.7 down:0.25:0.7 a:0.35:0
-WAIT 6000
+all:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 2500
 all:SCREEN mariodx-vs
+
+# The host chooses the highlighted 1-1 stage; both consoles enter the race.
+host:TRM sh {helpers}/keys.sh a:0.25:0
+WAIT 3000
+all:SCREEN mariodx-race
 
 host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
 guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
