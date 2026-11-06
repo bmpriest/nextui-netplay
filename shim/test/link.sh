@@ -338,6 +338,84 @@ else
 	echo "  ok   no divergence reported"
 fi
 
+# R1 hybrid transport: inputs and hashes move to UDP, the rest stays on TCP.
+expect "$OUT/h7.log" "peer UDP endpoint" "host: peer advertised its UDP endpoint"
+expect "$OUT/c7.log" "peer UDP endpoint" "client: peer advertised its UDP endpoint"
+
+echo
+echo "== UDP input redundancy covers dropped datagrams"
+# Drop the client's first two UDP datagrams. The third carries frames
+# N, N-1, N-2, so the host must still receive every input with no retransmit
+# and no stall long enough to fail the session.
+PORT50=$((PORT + 21))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT50" > "$OUT/h50.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT50" > "$OUT/c50.session"
+
+HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h50.session" \
+	"$OUT/harness" "$SHIM" 400 10 > "$OUT/h50.log" 2>&1 &
+H50=$!
+sleep 0.5
+NETLINK_TEST_DROP_FIRST_UDP=2 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c50.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/c50.log" 2>&1 &
+C50=$!
+wait $H50 2>/dev/null || true
+wait $C50 2>/dev/null || true
+
+expect "$OUT/c50.log" "test hook: dropping a UDP input/hash datagram" "client dropped UDP datagrams on purpose"
+expect "$OUT/h50.log" "peer UDP endpoint" "host: client advertised its UDP endpoint"
+for side in h50 c50; do
+	if grep -q "core:ports p0=17 p1=34" "$OUT/$side.log"; then
+		echo "  ok   $side sees p0=host p1=client despite the drops"
+	else
+		echo "  MISS $side port mapping wrong after dropped UDP datagrams"
+		fail=1
+	fi
+done
+if grep -q "DESYNC" "$OUT/h50.log" "$OUT/c50.log"; then
+	grep -h "DESYNC" "$OUT/h50.log" "$OUT/c50.log" | sed 's/^/  WARN /'
+	fail=1
+else
+	echo "  ok   no divergence after dropped UDP datagrams"
+fi
+
+echo
+echo "== losing every copy of one input is recovered by retransmit request"
+# Drop the client's first three UDP datagrams. Frame N rides in datagrams
+# N, N+1, N+2 and in no others, so one frame is lost outright - redundancy
+# cannot cover it. The host must ask for it again (CMD_INPUT_REQUEST) and
+# the client must resend it from the inputs it still holds.
+PORT51=$((PORT + 22))
+printf 'role=host\nport=%s\nmode=netplay\n'                    "$PORT51" > "$OUT/h51.session"
+printf 'role=client\nport=%s\npeer=127.0.0.1\nmode=netplay\n' "$PORT51" > "$OUT/c51.session"
+
+HARNESS_BUTTONS=17 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" NETPLAY_SESSION="$OUT/h51.session" \
+	"$OUT/harness" "$SHIM" 400 10 > "$OUT/h51.log" 2>&1 &
+H51=$!
+sleep 0.5
+NETLINK_TEST_DROP_FIRST_UDP=3 HARNESS_BUTTONS=34 NETPLAY_REAL_CORE="$OUT/fake_libretro.so" \
+	NETPLAY_SESSION="$OUT/c51.session" "$OUT/harness" "$SHIM" 400 10 > "$OUT/c51.log" 2>&1 &
+C51=$!
+wait $H51 2>/dev/null || true
+wait $C51 2>/dev/null || true
+
+expect "$OUT/h51.log" "requested missing input frame" "host asked for the lost frame again"
+expect "$OUT/c51.log" "resent input frame .* on request" "client resent the lost frame"
+for side in h51 c51; do
+	if grep -q "core:ports p0=17 p1=34" "$OUT/$side.log"; then
+		echo "  ok   $side sees p0=host p1=client after the retransmit"
+	else
+		echo "  MISS $side port mapping wrong after the retransmit"
+		fail=1
+	fi
+done
+expect "$OUT/h51.log" "session totals: [3-9][0-9][0-9] frames" "host ran most of the session after recovering"
+if grep -q "DESYNC" "$OUT/h51.log" "$OUT/c51.log"; then
+	grep -h "DESYNC" "$OUT/h51.log" "$OUT/c51.log" | sed 's/^/  WARN /'
+	fail=1
+else
+	echo "  ok   no divergence after the retransmit"
+fi
+
 echo
 echo "== a desync is recovered from the host's authoritative state"
 PORT11=$((PORT + 10))

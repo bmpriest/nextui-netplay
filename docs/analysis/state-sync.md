@@ -317,26 +317,43 @@ with a hole in it. UDP has no equivalent. For `CMD_INPUT` a hole is harmless
 (frame-indexed, redundant); for `CMD_DATA` it is a corrupted serial stream that
 gambatte and gpSP cannot recover from.
 
-### If it is ever done
+### As done (protocol 17, R1)
 
 Not "UDP instead of TCP" but **UDP for messages whose value expires, TCP for
 messages that must arrive**: `CMD_INPUT` and `CMD_HASH` on a second socket,
 everything else unchanged. That splits along the mode boundary too - link-cable
-play would keep the current transport untouched, which is worth something given
-it has been the trouble-free half throughout.
+play keeps `CMD_DATA` on TCP untouched, which is worth something given it has
+been the trouble-free half throughout.
 
-### Why not yet
+Each UDP datagram carries the newest three `{frame, value}` entries, so a
+single loss is covered by the next datagram with no retransmit. The endpoints
+and a per-connection token are exchanged over TCP (`CMD_UDP_ENDPOINT`); a
+datagram is accepted only from the TCP peer's address and advertised port and
+only with that token, so a stale datagram from a dead connection cannot
+collide with its replacement. Until the endpoint arrives - or if UDP cannot
+be bound - inputs and hashes fall back to TCP, so priming traffic is never
+held up. TCP flow control remains the backpressure for the reliable half.
 
-Measured loss is **0%** and stalled frames are **0%** at `input_delay=3`. There
-is nothing for UDP to route around. Transport RTT is 4.3 ms of a 49.9 ms budget -
-about 9% - so eliminating it entirely would save ~4 ms of 50. The stalls that do
-appear are peer-slowness, not loss: a 22-frame stall cannot come from a 1.3-frame
-RTT, and UDP does nothing for it.
+Redundancy alone has a hole: a frame whose three copies all drop (0.1% of
+frames at 10% independent loss, and any frame inside a long enough burst)
+is never sent again, and the peer used to wait it out to the 30 s failure.
+Since protocol 18 the stalling side asks for that one frame over TCP
+(`CMD_INPUT_REQUEST`); the sender resends it, and the held frames after
+it, from the last 256 inputs it sent - loss that kills one frame
+outright is usually a burst that killed its neighbours too. The recovery
+stall is one round trip, and at low loss it never fires,
+so the fast path is unchanged. What it cannot fix is pacing: a link that
+needs retransmits constantly is a link lockstep survives but nobody enjoys.
 
-The trigger to revisit: set `input_delay=2` and look at the *shape* of any new
-stalls. Loss-shaped (short, correlated with missed hashes) argues for UDP;
-peer-slowness-shaped does not. Rollback would also change the calculus, since
-there late packets are useful rather than merely late.
+### Why it waited
+
+Measured loss was **0%** and stalled frames were **0%** at `input_delay=3`, so
+there was nothing for UDP to route around locally. Transport RTT was 4.3 ms of
+a 49.9 ms budget - about 9% - so eliminating it entirely would save ~4 ms of
+50. The stalls that did appear were peer-slowness, not loss: a 22-frame stall
+cannot come from a 1.3-frame RTT, and UDP does nothing for it. The change was
+made for the internet case (R1 in `net-traffic-analysis.md`), where loss and
+spike shape, not median latency, are what UDP improves.
 
 ## Diagnosing a desync
 

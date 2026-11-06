@@ -1,9 +1,15 @@
 /*
- * netlink - the two-player TCP transport under the shim's netpacket interface.
+ * netlink - the two-player hybrid transport under the shim's netpacket
+ * interface.
  *
  * The frontend knows nothing about any of this. The core asks for a netpacket
  * interface, the shim answers, and this is what sits underneath: host listens,
- * client connects, packets are framed over TCP.
+ * client connects, reliable traffic is framed over TCP, and the expiring
+ * traffic (per-frame inputs, periodic hashes) crosses on UDP with preemptive
+ * redundancy - each datagram carries the newest three entries, so one loss
+ * is covered by the next datagram with no retransmit. Reliable, ordered,
+ * exactly-once traffic (state, link-cable data, pause/resume, the greeting)
+ * stays on TCP, whose flow control is also the link's backpressure.
  *
  * Receiving happens on its own thread, which is what lets a link survive the
  * frontend blocking - a menu, a sleep, a long save. That is the reason the
@@ -115,6 +121,10 @@ bool NetLink_isPeerPaused(void);
  * duplicate is harmless. */
 bool NetLink_sendInput(uint32_t frame, uint32_t buttons);
 bool NetLink_getRemoteInput(uint32_t frame, uint32_t* buttons);
+/* Every redundant UDP copy of this frame was lost: ask the peer, over
+ * TCP, to resend the input it still holds. The stall that follows is
+ * one round trip instead of a dead session. */
+bool NetLink_requestInput(uint32_t frame);
 /* A new connection needs the full reset. Moving to a committed authoritative
  * timeline must retain ACK/COMMIT controls which may already be in flight. */
 void NetLink_resetSync(void);

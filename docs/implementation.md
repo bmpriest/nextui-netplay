@@ -100,7 +100,7 @@ fail to start.
 
 | Port | Protocol | Owner | Purpose |
 |---|---|---|---|
-| 55437 | TCP | shim (`netlink.c`) | Gameplay: inputs, states, link packets. Protocol 15 |
+| 55437 | TCP + UDP | shim (`netlink.c`) | TCP: states, link packets, control, input retransmit (protocol 18). UDP (host port 55437, client ephemeral): inputs and hashes with 3-entry redundancy |
 | 55438 | UDP | broker / app | Host announcements |
 | 55439 | TCP | broker | Core manifests and compatibility negotiation |
 | 55440 | UDP | app / broker | Session end, acknowledged |
