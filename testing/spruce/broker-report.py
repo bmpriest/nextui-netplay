@@ -62,8 +62,10 @@ def device_metrics(text, protocol, start, end):
     logical_checks = {}
     raw_check_messages = 0
     check_observed = False
+    state_transfer = False
     freeze = None
     desync = None
+    interruptions = []
     samples = 0
     for line in text.splitlines():
         match = re.match(r'\[(\d\d:\d\d:\d\d\.\d+)\] \[netplay-shim\] (.*)', line)
@@ -71,6 +73,9 @@ def device_metrics(text, protocol, start, end):
             continue
         t, msg = log_time(match[1],end), match[2]
         inside = start <= t <= end
+        restart = re.match(r'connection (\d+) requires a fresh instanced bootstrap',msg)
+        if inside and ((restart and int(restart[1]) > 1) or re.search(r'Peer disconnected|Peer unavailable|Lost contact with the other player|host disconnected|continued this game solo',msg,re.I)):
+            interruptions.append({'time':t,'message':msg})
         if protocol == 'retroarch':
             m = re.match(r'ra: frame (\d+), .*\(max (\d+)\).*crc (\d+) bad of (\d+), states (\d+) loaded',msg)
             if not m:
@@ -107,8 +112,14 @@ def device_metrics(text, protocol, start, end):
                 desync = t; check_observed = True
             elif re.match(r'authoritative resync \d+ committed',msg):
                 resends += 1
+                state_transfer = True
                 if desync is not None:
                     freeze = max(freeze or 0,(t-desync)*1000); desync = None
+            elif msg.startswith('adopted authoritative paired checkpoint'):
+                # The first bootstrap precedes gameplay. A copy adopted inside
+                # this window is an in-play state transfer after reconnect.
+                resends += 1
+                state_transfer = True
     if protocol != 'retroarch':
         checks, failed = len(logical_checks),sum(logical_checks.values())
     if protocol == 'retroarch':
@@ -120,9 +131,9 @@ def device_metrics(text, protocol, start, end):
             failed,checks,resends = (last[i]-base[i] for i in (1,2,3))
             check_observed = True
     result = rates(intervals,start,end)
-    result.update(longest_freeze_ms=freeze, checks_failed=failed if check_observed else None,
+    result.update(longest_freeze_ms=None if interruptions else freeze, logged_max_stall_ms=freeze, interruptions=interruptions, checks_failed=failed if check_observed else None,
                   checks_total=checks if check_observed else None,
-                  state_resends=resends if check_observed else None, samples=samples, raw_check_messages=raw_check_messages)
+                  state_resends=resends if check_observed or state_transfer else None, samples=samples, raw_check_messages=raw_check_messages)
     return result
 
 
@@ -233,7 +244,7 @@ def write_report(root):
             details.append(f"- {row['cell']}: {w['end']-w['start']:.1f}s gameplay; logged FPS coverage {coverage}.")
         else:
             details.append(f"- {row['cell']}: {metric.get('reason','NO_DATA')}")
-    lines += ['', 'FPS is reconstructed from existing log bins, with progress estimated uniformly inside each bin. Average and slowest 10 s use the slower device; longest freeze uses the larger reported stall, converted from stalled frames at 60 Hz. This is the logged network stall, not a video capture of every possible freeze. Checks failed count unique hash frames (redundant UDP hash deliveries are deduplicated) and state resends come from the guest; RetroArch startup state loads are excluded. Bin boundaries and cumulative counter samples limit measurement precision. NO_DATA means unavailable, never zero.', '',
+    lines += ['', 'FPS is reconstructed from existing log bins, with progress estimated uniformly inside each bin. Average and slowest 10 s use the slower device; longest freeze uses the larger reported stall, converted from stalled frames at 60 Hz. This is the logged network stall, not a video capture of every possible freeze. Checks failed count unique hash frames (redundant UDP hash deliveries are deduplicated) and state resends come from the guest; RetroArch startup state loads are excluded. A paired checkpoint adopted during gameplay counts as an in-play state transfer. Bin boundaries and cumulative counter samples limit measurement precision. NO_DATA means unavailable, never zero. A connection interruption invalidates the longest-freeze estimate when the pacing log does not cover the outage; earlier small stall values are retained only in the per-device JSON.', '',
               'These are observed run measurements. Instrumentation overhead has not been validated; the runs do not establish a controlled protocol performance comparison. No devices were rerun to generate this report.', '',
               'Gameplay windows and log coverage:', '', *details, '',
               'All earlier attempts and retries remain in results.json and the cell directories. The table uses each cell’s selected final attempt, including failures; no faster attempt is substituted.', '',
