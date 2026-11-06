@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'DevBridge.pak' / 'tools'))
+sys.path.insert(0, str(Path(os.environ.get('DEVBRIDGE', Path(__file__).resolve().parents[3] / 'DevBridge.pak')) / 'tools'))
 from broker import Broker, atomic_json
 
 
@@ -28,7 +28,7 @@ class SpruceBroker(Broker):
             row['passed_after_retry'] = row['verdict'] == 'PASS' and any(a['verdict'] != 'PASS' for a in attempts)
         atomic_json(self.out / 'results.json', rows)
         subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'spruce' / 'broker-report.py'),
-                        str(self.out)], check=True)
+                        str(self.out)], check=False)
 
     def __init__(self, *args, **kwargs):
         self.only = kwargs.pop('only', None)

@@ -32,6 +32,16 @@ stop_games() {
 }
 case $stage in
 preflight)
+    for d in b h; do
+        address=$(dev_ip "$d")
+        case ${NETWORK:-adhoc}:$address in adhoc:10.0.0.*|house:192.168.0.*) ;; *) echo "WRONG NETWORK: $d $address"; exit 1 ;; esac
+        on "$d" 'ip -4 addr show wlan0; wpa_cli -i wlan0 status 2>/dev/null | grep -E "^(ssid|bssid|ip_address|wpa_state)="; sha256sum /mnt/SDCARD/App/Netplay/bin/*/netplay_shim.so'
+    done
+    for d in b h; do
+        address=$(dev_ip "$d")
+        case ${NETWORK:-adhoc}:$address in adhoc:10.0.0.*|house:192.168.0.*) ;; *) echo "WRONG NETWORK: $d $address"; exit 1 ;; esac
+        on "$d" 'ip -4 addr show wlan0; wpa_cli -i wlan0 status 2>/dev/null | grep -E "^(ssid|bssid|ip_address|wpa_state)="; sha256sum /mnt/SDCARD/App/Netplay/bin/*/netplay_shim.so'
+    done
     hashes=()
     for d in b h; do
         on "$d" "test -r '/mnt/SDCARD/Roms/$system/$rom'; df -k /mnt/SDCARD; date"
@@ -45,6 +55,8 @@ setup)
     stop_games
     for d in b h; do
         push_helpers "$d"
+        # Rebind after the experiment launcher was atomically replaced.
+        on "$d" '. /mnt/SDCARD/spruce/scripts/helperFunctions.sh >/dev/null 2>&1; . /mnt/SDCARD/App/Netplay/launcher/firmware.sh; PLATFORM=$(np_spruce_platform "$PLATFORM"); export PLATFORM; sh /mnt/SDCARD/App/Netplay/launcher/ra-hook.sh down; sh /mnt/SDCARD/App/Netplay/launcher/ra-hook.sh up'
         on "$d" "set -e; mkdir -p /tmp/netplay-suite-snapshot; cp '/mnt/SDCARD/Emu/$system/config.json' /tmp/netplay-suite-snapshot/config.json; cp /mnt/SDCARD/Saves/netplay/settings /tmp/netplay-suite-snapshot/settings; echo '$system' > /tmp/netplay-suite-snapshot/system"
         if [ "$system" = NDS ]; then
             on "$d" "sh $HELPERS/ds-layout.sh set"
@@ -75,6 +87,15 @@ setup)
     devbridge_open b h
     ;;
 test)
+    # A tiny bounded packet sample during launch/navigation, not gameplay.
+    # It verifies that UDP negotiation results in actual incoming datagrams.
+    case "$DEVBRIDGE_ATTEMPT_DIR:$protocol:$test:$core" in
+    *-hybrid/*:linkplay:rcr:*|*-hybrid/*:linkplay:sf2:snes9x)
+        for d in b h; do
+            on "$d" "rm -f /tmp/netplay-udp-proof.pcap; setsid timeout 20 $TCPDUMP -i wlan0 -s 96 -c 20 -U -w /tmp/netplay-udp-proof.pcap 'udp and port 55437' > /tmp/netplay-udp-proof.log 2>&1 < /dev/null &"
+        done
+        ;;
+    esac
     # Run the full test: launch, verified navigation, gameplay, log assertions,
     # and quit. No --keep-going or automatic reference promotion.
     DEVBRIDGE_HELPERS_READY=1 "$ROOT/testing/devbridge/run.sh" --user spruce --port "$TUNNEL_PORT" "adb:$BRICK_ADB" "$TUNNEL_ADDR" "$ROOT/testing/devbridge/$test.test"
@@ -91,6 +112,15 @@ for script in attempt.glob('rendered-*.test'):
         shutil.copytree(source, attempt / 'gameplay', dirs_exist_ok=True)
 ARCHIVE
     stop_games
+    if on h 'test -s /tmp/netplay-udp-proof.pcap'; then
+        on h 'cat /tmp/netplay-udp-proof.pcap' > "$OUT/h-udp-navigation.pcap"
+        on h 'cat /tmp/netplay-udp-proof.log' > "$OUT/h-udp-navigation.txt"
+        on h 'rm -f /tmp/netplay-udp-proof.pcap'
+    fi
+    if on b 'test -s /tmp/netplay-udp-proof.pcap'; then
+        adb -s "$BRICK_ADB" pull /tmp/netplay-udp-proof.pcap "$OUT/b-udp-navigation.pcap" >/dev/null 2>&1 || :
+        on b 'cat /tmp/netplay-udp-proof.log; rm -f /tmp/netplay-udp-proof.pcap' > "$OUT/b-udp-navigation.txt"
+    fi
     for d in b h; do
         on "$d" "find /mnt/SDCARD/Saves/netplay/logs -type f -mmin -30 | head -50" > "$OUT/$d-log-inventory.txt"
         on "$d" 'f=$(find /mnt/SDCARD/Saves/netplay/logs/netplay-games -name "*.log" -type f -newer /tmp/netplay-devbridge/started | xargs -r ls -t | head -1); [ -z "$f" ] || cat "$f"' > "$OUT/$d.log"

@@ -59,6 +59,8 @@ def rates(intervals, start, end):
 def device_metrics(text, protocol, start, end):
     intervals, previous, counters = [], None, []
     checks = failed = resends = 0
+    logical_checks = {}
+    raw_check_messages = 0
     check_observed = False
     freeze = None
     desync = None
@@ -94,14 +96,21 @@ def device_metrics(text, protocol, start, end):
             if not inside:
                 continue
             if msg.startswith(('in sync at frame','paired consoles agree')):
-                checks += 1
+                raw_check_messages += 1
+                frame = re.search(r'at frame (\d+)',msg)
+                if frame: logical_checks.setdefault(int(frame[1]),False)
                 check_observed = True
-            elif msg.startswith('DESYNC'):
-                checks += 1; failed += 1; desync = t; check_observed = True
+            elif msg.startswith(('DESYNC','PAIRED DESYNC')):
+                raw_check_messages += 1
+                frame = re.search(r'at frame (\d+)',msg)
+                if frame: logical_checks[int(frame[1])] = True
+                desync = t; check_observed = True
             elif re.match(r'authoritative resync \d+ committed',msg):
                 resends += 1
                 if desync is not None:
                     freeze = max(freeze or 0,(t-desync)*1000); desync = None
+    if protocol != 'retroarch':
+        checks, failed = len(logical_checks),sum(logical_checks.values())
     if protocol == 'retroarch':
         before = [c for c in counters if c[0] <= start]
         within = [c for c in counters if start <= c[0] <= end]
@@ -113,13 +122,36 @@ def device_metrics(text, protocol, start, end):
     result = rates(intervals,start,end)
     result.update(longest_freeze_ms=freeze, checks_failed=failed if check_observed else None,
                   checks_total=checks if check_observed else None,
-                  state_resends=resends if check_observed else None, samples=samples)
+                  state_resends=resends if check_observed else None, samples=samples, raw_check_messages=raw_check_messages)
     return result
 
 
-def measure(attempt, protocol):
+def measurement_window(attempt):
     verdict = attempt/'connection-verdict.json'
-    window = json.loads(verdict.read_text()).get('measurement') if verdict.exists() else None
+    if verdict.exists():
+        window = json.loads(verdict.read_text()).get('measurement')
+        if window: return window
+    # A failed post-play assertion skips judge, but the completed play window
+    # remains usable evidence. Recover only explicitly logged gameplay commands.
+    path = attempt/'gameplay/events.jsonl'
+    if not path.exists(): return None
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    starts = []
+    for event in events:
+        match = re.search(r'gameplay\.sh --bg (\d+)',str(event.get('line','')))
+        if event.get('event') == 'command' and match:
+            starts.append((datetime.fromisoformat(event['time']).timestamp(),int(match[1])))
+    if len(starts) >= 2:
+        start,end = max(t for t,_ in starts), min(t+duration for t,duration in starts)
+        # Both scripts must actually reach their end before failure/collection.
+        last = max(datetime.fromisoformat(e['time']).timestamp() for e in events)
+        if end > start and last >= end:
+            return {'name':'scripted_gameplay','start':start,'end':end,'source':'archived gameplay events (judge skipped)'}
+    return None
+
+
+def measure(attempt, protocol):
+    window = measurement_window(attempt)
     if not window:
         return {'status':'NO_DATA','reason':'No completed named gameplay interval; navigation failed or never reached measurement.'}
     start,end = window['start'],window['end']
@@ -140,6 +172,7 @@ def measure(attempt, protocol):
         metrics[key] = client.get(key)
     return {'status':'OBSERVED' if metrics['avg_fps'] is not None else 'NO_DATA',
             'window':window,'devices':devices,**metrics,
+            'coverage_s':min(d['coverage_s'] for d in devices.values()), 'window_s':end-start,
             'sources':{d:f'measurement/{d}.log' for d in devices},
             'method':'Archived pacing bins; duration-weighted FPS and rolling 10s bin estimate. Slower device FPS, larger logged stall; guest checks and state loads. Stall frames converted at 60Hz. RA counters use last sample before start and last within window.'}
 
@@ -155,8 +188,8 @@ def write_report(root):
     cells = {c['id']:c for c in suite['cells']}
     counts = Counter(r['verdict'] for r in rows)
     lines = [f"{len(rows)} planned cells: "+', '.join(f'{n} {v}' for v,n in sorted(counts.items()))+'.','',
-             '| Protocol | Game / system / core or mode | Avg FPS | Slowest 10 s | Longest freeze | Checks failed | State resends | Result | Evidence |',
-             '|---|---|---:|---:|---:|---:|---:|---|---|']
+             '| Protocol | Game / system / core or mode | Avg FPS | Slowest 10 s | Longest freeze | Checks failed | State resends | FPS coverage | Result | Evidence |',
+             '|---|---|---:|---:|---:|---:|---:|---|---|---|']
     details = []
     csv_rows = []
     for row in sorted(rows,key=lambda r:(r['cell'].split('-')[0], list(cells).index(r['cell']))):
@@ -184,7 +217,7 @@ def write_report(root):
         row['telemetry'] = metric
         csv_rows.append({'protocol':label,'game':game,'system':system,'core_or_mode':mode,
                          'verdict':row['verdict'], **{key:metric.get(key) for key in
-                         ('avg_fps','slowest_10s_fps','longest_freeze_ms','checks_failed','checks_total','state_resends')},
+                         ('avg_fps','slowest_10s_fps','longest_freeze_ms','checks_failed','checks_total','state_resends','coverage_s','window_s')},
                          'evidence':artifact or ''})
         if artifact:
             (root/artifact/'telemetry.json').write_text(json.dumps(metric,indent=2)+'\n')
@@ -193,13 +226,14 @@ def write_report(root):
         resends = 'NO_DATA' if resends is None else str(resends)
         result = row['verdict']+(' (retry)' if row.get('passed_after_retry') else '')
         evidence = f'[logs + metrics]({artifact}/telemetry.json) · [verdict]({artifact}/result.json)' if artifact else 'Declared unsupported'
-        lines.append(f"| {label} | {name} | {fmt(metric.get('avg_fps'))} | {fmt(metric.get('slowest_10s_fps'))} | {fmt(metric.get('longest_freeze_ms'),' ms')} | {checks} | {resends} | {result} | {evidence} |")
+        coverage='NO_DATA' if 'window_s' not in metric else f"{metric['coverage_s']:.1f}/{metric['window_s']:.1f}s"
+        lines.append(f"| {label} | {name} | {fmt(metric.get('avg_fps'))} | {fmt(metric.get('slowest_10s_fps'))} | {fmt(metric.get('longest_freeze_ms'),' ms')} | {checks} | {resends} | {coverage} | {result} | {evidence} |")
         if metric.get('window'):
             w=metric['window'];coverage=', '.join(f"{d}: {v['coverage_s']:.1f}s" for d,v in metric['devices'].items())
             details.append(f"- {row['cell']}: {w['end']-w['start']:.1f}s gameplay; logged FPS coverage {coverage}.")
         else:
             details.append(f"- {row['cell']}: {metric.get('reason','NO_DATA')}")
-    lines += ['', 'FPS is reconstructed from existing log bins, with progress estimated uniformly inside each bin. Average and slowest 10 s use the slower device; longest freeze uses the larger reported stall, converted from stalled frames at 60 Hz. This is the logged network stall, not a video capture of every possible freeze. Checks failed and state resends come from the guest; RetroArch startup state loads are excluded. Bin boundaries and cumulative counter samples limit measurement precision. NO_DATA means unavailable, never zero.', '',
+    lines += ['', 'FPS is reconstructed from existing log bins, with progress estimated uniformly inside each bin. Average and slowest 10 s use the slower device; longest freeze uses the larger reported stall, converted from stalled frames at 60 Hz. This is the logged network stall, not a video capture of every possible freeze. Checks failed count unique hash frames (redundant UDP hash deliveries are deduplicated) and state resends come from the guest; RetroArch startup state loads are excluded. Bin boundaries and cumulative counter samples limit measurement precision. NO_DATA means unavailable, never zero.', '',
               'These are observed run measurements. Instrumentation overhead has not been validated; the runs do not establish a controlled protocol performance comparison. No devices were rerun to generate this report.', '',
               'Gameplay windows and log coverage:', '', *details, '',
               'All earlier attempts and retries remain in results.json and the cell directories. The table uses each cell’s selected final attempt, including failures; no faster attempt is substituted.', '',

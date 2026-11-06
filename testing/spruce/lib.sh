@@ -161,6 +161,13 @@ rejoin_h() {
 # tunnel_up [TRIES]: ARP scans before giving up (default 40, about 2 minutes).
 H700_MAC_FILE=$OUT/.h700-mac
 tunnel_up() {
+    if [ "${NETWORK:-adhoc}" = house ]; then
+        tunnel_down
+        adb -s "$BRICK_ADB" forward tcp:40244 tcp:22 >/dev/null || return 1
+        SSH_ASKPASS=$ASKPASS SSH_ASKPASS_REQUIRE=force setsid -w ssh -f -N -p 40244 -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -L "$TUNNEL_ADDR:$TUNNEL_PORT:$H700_LAN:22" spruce@127.0.0.1 || return 1
+        echo "$H700_LAN"
+        return 0
+    fi
 	mac=$(cat "$H700_MAC_FILE" 2>/dev/null)
 	[ -n "$mac" ] || { echo "no RG35XXH MAC: run adhoc.sh up first" >&2; return 1; }
 	ip=

@@ -39,6 +39,14 @@ def main(attempt):
     else:
         start = max(t for t, _ in starts)
         end = min(t + duration for t, duration in starts)
+    # Confirm the selected transport from both actual game-process logs.
+    config = attempt.parent.parent.name
+    if config.endswith(('-tcp', '-hybrid')) and attempt.parent.name.startswith('linkplay-'):
+        marker = 'UDP disabled - input/hash staying on TCP' if config.endswith('-tcp') else 'peer UDP endpoint port='
+        for device in ('b', 'h'):
+            log = attempt / 'measurement' / (device + '.log')
+            if not log.exists() or marker not in log.read_text(errors='replace'):
+                return {'verdict':'INFRA_FAIL', 'reason':f'{device}: requested transport not confirmed in game log'}
     devices = {}
     for device in ('b', 'h'):
         log = attempt / 'measurement' / (device + '.log')
