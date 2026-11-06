@@ -30,13 +30,15 @@ all:SCREEN mariodx-2
 all:TRM sh {helpers}/keys.sh --bg a:0.25:0
 WAIT 2500
 all:SCREEN mariodx-vs
+host:VERIFY_WAIT {host_refs}/mariodx-vs-select.png 10000 region=0.39,0.27,0.23,0.24
+guest:VERIFY_WAIT {guest_refs}/mariodx-vs-select.png 10000 region=0.39,0.27,0.23,0.24
 
 # The host chooses the highlighted 1-1 stage; both consoles enter the race.
 host:TRM sh {helpers}/keys.sh a:0.25:0
 WAIT 3000
 all:SCREEN mariodx-race
-host:VERIFY_WAIT {host_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
-guest:VERIFY_WAIT {guest_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
+host:VERIFY_WAIT {host_refs}/mariodx-vs-race.png 10000 region=0.30,0.00,0.14,0.05
+guest:VERIFY_WAIT {guest_refs}/mariodx-vs-race.png 10000 region=0.30,0.00,0.14,0.05
 
 host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
 guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
