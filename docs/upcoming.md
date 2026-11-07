@@ -7,42 +7,20 @@ partly done along the way.
 
 ## Next
 
-### Release packaging: Netplay-Core and Netplay-Complete
+### Core edition and downloads
 
-Decided 2026-10-27. Today `make dist` builds `Netplay.pak.zip`,
-`compatibility-cores.zip` and `Netplay-Full.pak.zip`, and every install carries
-every platform's binaries (238 MB unzipped on an H700 card, 57 MB of it a
-bundled NDS.pak). The new layout keeps one multi-platform pak, so one SD card
-still works in every device:
+The current RC builds `NextUI-Netplay-Complete.zip` and
+`Spruce-Netplay-Complete.zip`, with compatibility cores bundled for offline use.
+See [release.md](release.md) for the actual layouts and supported targets.
 
-- **Netplay-Core.pak**: shared-screen netplay, plain Gambatte and gpSP, Gambatte
-  dual, mGBA dual and MGBA.pak, the DraStic radio overlay, and DSP.pak. It
-  downloads the compatibility cores from the Netplay GitHub release when the
-  user wants them, and sends the user to the Pak Store for NDS.pak itself.
-- **Netplay-Complete.pak**: everything bundled, for offline installs and setting
-  up cards on a PC.
-
-Both install from the same code: a pack found in the pak is used, otherwise it
-is downloaded. To make that safe:
-
-- **CA bundle**: the Brick has no CA certificates, so the pak carries a small
-  bundle (about 220 KB) for `curl`.
-- **Pinned manifest**: every download is listed with its URL, size and SHA-256,
-  pinned to the pak's own release tag, so an installed pak always fetches the
-  builds it was tested with.
-- **Per-platform files**: the device downloads the files for every platform on
-  the card, so a card shared between a Brick and an H700 gets both.
-- **Release tooling**: `make release-assets` builds each pack and the manifest
-  for `gh release upload`.
-
-The installed folder stays `Netplay.pak`: the name is hardcoded in the app and
-the launchers' fallback paths, and keeping it lets the two editions upgrade
-over each other.
-
-The DraStic overlay also needs a stricter check of the NDS.pak it lands on:
-its `pak.json` version and the hashes of the files the overlay replaces or
-depends on, not only the `drastic` binary. NDS.pak 0.12.0 passes today's check
-and then white-screens. Anything else gets a message naming the release needed.
+A smaller Core edition remains planned: shared-screen support, ordinary
+Gambatte/gpSP, paired cores, MGBA.pak/DSP.pak on NextUI, and the DraStic radio
+without the base NDS.pak. It should refer NextUI users to the Pak Store for
+NDS.pak and download compatibility cores from a version-pinned release.
+Neither the in-app downloader nor `release-assets` manifest tooling exists yet.
+Downloads need verified TLS, a pinned URL/size/hash manifest, atomic staging
+and recovery from interrupted installs. These are follow-up work, not RC
+Complete features.
 
 ### USB-C cable
 
@@ -50,29 +28,18 @@ A third way to connect, with about 1 ms round trips and no radio involved.
 Plan: [analysis/usb-cable-plan.md](analysis/usb-cable-plan.md). Branch
 `feat/cable`.
 
-### Onboarding
+### Onboarding and RetroArch
 
-A first-run flow for new players: what each mode is, how to host and join,
-which systems play how, and the optional add-ons to download (compatibility
-cores, NDS.pak from the Pak Store, DSP.pak, MGBA.pak). It is the download
-flow's front end, so it follows the packaging work, and it describes the
-finished product, so it comes last. Device-specific advice (which socket the
-cable goes in, whether this device can host ad hoc) is detected at run time,
-never assumed from the platform. Branch `feat/onboarding`.
-
-### RetroArch compatibility
-
-Playing against handhelds on other firmwares (spruce, Onion, Allium, muOS,
-ROCKNIX, Knulli), which use RetroArch's netplay. spruce on an RG35XXH comes
-first; a PC is a bonus. Plan:
-[analysis/retroarch-plan.md](analysis/retroarch-plan.md). Branch
-`feat/retroarch`.
+First-run onboarding is implemented (`pak_onboarding.json`), including the
+optional Wi-Fi power-saving choice and save-backup guidance. RetroArch protocol
+selection and Spruce integration are implemented. Broader external-firmware
+coverage remains future work; NETPACKET link modes use LinkPlay.
 
 ## Play features
 
 ### Open-game invitation: what is left
 
-Invitations work between spruce devices ([features.md](features.md#game-invitations-spruce)).
+Invitations are implemented on both Spruce and NextUI ([features.md](features.md#game-invitations)).
 Still open:
 
 - **Matching by content, not file name.** The offer names the ROM by its path
@@ -80,9 +47,6 @@ Still open:
   this device". A persistent local ROM index keyed by system and content hash,
   consistent with the runtime identity check across raw ROMs, ZIPs, CUE/BIN and
   M3U, would let the receiver find its own copy.
-- **NextUI.** NextUI devices neither send nor receive yet. Sending is the same
-  call from the MinArch shadow; receiving needs a way to pause and resume
-  nextui.elf's menu, or the quick menu (Varnish).
 - **Replies.** The sender only learns that the offer arrived, not whether it
   was accepted, declined or the game is missing.
 - **Browse speed.** Opening spruce's menu on the game takes about 6 s, nearly
@@ -155,7 +119,8 @@ a game that cached card state.
   and the A30's deployed core predates its own pin.
 - **A30 SNES margins**: 2.1x realtime headless on an ordinary ROM; SuperFX and
   SA-1 games are untested.
-- **Untested Extras**: 32X, Sega CD, SG-1000, SMS, Game Gear, FDS, SUPA.
+- **Limited Extras coverage**: 32X, Sega CD, SG-1000, SMS, Game Gear and FDS.
+  Supafaust now has scripted Spruce shared-screen coverage.
 - **DraStic frame phase**: DraStic keeps a random frame phase against its
   peer, the problem DSperate's VCOUNT patch fixed
   ([nintendo-ds/drastic.md](nintendo-ds/drastic.md)).

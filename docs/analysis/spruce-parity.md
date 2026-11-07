@@ -1,84 +1,68 @@
-# spruce vs NextUI: feature parity
+# Spruce RC coverage and NextUI parity
 
-Where the spruce build (App/Netplay, through spruce's RetroArch) stands against
-the NextUI pak, feature by feature from [features.md](../features.md). Measured
-on a spruce Brick and RG35XXH, 2026-11-03.
+Current code and packaging, 2026-11-06. A release target means the app allowlist,
+launcher runtime and packaged AArch64 binaries cover the device; it does not
+mean every model has been tested physically.
 
-## Same as NextUI
+| Spruce device | PyUI identity | Build directory | Physical validation |
+| --- | --- | --- | --- |
+| TrimUI Brick | TRIMUI_BRICK | tg5040 | Main Spruce test rig |
+| TrimUI Brick Pro | TRIMUI_BRICK_PRO | tg5040 | Targeted, not tested here |
+| TrimUI Smart Pro | TRIMUI_SMART_PRO | tg5040 | Targeted, not tested here |
+| TrimUI Smart Pro S | TRIMUI_SMART_PRO_S | tg5050 | Targeted, not tested here |
+| Miyoo Flip | MIYOO_FLIP | my355 | Targeted, not tested here |
+| Anbernic H700 XX family | ANBERNIC_RGXX family, model/panel-specific identity | h700 | RG35XX H tested |
+| Powkiddy RGB30 | RGB30 | my355 | Targeted, not tested here |
+| Powkiddy RGB20SX | RGB20SX | my355 | Targeted, not tested here |
+| Miniloong Pocket 1 | MINILOONG_POCKET1 | my355 | Targeted, not tested here |
 
-| Feature | spruce | Notes |
-| --- | --- | --- |
-| Shared screen: NES, SNES, Genesis/MD family, PlayStation | Works | sor2, rcr, contra3 pass; ctr not run (no CTR on the cards) |
-| GB/GBC link (Gambatte) | Works | Netplay's gambatte replaces spruce's for armed sessions |
-| GBA link cable (gpSP) | Works, intermittent at one point | aw2 passes; its battle start can stall on a jittery link |
-| Instanced Gambatte | Works | tetris passes; settable from the app (GB row) |
-| Instanced mGBA | Works | mkart passes at 52.9 fps; see the gaps for how it is enabled |
-| Compatibility cores | Works | pinned to spruce's own core commits; byte-identical where it matters |
-| House WiFi hosting and joining, discovery | Works | |
-| Ad hoc hosting | Works, both devices | the Brick with its stock hostapd/udhcpd/iw on wlan1; the RG35XXH through an AP-mode supplicant on wlan1 with the udhcpd Netplay ships. Both keep their house connection |
-| Ad hoc joining | Works, both directions | reworked for spruce, see below. sor2 over ad hoc: 60.1 fps, 0.1-0.2% stalls |
-| Getting the guest's WiFi back | Works | 3-8 s after the session ends; spruce's saved networks untouched; the watchdog clears its record as on NextUI |
-| WiFi power save | Works | the H700 reload now goes through spruce's wifi.sh |
-| Menu pause ("Waiting for other player (menu open)") | Works | detected by the shim's network thread, not the frontend |
-| Peer loss: Wait / Continue solo / Exit | Works | shim-side |
-| Frontend state loads blocked | Works | spruce auto-loads states; the shim refuses the load (seen in 4 of 21 session logs) |
-| Run checks, verbose logs | Works | spruce branch of the checks |
-| Session outlives the app, broker | Works | |
+The RK3566 targets use the Flip's AArch64 build and matching ABI, with their
+own PyUI device, KMSDRM display and runtime paths. Native prompts/control
+use Spruce's installed SDL libraries through temporary SONAME aliases, avoiding
+the H700-only fbdev backend on these systems. The Pocket 1's rotation and
+scaling belong to its PyUI device class. Use a Spruce build with these classes.
+Other 64-bit nightly devices are outside this RC's allowlist.
 
-## Different on spruce, by design
+## Shared features
 
-- **Ad hoc joining and restore** go through spruce's own supplicant: the ad hoc
-  network is added at runtime and selected, then removed. Replacing the
-  supplicant, as on NextUI, got the ad hoc network copied into the user's saved
-  networks by spruce's WiFi bring-up (it adopts any foreign supplicant's
-  networks), with priority 99.
-- **Ad Hoc Network Switch** is off and hidden: spruce restarts its supplicant
-  on every game exit, which would put a switched host back on the house
-  network mid-session.
-- **NextUI integration** (quick menu, Netplay icon, Game Switcher shortcut) is
-  NextUI's own UI (Varnish, Game Switcher); spruce has neither.
-- **PWR autosleep** is skipped: spruce owns sleep and the power button.
+Shared-screen LinkPlay, RetroArch protocol for supported shared-screen cores,
+ordinary Gambatte/gpSP linking, optional Gambatte/mGBA Dual, compatibility-core
+negotiation, game invitations, persistent sessions, save protection/backups,
+checks and Wi-Fi recovery are implemented on both firmwares. Both dual modes
+default off; hybrid LinkPlay traffic defaults on; verbose logs default off.
+RetroArch protocol does not transport NETPACKET link-core traffic.
 
-## spruce against NextUI
+Spruce has a native PyUI menu with contextual glyphs and X to end sessions.
+It presents one combined core list; GBA includes gpSP and optional mGBA Dual,
+and NDS combines DraStic/DSperate. It reads Spruce's actual emulator selections.
+It does not install NextUI's MGBA.pak, DSP.pak or NDS.pak.
 
-A NextUI Brick hosting a spruce RG35XXH over house WiFi (2026-11-04): the
-handshake picks compatibility cores for 8 systems (both ends load the build
-pinned to spruce's revision), and paired cores are agreed for Gambatte and
-mGBA. sor2 passes (57-60 fps, 25-27 checkpoints agreed), and mkart passes on
-paired mGBA (53.4 fps, 36 paired checkpoints), the NextUI side on MGBA.pak and
-the spruce side on GBA with the game's core set to mgba.
+## Firmware differences
 
-## RetroArch during a session
+- NextUI alone has the Varnish START quick menu, status icon, GameSwitcher
+  shortcut and Ad Hoc Network Switch. Invitations also use Varnish on NextUI
+  and are independent of the START-menu setting.
+- Spruce uses its own supplicant for ad hoc joining and restoration, preserving
+  saved networks. It owns sleep, power controls and emulator choices.
+- Spruce hooks `ra64.universal` and `ra64.h700`, plus `drastic64` and
+  `dsperate` under Emu/NDS. 32-bit RetroArch and DraStic-Steward remain outside
+  these hooks. DraStic and DSperate use their own radio transport, not hybrid
+  LinkPlay's UDP inputs.
+- X ends a session and leaves inactive passthrough wrappers. Turn Off Netplay
+  also removes the bind mounts. Neither action uninstalls emulator files.
 
-launcher/spruce/retroarch-session.cfg is appended to spruce's RetroArch config
-for armed launches only: save states (hotkeys, quick menu entries, auto save
-and auto load), rewind, run-ahead, preemptive frames, fast and slow motion off,
-and `config_save_on_exit = "false"` so none of it is written back to spruce's
-config. When spruce passes its own `--appendconfig` (32-bit RetroArch on
-BaseOS), ours joins its list.
+## Validation and remaining limits
 
-## Gaps
+The original autonomous suite and transport comparison are historical runs.
+The subsequent fixture updates repair cable navigation and DS screen references,
+add per-launch Spruce DS log archives, and recognize stock DSperate summaries.
+Stock summaries establish session/peer replies; they provide no pacing windows
+and must not be reported as measured FPS. Updated fixtures do not retroactively
+change old report verdicts. See [the broker plan](../analysis/devbridge-test-broker.md)
+and [test instructions](../../testing/spruce/README.md).
 
-1. **DS local wireless gameplay validation.** Netplay now mounts launch wrappers
-   over spruce's AArch64 DraStic and DSperate in `Emu/NDS` for armed sessions.
-   DraStic gets the radio hook; DSperate gets its LAN launch flags. The wrappers
-   preserve spruce's existing emulator setup and pass through when no session
-   is armed. Mount and restore were checked on the Brick and RG35XXH; a live
-   two-device DS game session remains to be checked. DraStic-Steward (`drastic32`)
-   is not covered by the AArch64 radio hook.
-2. **Power save default.** spruce leaves WiFi power save on, and Bricks then
-   lose their AP for minutes at a time (seen on a NextUI Brick too). Netplay's
-   "Disable Wi-Fi Power Saving" stays off by default; turn it on for sessions on
-   a Brick.
-3. **Other spruce devices.** Only the Brick and RG35XXH are built and tested.
-   np_spruce_platform maps BrickPro/SmartPro (tg5040), SmartProS (tg5050) and
-   Flip (my355), but spruce-tg5050/my355 builds are not packaged; 32-bit
-   RetroArch sessions are not routed yet.
-4. **Paired mGBA toggle** (Cores > Base > GBA on spruce) is built but has only
-   been exercised through `--ctl set instanced`, not the menu.
-5. **Test harness:** the final `WAIT_FOR devbridge 30000` in the tests is tight
-   for the RG35XXH's PyUI over an ad hoc tunnel.
-
-Resolved 2026-11-04: the ad hoc network is `netplay-XXXX` on both firmwares
-(was `nextui-XXXX`); RetroArch's auto save during sessions (above); paired mGBA
-has an app toggle on spruce.
+Hardware coverage remains concentrated on the Brick and RG35XX H. PS across
+architectures, other models' controller/display behavior, and DS games outside
+the recorded fixtures remain RC validation limits. Network and emulator
+performance should be attributed to the actual game, protocol and run rather
+than generalized from device proximity or a single historical result.

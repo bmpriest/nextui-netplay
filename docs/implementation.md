@@ -12,9 +12,28 @@ under `.userdata/shared/Netplay/`). While one is armed, NextUI's own emulator
 paks are wrapped by bind mounts so that `minarch.elf` resolves to Netplay's
 wrapper, which loads a **shim**: a libretro core that wraps the real core and
 adds the network. Everything Netplay needs from the emulator goes through the
-libretro ABI. A reboot or ending the session puts every pak back exactly as it
-was. The DS emulators are the exception: they are not libretro cores, so their
+libretro ABI. A reboot removes temporary mounts; ending the session makes the wrappers
+pass through. Turn Off Netplay removes the hooks explicitly. The DS emulators are the exception: they are not libretro cores, so their
 launchers read the session themselves.
+
+## Spruce integration
+
+The Spruce front end is `app/spruce`, using the installed PyUI runtime and
+theme. Its native `netplay.elf --ctl` backend is the same session control plane.
+`launcher/spruce/firmware.sh` maps Spruce model names onto four AArch64 build
+directories; the Flip build also serves the RK3566 RGB30, RGB20SX and Pocket 1.
+The RK3566 native control backend uses the H700 SDK's standard SDL/GLES ABI
+rather than the Flip SDK's vendor Mali hook; cores still use the Flip build.
+At runtime its native loader prefers temporary aliases to Spruce's own SDL
+libraries, preserving the KMSDRM backend on dArkMoss.
+The app metadata allowlist and launcher runtime selection must both cover a
+model. An executable-presence check is not an architecture compatibility test.
+
+Spruce bind-mounts wrappers over `ra64.universal`/`ra64.h700` and the supported
+AArch64 DS executables, stashing the originals in `/tmp/netplay`. It preserves
+Spruce's emulator configuration and passes through when unarmed. 32-bit
+RetroArch/DS paths are not routed. State is in `Saves/netplay/`, with logs in
+`Saves/netplay/logs/`. See [the device matrix](analysis/spruce-parity.md).
 
 ## The parts
 
@@ -22,11 +41,11 @@ launchers read the session themselves.
 |---|---|---|
 | Setup app | `app/main.c`, `app/netsetup.c` → `netplay.elf` | Host, Join, Configuration; arms and ends sessions; installs extras. `--ctl` drives it from scripts |
 | Broker | `app/broker.c` → `netplay-broker.elf` | Runs while a host session is armed: LAN announcements, the compatibility-core service, one-guest admission, a status file for the app, icon and quick menu |
-| Quick menu | `app/quickmenu.c` → `netplay-quickmenu.elf` | A Netplay menu over NextUI's menus, drawn by Varnish |
-| Shim | `shim/shim.c`, `shim/netlink.c` | The wrapping libretro core and its TCP transport |
+| Quick menu | `app/nextui/quickmenu.c` → `netplay-quickmenu.elf` | A Netplay menu over NextUI's menus, drawn by Varnish |
+| Shim | `shim/shim.c`, `shim/netlink.c` | The wrapping libretro core and its hybrid TCP/UDP transport |
 | Launchers | `launcher/` | `minarch.elf` (the `PATH` shadow), `bind-mount.sh` / `wrap-pak.sh` (the mounts), `pre-launch.sh` (per-game session setup), `adhoc-join.sh`, `wifi-watchdog.sh`, `pak-manage.sh` (MGBA.pak, DSP.pak, the NDS overlay), `varnish-install.sh`, `status-icon.sh`, `quick-menu.sh` |
 | Cores | `cores/` | Gambatte and gpSP link builds, the paired (dual) cores, MGBA.pak, compatibility cores, `udhcpd` |
-| DS | `dsperate/`, `drastic-wifi/` | DSP.pak, and the DraStic radio overlay |
+| DS | `cores/dsperate/`, `cores/drastic-wifi/` | DSP.pak, and the DraStic radio overlay |
 | Varnish | `dist/varnish/` (built from Helaas's Varnish.pak) | Draws the icon and quick menu over NextUI |
 | Hints | `pak_hints.json` | All menu hint text, editable on the card |
 
@@ -48,8 +67,8 @@ launchers read the session themselves.
    for the rest. DS paks skip steps 2-3 and read the session in their own
    launcher.
 4. **End.** X in the app (or the quick menu) ends the session: the host tells
-   the guest, which acknowledges; mounts come down; the guest's WiFi is put
-   back. A session from an earlier boot is cleaned up when anything next looks
+   the guest, which acknowledges; the guest's WiFi is put back. Installed
+   wrappers become inactive passthroughs. Turn Off Netplay removes their mounts. A session from an earlier boot is cleaned up when anything next looks
    at it.
 
 ## Getting into the emulator
@@ -104,6 +123,7 @@ fail to start.
 | 55438 | UDP | broker / app | Host announcements |
 | 55439 | TCP | broker | Core manifests and compatibility negotiation |
 | 55440 | UDP | app / broker | Session end, acknowledged |
+| 55441 | UDP | broker / guest agent | Peer game invitations and delivery acknowledgements |
 | 7063 / 7064 | UDP / ENet | DSperate, DraStic radio | melonDS LAN protocol |
 
 **Ad hoc**: the host runs `hostapd` and `udhcpd` (the system's, or the one the
@@ -135,7 +155,7 @@ WiFi recovery records, mount ownership, Game Switcher backups, extras backups
 and the ROM scan cache. Files are written then renamed, so a power cut cannot
 leave a half-written file that reads back as defaults.
 
-With **Verbose debugging logs** on (the default), each game launch mirrors its
+With **Verbose debugging logs** on (off by default), each game launch mirrors its
 whole output to `$USERDATA_PATH/logs/netplay-games/<game>/<session>/<time>-<role>-<pid>.log`,
 because NextUI truncates its per-system log on the next launch and would erase
 the crash a rejoin follows. A missing exit trailer means the process was killed.

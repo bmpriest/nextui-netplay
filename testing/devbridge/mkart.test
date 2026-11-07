@@ -67,14 +67,30 @@ guest:VERIFY_WAIT {guest_refs}/mk-character-guest.png 20000 threshold=15
 host:TRM sh {helpers}/keys.sh --bg up:0.25:0.6 left:0.25:0.6 a:0.25:0
 guest:TRM sh {helpers}/keys.sh --bg right:0.25:0.6 a:0.25:0
 WAIT 3000
+# Confirming a character takes a press from each player, and the paired
+# link can hold one side on CHOOSE A CHARACTER well past a fixed wait
+# (a run sat there for a whole 20 s verify after its single confirm was
+# lost). Confirm together three times, spaced out: A does nothing once
+# a side is confirmed, and a press that lands on the track screen only
+# picks the highlighted Mushroom Cup a moment before the step below.
 host:TRM sh {helpers}/keys.sh --bg a:0.25:0
 guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
-WAIT 4000
-host:VERIFY_WAIT {host_refs}/mk-track-host.png 20000 threshold=15
-guest:VERIFY_WAIT {guest_refs}/mk-track-guest.png 20000 threshold=15
-
-# Mushroom Cup -> Peach Circuit -> confirm. Never B here: it backs out.
-host:TRM sh {helpers}/keys.sh a:0.25:2 a:0.25:3 a:0.25:8
+WAIT 3000
+host:TRM sh {helpers}/keys.sh --bg a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 3000
+host:TRM sh {helpers}/keys.sh --bg a:0.25:0
+guest:TRM sh {helpers}/keys.sh --bg a:0.25:0
+WAIT 2000
+host:VERIFY_WAIT {host_refs}/mk-track-host.png 30000 threshold=15
+# The guest's track list only settles once the host has confirmed the cup
+# (before that it sits in the slide-in at ~15 against the settled
+# reference, right on the threshold). Confirm Mushroom Cup first, then
+# check the guest, then Peach Circuit -> confirm. Never B here: it
+# backs out.
+host:TRM sh {helpers}/keys.sh a:0.25:2
+guest:VERIFY_WAIT {guest_refs}/mk-track-guest.png 30000 threshold=15
+host:TRM sh {helpers}/keys.sh a:0.25:3 a:0.25:8
 
 host:TRM sh {helpers}/gameplay.sh --bg 120 a a a a+left a+right a+left a+right a+r a+l a+up
 guest:TRM sh {helpers}/gameplay.sh --bg 120 a a a a+left a+right a+left a+right a+r a+l a+up

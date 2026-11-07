@@ -23,7 +23,7 @@ def main(attempt):
     events = [json.loads(line) for line in (destination / 'events.jsonl').read_text().splitlines()]
     starts = []
     for event in events:
-        line = event.get('line', '')
+        line = str(event.get('line', ''))
         match = re.search(r'gameplay\.sh --bg (\d+)', line)
         if event.get('event') == 'command' and match:
             starts.append((datetime.fromisoformat(event['time']).timestamp(), int(match[1])))
@@ -47,6 +47,37 @@ def main(attempt):
             log = attempt / 'measurement' / (device + '.log')
             if not log.exists() or marker not in log.read_text(errors='replace'):
                 return {'verdict':'INFRA_FAIL', 'reason':f'{device}: requested transport not confirmed in game log'}
+    if 'mkds' in rendered[0].stem:
+        # Nintendo DS: spruce's stock DSperate writes one unstamped summary
+        # ('lan: hosting/joined', MP waits/timeouts), not the shim's stamped
+        # pacing windows inspect() measures, and the screens plus check.sh
+        # have already gated the session itself. Judge what the format
+        # honestly proves: this console joined a session and its peer
+        # answered (timeouts below the wait count).
+        devices = {}
+        for device in ('b', 'h'):
+            log = attempt / 'measurement' / (device + '.log')
+            if not log.exists():
+                devices[device] = {'verdict': 'INFRA_FAIL', 'reason': 'missing device log'}
+                continue
+            text = log.read_text(errors='replace')
+            if 'lan pacing:' in text:
+                devices[device] = inspect(text, start, end)
+                continue
+            joined = re.search(r'^lan: (hosting, player 0|joined, player \d+)', text, re.M)
+            waits = re.findall(r'^lan: reply/host waits (\d+),.*timeouts (\d+)', text, re.M)
+            if not joined or not waits:
+                devices[device] = {'verdict': 'INFRA_FAIL', 'reason': 'stock DS log lacks a joined session or MP waits'}
+                continue
+            total_waits, timeouts = (int(value) for value in waits[-1])
+            ok = total_waits > 0 and timeouts < total_waits
+            devices[device] = {'verdict': 'PASS' if ok else 'PRODUCT_FAIL',
+                               'reason': f'{joined.group(1)}; MP waits {total_waits}, timeouts {timeouts}'}
+        values = [row['verdict'] for row in devices.values()]
+        verdict = 'PRODUCT_FAIL' if 'PRODUCT_FAIL' in values else ('INFRA_FAIL' if 'INFRA_FAIL' in values else 'PASS')
+        return {'verdict': verdict, 'devices': devices, 'measurement': {'name': 'scripted_gameplay', 'start': start, 'end': end},
+                'performance': 'NO_DATA: stock DSperate log has no pacing windows',
+                'network_rtt': 'NO_DATA: no validated probe or session RTT adapter'}
     devices = {}
     for device in ('b', 'h'):
         log = attempt / 'measurement' / (device + '.log')

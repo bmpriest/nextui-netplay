@@ -42,6 +42,7 @@ PLATDIR  = $(WS)/$(PLATFORM)/platform
 include $(PLATDIR)/makefile.env
 
 FIRMWARE ?= nextui
+SPRUCE_RUNTIME_PLATFORM ?= $(PLATFORM)
 ifeq (,$(filter $(FIRMWARE),nextui spruce))
 $(error invalid FIRMWARE '$(FIRMWARE)'. Supported: nextui spruce)
 endif
@@ -65,14 +66,18 @@ ifeq (spruce,$(FIRMWARE))
 # A copy with that root moved into App/Netplay/nextui is put first on the
 # include path; its include guard is the original's, so it is the one
 # platform.c sees too.
-SPRUCE_INC = ../build/spruce/$(PLATFORM)/include
+SPRUCE_INC = ../build/spruce/$(SPRUCE_RUNTIME_PLATFORM)/$(PLATFORM)/include
 INCDIR  := -I$(SPRUCE_INC) $(INCDIR)
 SOURCE  += spruce/msettings.c
-BIN      = ../bin/spruce/$(PLATFORM)
+BIN      = ../bin/spruce/$(SPRUCE_RUNTIME_PLATFORM)
 FIRMWARE_FLAGS = -DNETPLAY_SPRUCE
+# Retain only libraries actually used by this frontend. The top-level Spruce
+# target also selects a standard SDL/GLES backend for RK3566 devices, since
+# the Flip SDK's vendor Mali hook is absent from the other firmware bases.
+LDFLAGS := -Wl,--as-needed $(LDFLAGS)
 endif
 
-CFLAGS  += $(OPT) $(INCDIR) -DPLATFORM=\"$(PLATFORM)\" $(FIRMWARE_FLAGS) -std=gnu99
+CFLAGS  += $(OPT) $(INCDIR) -DPLATFORM=\"$(if $(SPRUCE_INC),$(SPRUCE_RUNTIME_PLATFORM),$(PLATFORM))\" $(FIRMWARE_FLAGS) -std=gnu99
 LDFLAGS += -L$(WS)/$(PLATFORM)/libmsettings
 ifneq (,$(SDKPREFIX))
 LDFLAGS += -L$(SDKPREFIX)/lib

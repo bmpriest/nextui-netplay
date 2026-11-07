@@ -33,10 +33,16 @@ guest:WAIT_FOR game 30000
 # the start, the middle and the end of its timeout, so the timeouts stay short
 # (checks 2 s apart); a long one let both menus run into their demos.
 WAIT 9000
+# A first press after idle can be swallowed on the guest (and a press that
+# lands in the attract demo is ignored there): B is the sacrificial wake.
+# It does nothing on the menu itself and leaves the demo for the menu.
 host:VERIFY_WAIT {host_refs}/ds-main-single.png 12000
+host:TRM sh {helpers}/keys.sh b:0.2:0.5
+guest:VERIFY_WAIT {guest_refs}/ds-main-single.png 12000
+guest:TRM sh {helpers}/keys.sh b:0.2:0.5
+WAIT 1000
 host:VERIFY_UNTIL {host_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
 host:TRM sh {helpers}/keys.sh a:0.25:0
-guest:VERIFY_WAIT {guest_refs}/ds-main-single.png 12000
 guest:VERIFY_UNTIL {guest_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
 guest:TRM sh {helpers}/keys.sh a:0.25:0
 WAIT 2000

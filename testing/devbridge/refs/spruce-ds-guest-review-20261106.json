@@ -1,0 +1,50 @@
+[
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/ds-main-multiplayer.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-multiplayer-guest.png",
+    "sha256": "88e64c7c7c19baf0f88fc93a63f92dc92c5d5a8e91550bc83108069320282c5f",
+    "review": "Reviewed actual spruce-h700 (RG35XXH) DSperate capture in the vertical test layout: Mario Kart DS main menu, MULTIPLAYER highlighted. Replaces the copied spruce-tg5040 file, which scored 18.30 against a 12 threshold on this device (broker attempt da6babda7775) while the host's own reference scored 0.00. With this file the same step verifies at 0.00-0.05 on hosting-device ad hoc, separate-AP ad hoc and house WiFi."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-groups.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-after-multi-a-guest.png",
+    "sha256": "5b7e09d5fd4aeb30bc12803514ce313b20bbeb6fa6587ccdf05712c994ce3383",
+    "review": "Reviewed actual spruce-h700 DSperate capture: group browser (Choose a group to enter / CREATE GROUP) after choosing MULTIPLAYER. Verifies at 0.00 in spruce-dsp-mkds passes."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-rooms-guest.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-rooms-guest.png",
+    "sha256": "c0315f31d251a084d5dda62eaa5af00d3aae6a54e454bd4c411234d7974b6ea4",
+    "review": "Reviewed actual spruce-h700 DSperate capture: group browser listing the host's NORMAL DSperate room, 1/8. Verifies at 0.00 in spruce-dsp-mkds passes."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-lobby-guest.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-lobby-guest.png",
+    "sha256": "12c012ca7d688420ad965469d75a3098500118b6d851595c812a72bc15a7a8b1",
+    "review": "Reviewed actual spruce-h700 DSperate capture: SEEKING OPPONENTS lobby, CURRENT RACERS 2/8, both entries DSperate. Verifies at 0.00-0.05 in spruce-dsp-mkds passes."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-select-game.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-select-game-guest.png",
+    "sha256": "282a83f5e94d5003c1528183ede4c74a779219c596e5e052642bddedfb22d7cd",
+    "review": "Reviewed actual spruce-h700 DSperate capture: SELECT GAME with VS highlighted. Verifies at 0.00 in spruce-dsp-mkds passes."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-character.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-character-guest.png",
+    "sha256": "1a51b5f0afd4dace58e086cc82439d73dd981d54e2097e9bb5276eb09c135464",
+    "review": "Reviewed actual spruce-h700 DSperate capture: SELECT CHARACTER, both DSperate players listed, Mario kart shown. Verifies at 0.82-1.23 in spruce-dsp-mkds passes (countdown digits and the rotating kart account for the residue)."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-kart-guest.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-kart-guest.png",
+    "sha256": "f8b8fe597c75c66007edb7ff8c215fad43c6acc56289035de76d6247feba059d",
+    "review": "Reviewed actual spruce-h700 DSperate capture: SELECT KART, Luigi in the Poltergust 4000 after the guest's right press. Verifies at 0.82 in spruce-dsp-mkds passes."
+  },
+  {
+    "reference": "testing/devbridge/refs/spruce-h700/dsp-mk-settings-guest.png",
+    "source": "testing/results/devbridge/ds-capture-20261106-160118/cap-settings-guest.png",
+    "sha256": "01290af706f96614c5b7ae7ac4c4727aebff9ff9bdaa7a7e62f42c448e562fee",
+    "review": "Reviewed actual spruce-h700 DSperate capture: GAME SETTINGS (50cc, CPU KART OFF, COURSE CHOOSE). Verifies at 0.01 in spruce-dsp-mkds passes."
+  }
+]

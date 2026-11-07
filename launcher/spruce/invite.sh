@@ -106,6 +106,7 @@ receive() {
 	HOME=$USERDATA_PATH
 	LD_LIBRARY_PATH=$pak/bin/$plat:${LD_LIBRARY_PATH:-}
 	PLATFORM=$plat
+	LD_LIBRARY_PATH=$(np_spruce_engine_libraries) || { log "missing Spruce SDL runtime"; return 0; }
 	export PLATFORM SYSTEM_PATH USERDATA_PATH SHARED_USERDATA_PATH LOGS_PATH HOME LD_LIBRARY_PATH
 
 	kill -STOP "$menu"

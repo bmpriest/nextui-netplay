@@ -161,6 +161,7 @@ static struct {
 	uint16_t    port;
 	char        peer[64];
 	bool        configured;
+	bool        hybrid_network;
 
 	int  listen_fd;
 	int  fd;
@@ -450,6 +451,10 @@ static uint32_t make_udp_token(void) {
  * CMD_UDP_ENDPOINT. Failure is not fatal: sends fall back to TCP. */
 static void setup_udp(void) {
 	if (nl.udp_fd >= 0) return;
+	if (!nl.hybrid_network) {
+		nl_log("hybrid network traffic disabled - input/hash staying on TCP\n");
+		return;
+	}
 	/* Test hook: the pre-R1 transport, for A/B loss simulations. */
 	if (getenv("NETLINK_TEST_NO_UDP")) {
 		nl_log("test hook: UDP disabled - input/hash staying on TCP\n");
@@ -603,6 +608,7 @@ bool NetLink_configure(const char* session_path) {
 	nl.fd = -1;
 	nl.udp_fd = -1;
 	nl.port = NETLINK_DEFAULT_PORT;
+	nl.hybrid_network = true;
 	{ const char* v = getenv("NETLINK_TEST_DROP_FIRST_UDP");
 	  if (v) nl.udp_test_drop = (unsigned)atoi(v); }
 	pthread_mutex_init(&nl.lock, NULL);
@@ -630,6 +636,8 @@ bool NetLink_configure(const char* session_path) {
 		if (!strcmp(key, "role")) {
 			if (!strcmp(val, "host"))        nl.role = NETLINK_ROLE_HOST;
 			else if (!strcmp(val, "client")) nl.role = NETLINK_ROLE_CLIENT;
+		} else if (!strcmp(key, "hybrid_network")) {
+			nl.hybrid_network = atoi(val) != 0;
 		} else if (!strcmp(key, "port")) {
 			int p = atoi(val);
 			if (p > 0 && p < 65536) nl.port = (uint16_t)p;

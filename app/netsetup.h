@@ -214,6 +214,7 @@ typedef struct {
 	bool        share_cores;    /* frozen: retained so the setting can return later */
 	bool        compatibility_cores; /* fall back to the pak's matched core set */
 	bool        force_compatibility; /* testing: choose packaged builds even if installed match */
+	bool        hybrid_network; /* UDP input/hash traffic, reliable TCP state and cable data */
 	bool        verbose_logs; /* retain a complete immutable log for each game launch */
 	bool        session_save_backups; /* keep the last three pre-session saves */
 	bool        simple_client;  /* planned: accept an invitation for a matching local game */

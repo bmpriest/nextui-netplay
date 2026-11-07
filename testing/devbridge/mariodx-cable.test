@@ -32,19 +32,24 @@ WAIT 2500
 all:SCREEN mariodx-vs
 
 # The host chooses the highlighted 1-1 stage; both consoles enter the race.
+# The old crop sat on the 3-2-1 countdown digit: the two consoles count a
+# second apart, so the guest's digit never lined up with its reference
+# inside the window (10.21 against a 10 threshold while both were racing).
+# Crop the HUD strip instead, as the paired test does: it only exists in
+# the race and changes slowly.
 host:TRM sh {helpers}/keys.sh a:0.25:0
 WAIT 3000
 all:SCREEN mariodx-race
-host:VERIFY_WAIT {host_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
-guest:VERIFY_WAIT {guest_refs}/mariodx-vs-race.png 10000 region=0.44,0.23,0.12,0.16
+host:VERIFY_WAIT {host_refs}/mariodx-vs-race.png 20000 region=0.30,0.00,0.14,0.05
+guest:VERIFY_WAIT {guest_refs}/mariodx-vs-race.png 20000 region=0.30,0.00,0.14,0.05
 
 host:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
 guest:TRM sh {helpers}/gameplay.sh --bg 90 right right right+a right+b right+a+b left a b right
 WAIT 93000
 all:SCREEN mariodx-after-play
 
-host:TRM sh {helpers}/check.sh link Deluxe 45
-guest:TRM sh {helpers}/check.sh link Deluxe 45
+host:TRM sh {helpers}/check.sh cable Deluxe 45
+guest:TRM sh {helpers}/check.sh cable Deluxe 45
 
 all:TRM sh {helpers}/quit.sh minarch
 all:WAIT_FOR devbridge 30000

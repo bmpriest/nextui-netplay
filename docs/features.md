@@ -51,12 +51,12 @@ Each device keeps its own save. Reset affects only the local console.
 
 Each device emulates *both* consoles and the cable between them, and only
 controller inputs cross the network, so the cable never waits on WiFi. Turned
-on per core in Configuration > Cores.
+on per core in Configuration > Cores. Both dual modes default to off.
 
 - **Gambatte**: Game Boy and Game Boy Color, any link game. A Pokémon trade
   between Silver and Crystal ran 13,500 frames without a desync.
 - **mGBA**: every GBA link mode, including games gpSP cannot link, such as
-  Mario Kart: Super Circuit. Installs Netplay's MGBA.pak. Too heavy for the A30.
+  Mario Kart: Super Circuit. Installs Netplay's MGBA.pak on NextUI; Spruce uses its GBA emulator selection. Too heavy for the A30.
 
 Both devices need both games, because no ROM crosses the network. If either
 device lacks one, the game restarts on the ordinary link path.
@@ -83,8 +83,8 @@ access point. Asphalt: Urban GT 2 also races. DS wants ad hoc.
 
 - **House WiFi**: both devices on the same network.
 - **Ad hoc** (Stable on Brick-class hosts): the host creates its own
-  `netplay-XXXX` network and the guest joins it. One hop instead of two, and
-  4 ms round trips instead of 26-43 ms. Hosts that can run an access point
+  `netplay-XXXX` network and the guest joins it. Network quality and performance depend on the radio and topology;
+  a nearby ad hoc host is not necessarily faster than a house access point. Hosts that can run an access point
   alongside their station keep their house connection; **Ad Hoc Network
   Switch** instead leaves it, for a quieter channel. Devices without an
   AP-capable radio cannot host ad hoc (the option is hidden), but can join.
@@ -135,9 +135,14 @@ save state from one device means nothing to the other. Rewind is off with them,
 and fast forward is held to the game's own speed. In-game saves work as
 described per mode above.
 
-### Game invitations (spruce)
+### Game invitations
 
-Starting a game during a session offers it to the other device, whichever of
+NextUI sends invitations from its MinArch wrapper and receives them through
+Varnish with A ACCEPT / B DECLINE, even when the START quick menu is disabled.
+A matching ROM must exist at the offered relative path; offers during gameplay
+are ignored.
+
+On Spruce, starting a game during a session offers it to the other device, whichever of
 the two starts it. If that device is in spruce's game menu, its menu pauses and
 Netplay asks over it, with the game's box art (QOI or PNG, from the system's
 `Imgs` folder):
@@ -170,14 +175,15 @@ session ends. See [analysis/core-options.md](analysis/core-options.md).
 - **Installs Netplay manages**: MGBA.pak, DSP.pak and the DraStic radio, from
   Configuration > Cores > Extras. Each backs up what it replaces and can put it
   back.
-- **Nothing on the card changes.** Netplay wraps NextUI's emulator paks with
+- **Temporary launch hooks.** Netplay wraps NextUI's emulator paks with
   bind mounts that vanish on reboot; Configuration > Turn Off Netplay removes
-  them for good.
+  them; hosting or joining installs them again. Managed pak installs and backups
+  are separate persistent changes.
 
 ## NextUI integration
 
-These three need Varnish.pak to draw over NextUI, which Netplay offers to
-install (see [analysis/varnish.md](analysis/varnish.md)). Not on the A30.
+The quick menu and icon need Varnish.pak to draw over NextUI; Netplay offers to
+install it (see [analysis/varnish.md](analysis/varnish.md)). Not on the A30.
 
 - **Quick menu** (Experimental): START, or buttons you choose, opens a small
   Netplay menu over NextUI's menus to host or end a session without opening
@@ -190,7 +196,7 @@ install (see [analysis/varnish.md](analysis/varnish.md)). Not on the A30.
 
 ## Diagnostics
 
-- **Verbose debugging logs** (on by default): a complete log per game launch,
+- **Verbose debugging logs** (off by default): a complete log per game launch,
   kept per game and session under NextUI's `logs/netplay-games/`, so a crash
   survives NextUI truncating its own log on the next launch.
 - **Run checks**: bindings, paths, cores and networking, with what failed.
@@ -205,6 +211,13 @@ install (see [analysis/varnish.md](analysis/varnish.md)). Not on the A30.
 | tg5050 | TrimUI Smart Pro S | Untested |
 | my355 | Miyoo Flip | Untested |
 
-On spruce (App/Netplay, Brick and RG35XXH) everything above works except DS
-local wireless and NextUI's own integration; see
-[analysis/spruce-parity.md](analysis/spruce-parity.md).
+Spruce has a native PyUI front end, a combined core list and session-aware
+RetroArch/DS wrappers. Its RC device targets and validation limits are listed in
+[analysis/spruce-parity.md](analysis/spruce-parity.md). NextUI-only features are
+the quick menu, status icon, GameSwitcher shortcut and Ad Hoc Network Switch.
+
+Hybrid Network Traffic defaults on for LinkPlay (UDP inputs/hashes, reliable
+TCP state/control/link traffic and input retransmission). Off selects TCP-only
+inputs/hashes for the next session. RetroArch protocol is unchanged and does
+not carry NETPACKET link modes. Session save backups default on (three retained).
+See [release.md](release.md) for the Complete archive contents and build commands.

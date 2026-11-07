@@ -458,7 +458,8 @@ static NS_Settings ns_set = {
 	.share_cores   = false,
 	.compatibility_cores = true,
 	.force_compatibility = false,
-	.verbose_logs = true,
+	.hybrid_network = true,
+	.verbose_logs = false,
 	.session_save_backups = true,
 	.simple_client = false,
 	.add_gameswitcher = false,
@@ -612,6 +613,7 @@ void NS_settingsLoad(void) {
 		if      (!strcmp(k, "share_cores"))   ns_set.share_cores = v != 0;
 		else if (!strcmp(k, "compatibility_cores")) ns_set.compatibility_cores = v != 0;
 		else if (!strcmp(k, "force_compatibility")) ns_set.force_compatibility = v != 0;
+		else if (!strcmp(k, "hybrid_network")) ns_set.hybrid_network = v != 0;
 		else if (!strcmp(k, "verbose_logs")) ns_set.verbose_logs = v != 0;
 		else if (!strcmp(k, "session_save_backups")) ns_set.session_save_backups = v != 0;
 		else if (!strcmp(k, "simple_client")) ns_set.simple_client = v != 0;
@@ -655,6 +657,7 @@ void NS_settingsSave(void) {
 	fprintf(f, "share_cores=%d\n",   ns_set.share_cores ? 1 : 0);
 	fprintf(f, "compatibility_cores=%d\n", ns_set.compatibility_cores ? 1 : 0);
 	fprintf(f, "force_compatibility=%d\n", ns_set.force_compatibility ? 1 : 0);
+	fprintf(f, "hybrid_network=%d\n", ns_set.hybrid_network ? 1 : 0);
 	fprintf(f, "verbose_logs=%d\n", ns_set.verbose_logs ? 1 : 0);
 	fprintf(f, "session_save_backups=%d\n", ns_set.session_save_backups ? 1 : 0);
 	fprintf(f, "simple_client=%d\n", ns_set.simple_client ? 1 : 0);
@@ -2427,6 +2430,7 @@ bool NS_arm(NS_Role role, const char* peer_ip, char* err, int errlen) {
 	fprintf(f, "share_cores=%d\n", NS_settings()->share_cores ? 1 : 0);
 	fprintf(f, "compatibility_cores=%d\n", NS_settings()->compatibility_cores ? 1 : 0);
 	fprintf(f, "force_compatibility=%d\n", NS_settings()->force_compatibility ? 1 : 0);
+	fprintf(f, "hybrid_network=%d\n", NS_settings()->hybrid_network ? 1 : 0);
 	fprintf(f, "verbose_logs=%d\n", NS_settings()->verbose_logs ? 1 : 0);
 	/* These are local wishes until the manifest exchange replaces them with the
 	 * intersection of artifacts/settings available on both devices. */

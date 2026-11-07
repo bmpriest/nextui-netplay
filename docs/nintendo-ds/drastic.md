@@ -20,7 +20,7 @@ that radio has to reproduce is in [ds-wifi-mp-protocol.md](ds-wifi-mp-protocol.m
 | `drastic-wifi/pak/launch.sh` | this repo | minui-nintendo-ds-pak's launcher plus the Netplay session |
 | `make cores-nds` | Makefile | Builds the overlay for tg5040, tg5050 and h700 into `dist/nds/<p>/`, and fetches NDS.pak 0.14.1 into `dist/nds/base/` |
 | `cores/nds/<p>/` | in Netplay.pak | `NDS.pak/{launch.sh, drastic/libs/libdrastic_wifi.so}` and `drastic.sha256` |
-| `launcher/pak-manage.sh nds` | in Netplay.pak | Adds the overlay to `Emus/<p>/NDS.pak`, keeps what it replaces, puts it back |
+| `launcher/nextui/pak-manage.sh nds` | in Netplay.pak | Adds the overlay to `Emus/<p>/NDS.pak`, keeps what it replaces, puts it back |
 | Configuration > Cores > Extras > NDS | the app | Adds the overlay (and NDS.pak itself when the card has none), takes it out, or deletes NDS.pak |
 
 drastic-wifi is GPL-3.0-or-later (it carries DSperate and melonDS code); the

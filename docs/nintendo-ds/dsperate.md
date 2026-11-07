@@ -17,7 +17,7 @@ hardware.
 | `dsperate/` | this repo | Builds DSP.pak: minui-nintendo-dsperate-pak 0.2.0 (DSperate v3.0.5, its pause menu and shaders) plus Netplay's `patches/01xx`, launcher and pad profiles |
 | `make cores-dsp` | Makefile | Builds tg5040, tg5050 and h700, stages `dist/dsp/<platform>/DSP.pak` (one platform's binaries each) |
 | `cores/dsp/<platform>/DSP.pak` | in Netplay.pak | The payload `pak-manage.sh` installs |
-| `launcher/pak-manage.sh dsp` | in Netplay.pak | Install / status / ignore / restore, shared with MGBA.pak (`pak-manage.sh mgba`) |
+| `launcher/nextui/pak-manage.sh dsp` | in Netplay.pak | Install / status / ignore / restore, shared with MGBA.pak (`pak-manage.sh mgba`) |
 | Configuration > Cores > Extras > DSP | the app | Installs (with backups); then takes it out of Netplay, deletes it (`pak-manage.sh dsp remove`) or restores the backup |
 | `Emus/<platform>/DSP.pak/launch.sh` | on the card | With a session armed: re-joins the session network, then starts DSperate as `--lan-host Netplay` or `--lan-join <host>` |
 

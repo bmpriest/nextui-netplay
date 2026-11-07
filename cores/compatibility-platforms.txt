@@ -14,7 +14,8 @@ portable feature profile for its ABI, so an armv7 and an aarch64 device can
 fall back to the same game. Netplay.pak selects the directory from PLATFORM at
 launch.
 
-In the spruce build (App/Netplay), aarch64 matches spruce's 64-bit RetroArch
-cores (RetroArch/.retroarch/cores64) and armv7 matches its 32-bit RetroArch
-cores (RetroArch/.retroarch/cores, used by ra32.*). spruce ships different
-revisions in those two directories, so the two sets differ too.
+In the Spruce Complete build (App/Netplay), aarch64 matches the supported
+64-bit RetroArch routing. The my355 build directory also serves the RK3566
+RGB30, RGB20SX and Miniloong Pocket 1 targets. An optional separately built
+armv7 set may be staged for development, but ra32.* launches are not currently
+hooked and are not supported by the RC's Netplay routing.

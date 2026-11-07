@@ -3,6 +3,6 @@
   "icon": "netplay.png",
   "launch": "launch.sh",
   "description": "Two-player netplay with Netplay's own sync",
-  "devices": ["TRIMUI_A133P", "ANBERNIC_RGXX"],
+  "devices": ["TRIMUI_A133P", "TRIMUI_SMART_PRO_S", "MIYOO_FLIP", "ANBERNIC_RGXX", "RGB30", "RGB20SX", "MINILOONG_POCKET1"],
   "hideInSimpleMode": false
 }

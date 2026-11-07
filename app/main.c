@@ -398,7 +398,7 @@ enum { CORES_BASE, CORES_EXTRAS };
 /* "Use simple client" (NS_Settings.simple_client) stays hidden: it was planned
  * but never implemented. The setting is still read and written. */
 enum { SET_QUICK_MENU, SET_STATUS_ICON, SET_COMPAT, SET_GAMESWITCHER, SET_POWERSAVE, SET_ADHOC_SWITCH,
-       SET_HOST_PROTOCOL };
+       SET_HOST_PROTOCOL, SET_HYBRID_NETWORK };
 enum { DEBUG_FORCE_COMPAT, DEBUG_VERBOSE_LOGS, DEBUG_SAVE_BACKUPS, DEBUG_CHECKS, DEBUG_RESTORE_WIFI };
 enum { OPT_DUAL, OPT_INSTANCED, OPT_REMOVE, OPT_PAIRED_MGBA };
 enum { REM_NETPLAY, REM_DEVICE, REM_BACKUP, REM_CANCEL };
@@ -797,6 +797,10 @@ static void build_settings_rows(void) {
 	                      c->host_protocol == NS_PROTO_RETROARCH ? "retroarch" : "linkplay"));
 	snprintf(r->value, sizeof(r->value), "%s",
 	         c->host_protocol == NS_PROTO_RETROARCH ? "RetroArch" : "Linkplay");
+
+	r = add_row(ROW_VALUE, SET_HYBRID_NETWORK, "Hybrid Network Traffic",
+	            "UDP inputs and hashes with reliable TCP state. Applies to the next session.");
+	snprintf(r->value, sizeof(r->value), "%s", on_off(c->hybrid_network));
 
 	r = add_row(ROW_VALUE, SET_COMPAT, "Use compatibility cores",
 	            HINT_getf("settings.compat.%s", c->compatibility_cores ? "on" : "off"));
@@ -1786,6 +1790,9 @@ static void change_setting(int id, int dir) {
 		 * the channel it has. */
 		c->adhoc_switch = !c->adhoc_switch;
 		break;
+	case SET_HYBRID_NETWORK:
+		c->hybrid_network = !c->hybrid_network;
+		break;
 	case SET_HOST_PROTOCOL:
 		/* Read by the next Host; an armed session keeps its protocol. */
 		c->host_protocol = c->host_protocol == NS_PROTO_RETROARCH ? NS_PROTO_LINKPLAY
@@ -1938,6 +1945,8 @@ static bool menu_pad_open(MenuPad* pad, bool grab) {
 		name[strcspn(name, "\n")] = '\0';
 		if (!strcmp(name, "ANBERNIC-keys")) { pad->a = 304; pad->b = 305; pad->x = 307; }
 		else if (!strcmp(name, "TRIMUI Player1")) { pad->a = 305; pad->b = 304; pad->x = 308; }
+		else if (!strcmp(name, "MIYOO Player1")) { pad->a = 305; pad->b = 304; pad->x = 308; }
+		else if (!strcmp(name, "retrogame_joypad")) { pad->a = 305; pad->b = 304; pad->x = 307; }
 		else continue;
 		snprintf(path, sizeof(path), "/dev/input/event%d", i);
 		int fd = open(path, (grab ? O_RDONLY : O_WRONLY) | O_NONBLOCK);
@@ -1998,6 +2007,17 @@ static int prompt_main(int argc, char* argv[]) {
 		else if (!strcmp(argv[i], "--timeout")) timeout_s = atoi(argv[i + 1]);
 	}
 
+#ifdef NETPLAY_SPRUCE
+	if (!strcmp(PLATFORM, "my355")) {
+		/* dArkMoss exposes GLES, not desktop GL. Select ES before the
+		 * inherited renderer creates its window (its own selection is late). */
+		if (SDL_Init(SDL_INIT_VIDEO) != 0) return 2;
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+		SDL_SetHintWithPriority(SDL_HINT_RENDER_DRIVER, "opengles2", SDL_HINT_OVERRIDE);
+	}
+#endif
 	SDL_Surface* s = GFX_init(MODE_MAIN);
 	MenuPad pad;
 	bool own_pad = menu_pad_open(&pad, true);
@@ -2153,9 +2173,9 @@ static int ctl_main(int argc, char* argv[]) {
 		NS_nickname(shown, sizeof(shown));
 		printf("nickname=%s\nnickname_custom=%s\nhost_protocol=%s\n", shown, c->nickname,
 		       c->host_protocol == NS_PROTO_RETROARCH ? "retroarch" : "linkplay");
-		printf("compatibility_cores=%d\nforce_compatibility=%d\nverbose_logs=%d\n"
+		printf("hybrid_network=%d\ncompatibility_cores=%d\nforce_compatibility=%d\nverbose_logs=%d\n"
 		       "session_save_backups=%d\ndisable_powersave=%d\ninst_gambatte=%d\ninst_mgba=%d\n",
-		       c->compatibility_cores, c->force_compatibility, c->verbose_logs,
+		       c->hybrid_network, c->compatibility_cores, c->force_compatibility, c->verbose_logs,
 		       c->session_save_backups, c->disable_powersave,
 		       c->inst_core[0], c->inst_core[1]);
 		return 0;
@@ -2187,6 +2207,7 @@ static int ctl_main(int argc, char* argv[]) {
 				printf("core\t%s\t%s\t%s\t%s\t%d\n", extras ? "extras" : "base",
 				       defs[i].tag, defs[i].label ? defs[i].label : defs[i].tag,
 				       st.state ? st.state : "unknown", st.more ? 1 : 0);
+				printf("core_hint\t%s\t%s\n", defs[i].tag, core_name(st.core));
 			}
 		}
 		printf("gambatte_dual=%d\nmgba_dual=%d\n", NS_gambatteDualAvailable(), NS_mgbaDualAvailable());
@@ -2432,14 +2453,15 @@ static int ctl_main(int argc, char* argv[]) {
 			return ctl_result(true);
 		}
 		if (argc >= 3 && (!strcmp(arg, "force_compatibility") ||
-		                  !strcmp(arg, "verbose_logs") || !strcmp(arg, "session_save_backups") ||
+		                  !strcmp(arg, "hybrid_network") || !strcmp(arg, "verbose_logs") || !strcmp(arg, "session_save_backups") ||
 		                  !strcmp(arg, "inst_gambatte") || !strcmp(arg, "inst_mgba") ||
 		                  !strcmp(arg, "disable_powersave"))) {
 			bool on = atoi(argv[2]) != 0;
 			if (!strcmp(arg, "force_compatibility")) {
 				c->force_compatibility = on;
 				if (on) c->compatibility_cores = true;
-			} else if (!strcmp(arg, "verbose_logs")) c->verbose_logs = on;
+			} else if (!strcmp(arg, "hybrid_network")) c->hybrid_network = on;
+			else if (!strcmp(arg, "verbose_logs")) c->verbose_logs = on;
 			else if (!strcmp(arg, "session_save_backups")) c->session_save_backups = on;
 			else if (!strcmp(arg, "inst_gambatte")) set_instanced(0, on);
 			else if (!strcmp(arg, "inst_mgba")) set_instanced(1, on);

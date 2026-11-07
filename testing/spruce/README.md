@@ -1,4 +1,12 @@
-# spruce tests
+# Spruce tests
+
+RC fixture status: cable tests and DS references/navigation were revised after
+the original 2026-11-06 runs. Spruce DS output is archived with verbose logs
+on; enable logging explicitly for measurement because the release default is
+off. Stock DSperate summaries support session/reply checks but no FPS or
+timestamped pacing measurements. Earlier generated reports retain their
+original verdicts; fixture changes do not constitute a new hardware run.
+
 
 How the spruce results in the docs were measured: the protocol comparison
 (pure RetroArch, RetroArch over Netplay, Linkplay), link games under Linkplay,

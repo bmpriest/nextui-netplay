@@ -1,5 +1,11 @@
 # DevBridge test harness
 
+This page describes the older `tools/netplay-harness.py` control tool. Current
+autonomous Spruce gameplay uses `testing/devbridge/spruce-broker.py` and the
+sibling DevBridge broker; see [the current rig instructions](../../testing/spruce/README.md).
+The launch restriction below belongs to this older tool, not the broker.
+
+
 `tools/netplay-harness.py` is the host-side control plane for repeatable tests
 on two handhelds. It consumes the DevBridge discovery relay, uses SSH/SFTP for
 device work, gives both roles one session identifier, deploys known artifacts

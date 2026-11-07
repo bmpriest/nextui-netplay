@@ -18,9 +18,13 @@ all:WAIT_FOR game 30000
 
 WAIT 11000
 host:VERIFY_WAIT {host_refs}/ds-main-single.png 12000
+# B first: a first press after idle can be swallowed, and B only wakes
+# the menu (or leaves the attract demo for it).
+host:TRM sh {helpers}/keys.sh b:0.2:0.5
 host:VERIFY_UNTIL {host_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
 host:TRM sh {helpers}/keys.sh a:0.25:0
 guest:VERIFY_WAIT {guest_refs}/ds-main-single.png 12000
+guest:TRM sh {helpers}/keys.sh b:0.2:0.5
 guest:VERIFY_UNTIL {guest_refs}/ds-main-multiplayer.png 12000 every=1500 threshold=12 region=0.28,0.64,0.44,0.10 :: sh {helpers}/keys.sh down:0.2:0
 guest:TRM sh {helpers}/keys.sh a:0.25:0
 WAIT 2000

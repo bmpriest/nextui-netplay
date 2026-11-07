@@ -27,7 +27,7 @@ if [ -f /mnt/SDCARD/App/Netplay/launcher/firmware.sh ]; then
 	SHARED_USERDATA_PATH=$pak/nextui/.userdata/shared
 	LOGS_PATH=$NETPLAY_LOGS
 	HOME=$USERDATA_PATH
-	LD_LIBRARY_PATH=$pak/bin/$PLATFORM:${LD_LIBRARY_PATH:-}
+	LD_LIBRARY_PATH=$(np_spruce_engine_libraries) || exit 1
 	export PLATFORM SYSTEM_PATH USERDATA_PATH SHARED_USERDATA_PATH LOGS_PATH HOME LD_LIBRARY_PATH
 else
 	for pak in /mnt/SDCARD/Tools/*/Netplay.pak; do

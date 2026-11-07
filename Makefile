@@ -1,9 +1,10 @@
 .PHONY: corecmp app-spruce dist-spruce udhcpd check-udhcpd cores-dsp check-dsp cores-nds check-nds drastic-radio dist dist-base dist-compatibility dist-full shim cores core-sources compatibility compatibility-sources compatibility-armv7 compatibility-aarch64 compatibility-spruce32 compatibility-spruce32-sources check-compatibility check-netplay-cores cores-gambatte cores-gambatte-dual cores-gpsp cores-mgba cores-mgba-dual mgba-pak gblc-pak app test test-gambatte-dual clean help nds-pak nds-wifi-hooks nds-wifi-paks nds-wifi-a30-pak varnish check-varnish
+.PHONY: dist-complete
 
 PAK        := Netplay.pak
 BASE_ARCHIVE   := dist/Netplay.pak.zip
 COMPAT_ARCHIVE := dist/compatibility-cores.zip
-FULL_ARCHIVE   := dist/Netplay-Full.pak.zip
+FULL_ARCHIVE   := dist/NextUI-Netplay-Complete.zip
 BASE_STAGE     := dist/stage-base
 COMPAT_STAGE   := dist/stage-compatibility
 FULL_STAGE     := dist/stage-full
@@ -38,12 +39,13 @@ help:
 	@echo "make core-sources  fetch pinned core sources and apply tracked patches"
 	@echo "make app     build the session-setup app (needs docker + NEXTUI)"
 	@echo "make app-spruce  build the app for spruce ($(SPRUCE_PLATFORMS))"
-	@echo "make dist-spruce  create Netplay-spruce.zip (App/Netplay)"
+	@echo "make dist-spruce  create Spruce-Netplay-Complete.zip (App/Netplay)"
+	@echo "make dist-complete  build and validate both firmware Complete archives"
 	@echo "make cores-dsp  build DSP.pak (DSperate, NDS local wireless) for $(DSP_PLATFORMS)"
 	@echo "make cores-nds  build the NDS.pak (DraStic) local wireless overlay for $(NDS_PLATFORMS)"
 	@echo "make varnish build the bundled Varnish.pak for $(VARNISH_PLATFORMS) (needs docker)"
 	@echo "make test    run the host test suites"
-	@echo "make dist    create Netplay.pak.zip, compatibility-cores.zip and Netplay-Full.pak.zip"
+	@echo "make dist    create Netplay.pak.zip, compatibility-cores.zip and NextUI-Netplay-Complete.zip"
 	@echo "make clean   remove dist/"
 
 ###########################################################
@@ -257,7 +259,7 @@ cores-gambatte-dual: $(GAMBATTE_DUAL_STAMP)
 
 # The platforms Netplay ships MGBA.pak for. cores/build-mgba.sh also knows
 # tg5050 and my355 (NextUI 6.15.0's flags), so adding them here is all it takes.
-MGBA_PLATFORMS := tg5040 h700 my282
+MGBA_PLATFORMS := tg5040 tg5050 my355 h700 my282
 
 cores-mgba: $(MGBA_STAMP)
 	@bad=""; for p in $(PLATFORMS); do \
@@ -593,22 +595,23 @@ corecmp:
 ###########################################################
 # spruce: the same app, shim and cores as App/Netplay.
 #
-# Built per NextUI platform, since spruce runs on the same hardware: tg5040 for
-# the TrimUI Brick and Smart Pro, h700 for the Anbernic H700 family. NextUI's UI
-# code draws the app, so it needs NextUI's fonts and images beside it, and the
-# libraries the app links that spruce's base images lack: libsamplerate and
-# libzip everywhere, and on the H700 SDL2 itself. All come from the NextUI
-# release the app is built against.
+# PyUI draws the normal app; the native control plane and invitation prompts
+# retain NextUI resources. Four build directories cover the selected TrimUI,
+# H700 and RK3566 devices. Bundle missing native libraries from the pinned
+# NextUI release; RK3566 selects Spruce's installed SDL runtime instead.
 ###########################################################
 
-SPRUCE_PLATFORMS := tg5040 h700
+SPRUCE_PLATFORMS := tg5040 tg5050 my355 h700
 SPRUCE_STAGE     := dist/stage-spruce
-SPRUCE_ARCHIVE   := dist/Netplay-spruce.zip
+SPRUCE_ARCHIVE   := dist/Spruce-Netplay-Complete.zip
 NEXTUI_BASE_URL    := https://github.com/LoveRetro/NextUI/releases/download/v6.15.0/NextUI-20261013-0-base.zip
 NEXTUI_BASE_SHA256 := d660d064a800bb7019b3f1f0c9d7254fdc33e92cf478e6cc9b480d6788be8f2e
 NEXTUI_BASE_ZIP    := .cache/NextUI-20261013-0-base.zip
 NEXTUI_SYSTEM      := dist/nextui-v6.15.0/.system
 SPRUCE_LIBS_tg5040 := libsamplerate.so.0 libzip.so.5
+SPRUCE_LIBS_tg5050 := libsamplerate.so.0 libzip.so.5
+SPRUCE_LIBS_my355  := libsamplerate.so.0 libzip.so.5 libcrypto.so.1.1 \
+                      libSDL2-2.0.so.0 libSDL2_image-2.0.so.0 libSDL2_ttf-2.0.so.0
 SPRUCE_LIBS_h700   := libsamplerate.so.0 libzip.so.5 libcrypto.so.1.1 \
                       libSDL2-2.0.so.0 libSDL2_image-2.0.so.0 libSDL2_ttf-2.0.so.0
 
@@ -618,25 +621,30 @@ $(NEXTUI_BASE_ZIP):
 	@printf '%s  %s\n' "$(NEXTUI_BASE_SHA256)" "$@.tmp" | sha256sum -c - >/dev/null
 	@mv "$@.tmp" "$@"
 
-$(NEXTUI_SYSTEM)/res/assets@2x.png: $(NEXTUI_BASE_ZIP)
+$(NEXTUI_SYSTEM)/.spruce-runtime: $(NEXTUI_BASE_ZIP) Makefile
 	@printf '%s  %s\n' "$(NEXTUI_BASE_SHA256)" "$<" | sha256sum -c - >/dev/null
 	@rm -rf dist/nextui-v6.15.0 && mkdir -p dist/nextui-v6.15.0
 	@unzip -q -p "$<" MinUI.zip > dist/nextui-v6.15.0/MinUI.zip
 	@cd dist/nextui-v6.15.0 && unzip -q MinUI.zip '.system/res/*' \
-		$(foreach p,$(SPRUCE_PLATFORMS),$(foreach l,$(SPRUCE_LIBS_$(p)),'.system/$(p)/lib/$(l)')) && rm MinUI.zip
+		$(foreach p,$(sort h700 $(filter-out my355,$(SPRUCE_PLATFORMS))),$(foreach l,$(SPRUCE_LIBS_$(p)),'.system/$(p)/lib/$(l)')) && rm MinUI.zip
 	@touch "$@"
 
+# The RK3566 targets share the Flip's cores, but use the H700 SDK's standard
+# SDL/GLES backend for the native control plane/prompts. The Flip SDK links a
+# vendor libmali_hook.so.1 unavailable on the other RK3566 Spruce bases.
+# PLATFORM at runtime still selects my355's cores, state and Wi-Fi profile.
 app-spruce:
 	@for p in $(SPRUCE_PLATFORMS); do \
 		echo "== app spruce $$p"; \
-		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$p PROJECT="$$PWD" \
-			CMD='sh -c "cd app && make PLATFORM='$$p' FIRMWARE=spruce NEXTUI=/opt/nextui-src"' || exit 1; \
+		sdk=$$p; [ "$$p" != my355 ] || sdk=h700; \
+		$(MAKE) -s -C "$(BUILDER)" build PLATFORM=$$sdk PROJECT="$$PWD" \
+			CMD='sh -c "cd app && make PLATFORM='$$sdk' SPRUCE_RUNTIME_PLATFORM='$$p' FIRMWARE=spruce NEXTUI=/opt/nextui-src"' || exit 1; \
 	done
 	@ls -la bin/spruce/*/netplay*.elf | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
-dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores check-udhcpd \
+dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(p)) check-netplay-cores check-udhcpd check-compatibility \
              $(DRASTIC_RADIO) \
-             $(NEXTUI_SYSTEM)/res/assets@2x.png
+             $(NEXTUI_SYSTEM)/.spruce-runtime
 	@rm -rf "$(SPRUCE_STAGE)" "$(SPRUCE_ARCHIVE)"
 	@D="$(SPRUCE_STAGE)/App/Netplay"; mkdir -p "$$D/nextui/.system" "$$D/backup" && \
 	$(foreach p,$(SPRUCE_PLATFORMS),libs_$(p)="$(SPRUCE_LIBS_$(p))";) \
@@ -644,11 +652,13 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 	mv "$$D/launcher/launch.sh" "$$D/launcher/config.json" "$$D/" && \
 	rm -f "$$D/launcher/session.conf.example" && \
 	cp launcher/common/session.conf.example pak_hints.json pak_onboarding.json "$$D/" && \
+	cp README.md "$$D/" && cp -R docs "$$D/" && \
+	git rev-parse HEAD > "$$D/SOURCE_COMMIT" && \
 	if [ -d res/onboarding ]; then mkdir -p "$$D/res" && cp -R res/onboarding "$$D/res/"; fi && \
 	mkdir -p "$$D/cores/retroarch-options" && \
 	cp -R cores/retroarch-options/spruce "$$D/cores/retroarch-options/" && \
 	cp res/spruce-netplay.png "$$D/netplay.png" && \
-	mkdir -p "$$D/spruce_ui" && cp app/spruce/*.py "$$D/spruce_ui/" && \
+	mkdir -p "$$D/spruce_ui" && cp app/spruce/*.py app/spruce/CHEEVOS-LICENSE "$$D/spruce_ui/" && \
 	cp -R "$(NEXTUI_SYSTEM)/res" "$$D/nextui/.system/res" && \
 	for p in $(SPRUCE_PLATFORMS); do \
 		mkdir -p "$$D/bin/$$p" "$$D/cores/override/$$p" "$$D/nextui/.system/$$p/bin" && \
@@ -656,8 +666,8 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		cp bin/$$p/netplay_shim.so bin/spruce/$$p/netplay.elf bin/spruce/$$p/netplay-broker.elf \
 		   bin/spruce/$$p/netplay-wifips.elf "$$D/bin/$$p/" && \
 		cp "$(DRASTIC_RADIO)" "$$D/bin/$$p/libdrastic_wifi.so" && \
-		eval libs=\$$libs_$$p; \
-		for l in $$libs; do cp -L "$(NEXTUI_SYSTEM)/$$p/lib/$$l" "$$D/bin/$$p/" || exit 1; done && \
+		eval libs=\$$libs_$$p; sdk=$$p; [ "$$p" != my355 ] || sdk=h700; \
+		for l in $$libs; do cp -L "$(NEXTUI_SYSTEM)/$$sdk/lib/$$l" "$$D/bin/$$p/" || exit 1; done && \
 		cp dist/cores/$$p/gambatte_libretro.so dist/cores/$$p/gpsp_libretro.so \
 		   dist/cores-experimental/$$p/gambatte_dual_libretro.so "$$D/cores/override/$$p/" || exit 1; \
 		case " $(MGBA_PLATFORMS) " in *" $$p "*) \
@@ -677,7 +687,7 @@ dist-spruce: $(foreach p,$(SPRUCE_PLATFORMS),check-shim-$(p) check-spruce-app-$(
 		cp -R dist/compatibility-spruce32/armv7 "$$D/cores/compatibility/"; \
 	fi && \
 	chmod 755 "$$D/launch.sh" "$$D/launcher"/* "$$D"/bin/*/*
-	@cd "$(SPRUCE_STAGE)" && zip -q -r "../Netplay-spruce.zip" App -x '*/.DS_Store'
+	@cd "$(SPRUCE_STAGE)" && zip -q -r "$(abspath $(SPRUCE_ARCHIVE))" App -x '*/.DS_Store'
 	@du -h "$(SPRUCE_ARCHIVE)"
 
 check-spruce-app-%:
@@ -706,6 +716,9 @@ test:
 	@./testing/test-quick-menu.sh
 	@./testing/test-varnish-install.sh
 	@./launcher/test.sh
+	@PYTHONDONTWRITEBYTECODE=1 python3 testing/test-spruce-ui.py
+	@PYTHONDONTWRITEBYTECODE=1 python3 testing/test-spruce-targets.py
+	@PYTHONDONTWRITEBYTECODE=1 python3 testing/test-hybrid-setting.py
 	@PYTHONDONTWRITEBYTECODE=1 python3 tools/test-netplay-harness.py
 
 ###########################################################
@@ -733,11 +746,16 @@ dist: dist-base dist-compatibility dist-full
 	@echo
 	@du -h "$(BASE_ARCHIVE)" "$(COMPAT_ARCHIVE)" "$(FULL_ARCHIVE)"
 
+dist-complete: dist-full dist-spruce
+	@python3 tools/check-release.py
+
 dist-base: $(BASE_DIST_CHECKS)
 	@rm -rf "$(BASE_STAGE)" "$(BASE_ARCHIVE)"
 	@mkdir -p "$(BASE_STAGE)/$(PAK)/launcher" "$(BASE_STAGE)/$(PAK)/state" "$(BASE_STAGE)/$(PAK)/backup" dist
 
 	@cp pak.json pak_hints.json pak_onboarding.json "$(BASE_STAGE)/$(PAK)/"
+	@cp README.md "$(BASE_STAGE)/$(PAK)/" && cp -R docs "$(BASE_STAGE)/$(PAK)/"
+	@git rev-parse HEAD > "$(BASE_STAGE)/$(PAK)/SOURCE_COMMIT"
 	@cp launcher/nextui/pak-launch.sh "$(BASE_STAGE)/$(PAK)/launch.sh"
 	@launcher/flatten.sh nextui "$(BASE_STAGE)/$(PAK)/launcher"
 	@rm -f "$(BASE_STAGE)/$(PAK)/launcher/pak-launch.sh" "$(BASE_STAGE)/$(PAK)/launcher/session.conf.example"
@@ -781,6 +799,8 @@ dist-base: $(BASE_DIST_CHECKS)
 		cp -R "$(NDS_OVERLAY)/$$p" "$(BASE_STAGE)/$(PAK)/cores/nds/"; \
 	done
 	@cp -R "$(NDS_OVERLAY)/base" "$(BASE_STAGE)/$(PAK)/cores/nds/"
+	@chmod 755 "$(BASE_STAGE)/$(PAK)/cores/nds/base/NDS.pak/launch.sh" \
+		"$(BASE_STAGE)/$(PAK)/cores/nds/base/NDS.pak/drastic/drastic"
 	@for p in $(PLATFORMS); do \
 		mkdir -p "$(BASE_STAGE)/$(PAK)/bin/$$p"; \
 		cp bin/$$p/netplay_shim.so "$(BASE_STAGE)/$(PAK)/bin/$$p/"; \
@@ -811,7 +831,7 @@ dist-full: dist-base check-compatibility
 	@cp -R dist/compatibility/armv7 dist/compatibility/aarch64 \
 		"$(FULL_STAGE)/$(PAK)/cores/compatibility/"
 	@cp cores/compatibility-platforms.txt "$(FULL_STAGE)/$(PAK)/cores/compatibility/PLATFORMS.txt"
-	@cd "$(FULL_STAGE)" && zip -q -r "../Netplay-Full.pak.zip" "$(PAK)" -x '*/.*'
+	@cd "$(FULL_STAGE)" && zip -q -r "$(abspath $(FULL_ARCHIVE))" "$(PAK)" -x '*/.*'
 
 check-netplay-cores:
 	@for p in $(PLATFORMS); do for c in gambatte gpsp; do \
@@ -845,15 +865,15 @@ varnish:
 	done
 	@ls -la dist/varnish/*/varnish | awk '{printf "   %-46s %s bytes\n", $$NF, $$5}'
 
-# The quick menu is compiled against app/varnish.h, a copy of the bundled
+# The quick menu is compiled against app/nextui/varnish.h, a copy of the bundled
 # Varnish's header: they must agree, or the menu speaks a protocol the
 # installed daemon does not.
 check-varnish:
 	@for p in $(VARNISH_PLATFORMS); do \
 		test -x dist/varnish/$$p/varnish || { \
 			echo "missing dist/varnish/$$p - run 'make varnish' first"; exit 1; }; \
-		[ "$$(sed 1,4d app/varnish.h)" = "$$(sed 1d dist/varnish/$$p/include/varnish.h)" ] || { \
-			echo "app/varnish.h differs from the bundled Varnish's header - update it from there"; exit 1; }; \
+		[ "$$(sed 1,4d app/nextui/varnish.h)" = "$$(sed 1d dist/varnish/$$p/include/varnish.h)" ] || { \
+			echo "app/nextui/varnish.h differs from the bundled Varnish's header - update it from there"; exit 1; }; \
 	done
 
 check-shim-%:

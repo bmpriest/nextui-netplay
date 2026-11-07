@@ -1,6 +1,20 @@
 # DevBridge device test broker plan
 
-## Autonomous suite status (2026-11-06)
+## Current harness status (2026-11-06, RC)
+
+After the runs below, the fixture review updated Gambatte cable navigation,
+Mario Kart input timing and H700 DS screen references, and added reviewed
+reference provenance. Spruce DS launches now archive emulator output when
+verbose logs are enabled. The checker and suite judge support stock DSperate's
+joined-session and MP-wait summary as well as patched pacing logs. Stock
+summaries do not establish FPS or continuous timestamped gameplay coverage;
+those performance fields remain NO_DATA. The fixtures were separately reviewed and adjusted. Existing generated
+reports remain evidence of their original
+runs, not a fresh RC-wide result. Re-run with the current fixtures to produce
+new verdicts; do not carry the historical navigation failures forward as proven
+current product failures.
+
+## Historical autonomous suite status (2026-11-06, before fixture review)
 
 The 26-cell spruce suite has completed with 13 PASS, 3 PRODUCT_FAIL,
 4 INFRA_FAIL, and 6 declared UNSUPPORTED; no cells remain NOT_RUN. See the

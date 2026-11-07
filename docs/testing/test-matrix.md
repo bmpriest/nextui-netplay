@@ -1,5 +1,12 @@
 # Netplay test matrix
 
+This document records the original NextUI matrix and historical results. For
+the current Spruce broker suites and revised cable/DS fixtures, use
+[the Spruce test instructions](../../testing/spruce/README.md) and
+[the broker status](../analysis/devbridge-test-broker.md). These old results are
+not a fresh validation of the RC or its expanded device targets.
+
+
 `testing/devbridge/matrix.py` runs the two-device gameplay tests with nobody at
 the devices: every cell sets itself up (power save, host and join through
 `netplay.elf --ctl`, tunnels to a guest on an ad hoc network), plays, judges

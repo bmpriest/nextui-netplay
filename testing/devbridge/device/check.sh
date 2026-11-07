@@ -3,7 +3,7 @@
 # Judge the netplay game log this test produced, on this device.
 #
 #   check.sh MODE ROM_PATTERN [MIN_FPS [MAX_WAITS]]
-#     MODE         shared | instanced | link | dsp
+#     MODE         shared | instanced | link | cable | dsp
 #     ROM_PATTERN  part of the log directory name, e.g. Streets_of_Rage_2
 #     MIN_FPS      fail if the session average falls below this
 #     MAX_WAITS    fail if "Waiting for other player" came up more often
@@ -48,6 +48,17 @@ instanced)
 	echo "paired checkpoints agreed: $(grep -c 'paired consoles agree' "$log")"
 	grep 'GBLC serial' "$log" | tail -1 | sed 's/^.*GBLC serial/link cable:/'
 	pat='instanced pacing:' ;;
+cable)
+	# Gambatte's own Game Link: the core opens a direct TCP socket (port
+	# 56400, DC50 in hex) between the two devices, so the shim's netpacket
+	# counters stay at 0 even in a healthy session. Judge the socket and
+	# the pacing instead; the test's MARIO VS. LUIGI (or VS race) screens
+	# are what prove the games themselves linked.
+	grep -q 'link pacing:' "$log" || fail "no link pacing logged"
+	awk '$4 == "01" && ($2 ~ /:DC50$/ || $3 ~ /:DC50$/) { found = 1 } END { exit !found }' \
+		/proc/net/tcp || fail "Gambatte link socket (port 56400) is not established"
+	echo "Gambatte link socket established (port 56400)"
+	pat='link pacing:' ;;
 link)
 	grep -q 'link pacing:' "$log" || fail "no link traffic logged"
 	dropped=$(grep 'link pacing:' "$log" | sed -n 's/.*, \([0-9]*\) dropped.*/\1/p' | awk '{s+=$1} END {print s+0}')
@@ -57,24 +68,44 @@ link)
 	[ "$dropped" -eq 0 ] || fail "$dropped link packets dropped"
 	pat='link pacing:' ;;
 dsp)
-	# DSperate local wireless: both radios in the session (mask 0003) at some
-	# point, and the game never gave up. The archive is written when the
-	# game exits, so this runs after QUIT_GAME.
-	grep -q 'radios 0003' "$log" || fail "the two consoles' radios were never on together"
-	grep -q '^lan: .* not answering yet' "$log" && echo "guest waited for its host"
-	_timeouts=$(grep 'lan pacing:' "$log" | sed -n 's/.*, \([0-9]*\) timeouts.*/\1/p')
-	echo "MP timeouts: $(echo "$_timeouts" | awk '{s+=$1} END {print s+0}'), worst window $(echo "$_timeouts" | sort -n | tail -n 1)"
-	# A healthy race peaks near 40 timeouts in a 10 s window. An outage of a
-	# few seconds shows as hundreds in one window, and Mario Kart answers it
-	# with "Communication error": both consoles then race alone, at full
-	# speed, and every other check here still passes.
-	[ "$(echo "$_timeouts" | sort -n | tail -n 1)" -le "${DSP_MAX_WINDOW_TIMEOUTS:-100}" ] 2>/dev/null ||
-		fail "a 10 s window had more than ${DSP_MAX_WINDOW_TIMEOUTS:-100} MP timeouts (the link went dead)"
-	pat='lan pacing:' ;;
+	# DSperate local wireless, two log formats. Netplay's patched DSperate
+	# (NextUI DSP.pak) logs per-window 'lan pacing:' lines and the radios
+	# mask; spruce's stock DSperate logs one session summary instead
+	# ('lan: hosting/joined', 'lan: reply/host waits ... timeouts ...')
+	# with no pacing windows and no timestamps. The archive is written
+	# when the game exits, so this runs after QUIT_GAME.
+	if grep -q 'lan pacing:' "$log"; then
+		# Both radios in the session (mask 0003) at some point, and the
+		# game never gave up.
+		grep -q 'radios 0003' "$log" || fail "the two consoles' radios were never on together"
+		grep -q '^lan: .* not answering yet' "$log" && echo "guest waited for its host"
+		_timeouts=$(grep 'lan pacing:' "$log" | sed -n 's/.*, \([0-9]*\) timeouts.*/\1/p')
+		echo "MP timeouts: $(echo "$_timeouts" | awk '{s+=$1} END {print s+0}'), worst window $(echo "$_timeouts" | sort -n | tail -n 1)"
+		# A healthy race peaks near 40 timeouts in a 10 s window. An outage of a
+		# few seconds shows as hundreds in one window, and Mario Kart answers it
+		# with "Communication error": both consoles then race alone, at full
+		# speed, and every other check here still passes.
+		[ "$(echo "$_timeouts" | sort -n | tail -n 1)" -le "${DSP_MAX_WINDOW_TIMEOUTS:-100}" ] 2>/dev/null ||
+			fail "a 10 s window had more than ${DSP_MAX_WINDOW_TIMEOUTS:-100} MP timeouts (the link went dead)"
+		pat='lan pacing:'
+	else
+		grep -qE '^lan: (hosting, player 0|joined, player [0-9]+)' "$log" ||
+			fail "the two consoles' radios were never on together"
+		grep -E '^lan: (hosting|joined)' "$log" | head -1
+		_waits=$(sed -n 's/^lan: reply\/host waits \([0-9]*\),.*timeouts \([0-9]*\).*/\1 \2/p' "$log" | tail -1)
+		_w=${_waits% *} _t=${_waits#* }
+		[ -n "$_w" ] && [ "$_w" -gt 0 ] 2>/dev/null || fail "stock DSperate log has no MP waits"
+		[ "$_t" -lt "$_w" ] 2>/dev/null || fail "every MP wait timed out (the peer never answered)"
+		echo "MP waits: $_w, timeouts: $_t (stock DSperate log: no pacing windows, fps not judged)"
+		pat=
+	fi ;;
 *)
 	fail "unknown mode $MODE" ;;
 esac
 
+# Modes with no pacing pattern in the log (stock DSperate) have already
+# judged what their format honestly supports; skip the window maths.
+if [ -n "$pat" ]; then
 # "600 frames in 10139ms" -> total frames and time across every window.
 grep "$pat" "$log" | sed -n 's/.* \([0-9]*\) \(paired \)\{0,1\}frames in \([0-9]*\)ms.*/\1 \3/p' |
 	awk -v min="$MIN_FPS" '
@@ -113,6 +144,7 @@ if grep "$pat" "$log" | grep -q ', waits [0-9]'; then
 	echo "waiting messages: $waits (input), ${pauses:-0} (other player paused)"
 	[ -n "$MAX_WAITS" ] && [ "$waits" -gt "$MAX_WAITS" ] &&
 		fail "\"Waiting for other player\" $waits times, more than $MAX_WAITS"
+fi
 fi
 hiccups=$(grep -c 'frontend stalled - told peer' "$log")
 [ "$hiccups" -gt 0 ] && echo "frontend stalls reported to peer: $hiccups"

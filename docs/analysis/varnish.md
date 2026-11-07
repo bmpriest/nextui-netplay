@@ -20,8 +20,8 @@ NextUI, not Netplay, is in front.
 
 | Feature | Varnish command | Netplay side |
 |---|---|---|
-| Netplay icon in NextUI | `ICON` from an asset sheet, recoloured with the theme | `launcher/status-icon.sh`, `res/status@<scale>x.png` |
-| Quick menu | `MENU` (title, up to six items, button hints), `HIDE` | `app/quickmenu.c` → `netplay-quickmenu.elf`, started by `launcher/quick-menu.sh` |
+| Netplay icon in NextUI | `ICON` from an asset sheet, recoloured with the theme | `launcher/nextui/status-icon.sh`, `res/status@<scale>x.png` |
+| Quick menu | `MENU` (title, up to six items, button hints), `HIDE` | `app/nextui/quickmenu.c` → `netplay-quickmenu.elf`, started by `launcher/nextui/quick-menu.sh` |
 | Quick menu input | the input grab and release in `varnish.h` | the quick menu reads the buttons from evdev while holding the grab, so NextUI does not act on the same presses |
 | Notices | `PILL` | short results ("Session ended.") after a quick menu action |
 
@@ -44,7 +44,7 @@ screenshots and video recording. Netplay builds a fork,
 
 `make varnish` builds that checkout for tg5040, tg5050, my355 and h700 into
 `dist/varnish/<platform>/`, which the release bundles as `varnish/<platform>/`.
-`make check-varnish` fails the build if `app/varnish.h` differs from the bundled
+`make check-varnish` fails the build if `app/nextui/varnish.h` differs from the bundled
 header, because the quick menu would then speak a protocol the daemon does not.
 
 As of 2026-11-02 these changes are still uncommitted in that checkout (26
@@ -55,7 +55,7 @@ quick menu. They are worth offering upstream
 ## Installing it
 
 Turning on the icon or the quick menu offers to install the bundled Varnish
-(`launcher/varnish-install.sh`): files are copied beside any existing install
+(`launcher/nextui/varnish-install.sh`): files are copied beside any existing install
 (so a full Varnish.pak keeps its ffmpeg), renamed into place, then
 `varnish --install` enables it. The bundle is the overlay alone, without ffmpeg,
 so Varnish's own screen recording still needs the full Varnish.pak.
